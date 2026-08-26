@@ -4,7 +4,7 @@ import SwiftUI
 import UserNotifications
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, menuBar, alerts, modules, about
+    case general, menuBar, alerts, aiUsage, modules, about
 
     var id: String { rawValue }
 
@@ -13,6 +13,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "General"
         case .menuBar: "Menu Bar"
         case .alerts: "Alerts"
+        case .aiUsage: "AI Usage"
         case .modules: "Modules"
         case .about: "About"
         }
@@ -23,6 +24,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "gearshape"
         case .menuBar: "menubar.rectangle"
         case .alerts: "bell"
+        case .aiUsage: "sparkles"
         case .modules: "square.grid.2x2"
         case .about: "info.circle"
         }
@@ -65,11 +67,63 @@ struct SettingsView: View {
                 case .general: GeneralSettings()
                 case .menuBar: MenuBarSettings()
                 case .alerts: AlertSettings()
+                case .aiUsage: AIUsageSettings()
                 case .modules: ModuleSettings()
                 case .about: AboutSettings()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+}
+
+private struct AIUsageSettings: View {
+    @EnvironmentObject private var store: AIUsageStore
+    @AppStorage(PreferenceKey.aiUsageRangeDays) private var rangeDays = 30
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                DetailPanel("Usage range") {
+                    Picker("History", selection: $rangeDays) {
+                        Text("7 days").tag(7)
+                        Text("30 days").tag(30)
+                        Text("90 days").tag(90)
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Moni reads token counters from local session logs. It does not read prompts or responses.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                DetailPanel("Detected providers") {
+                    providerStatus("Codex", detected: store.summary.providers.contains { $0.provider == "Codex" })
+                    providerStatus("Claude", detected: store.summary.providers.contains { $0.provider == "Claude" })
+                    HStack {
+                        Text("Cost estimates are not shown because local logs do not contain authoritative billing data.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if store.isLoading {
+                            ProgressView().controlSize(.small)
+                        }
+                        Button("Rescan") { store.refresh(days: rangeDays) }
+                            .disabled(store.isLoading)
+                    }
+                }
+            }
+        }
+        .onChange(of: rangeDays) { _, value in
+            store.refresh(days: value)
+        }
+    }
+
+    private func providerStatus(_ name: String, detected: Bool) -> some View {
+        HStack {
+            Label(name, systemImage: name == "Codex" ? "terminal" : "brain")
+            Spacer()
+            Label(detected ? "Detected" : "Not detected", systemImage: detected ? "checkmark.circle.fill" : "minus.circle")
+                .foregroundStyle(detected ? .green : .secondary)
         }
     }
 }

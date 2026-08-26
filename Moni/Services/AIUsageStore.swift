@@ -7,17 +7,27 @@ final class AIUsageStore: ObservableObject {
     @Published private(set) var isLoading = false
 
     private let scanner = AIUsageScanner()
+    private var pendingDays: Int?
 
     init() {
         refresh()
     }
 
-    func refresh() {
-        guard !isLoading else { return }
+    func refresh(days: Int? = nil) {
+        let storedDays = UserDefaults.standard.integer(forKey: PreferenceKey.aiUsageRangeDays)
+        let rangeDays = days ?? (storedDays == 0 ? 30 : storedDays)
+        guard !isLoading else {
+            pendingDays = rangeDays
+            return
+        }
         isLoading = true
         Task {
-            summary = await scanner.scan()
+            summary = await scanner.scan(days: rangeDays)
             isLoading = false
+            if let pendingDays {
+                self.pendingDays = nil
+                refresh(days: pendingDays)
+            }
         }
     }
 }
@@ -43,8 +53,8 @@ actor AIUsageScanner {
     }()
     private let fallbackFormatter = ISO8601DateFormatter()
 
-    func scan() -> AIUsageSummary {
-        let cutoff = calendar.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast
+    func scan(days: Int = 30) -> AIUsageSummary {
+        let cutoff = calendar.date(byAdding: .day, value: -days, to: Date()) ?? .distantPast
         var daily: [Date: UInt64] = [:]
         let codex = scanCodex(cutoff: cutoff, daily: &daily)
         let claude = scanClaude(cutoff: cutoff, daily: &daily)

@@ -2,11 +2,12 @@ import SwiftUI
 
 struct AIUsageView: View {
     @EnvironmentObject private var store: AIUsageStore
+    @AppStorage(PreferenceKey.aiUsageRangeDays) private var rangeDays = 30
 
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
-                DetailPanel("AI usage · last 30 days") {
+                DetailPanel("AI usage · last \(rangeDays) days") {
                     HStack(alignment: .bottom, spacing: 24) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(tokens(store.summary.totalTokens))
@@ -26,14 +27,14 @@ struct AIUsageView: View {
                         if store.isLoading {
                             ProgressView().controlSize(.small)
                         }
-                        Button("Refresh") { store.refresh() }
+                        Button("Refresh") { store.refresh(days: rangeDays) }
                             .disabled(store.isLoading)
                     }
                 }
 
                 if store.summary.providers.isEmpty && !store.isLoading {
                     DetailPanel("No local usage") {
-                        Text("No Codex or Claude token usage was found in the last 30 days.")
+                        Text("No Codex or Claude token usage was found in the last \(rangeDays) days.")
                             .foregroundStyle(.secondary)
                     }
                 }
