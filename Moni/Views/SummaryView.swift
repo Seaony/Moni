@@ -250,27 +250,43 @@ struct SummaryView: View {
                     spacing: 9
                 ) {
                     ForEach(snapshot.processes.prefix(itemCount)) { process in
-                        HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(process.name)
-                                    .lineLimit(1)
-                                    .fontWeight(.semibold)
-                                Text("PID \(process.pid)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            Spacer()
-                            Text(percent(process.cpuPercent))
-                                .monospacedDigit()
-                            Text(bytes(process.memoryBytes))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        .font(.system(size: 11.5))
+                        processSummaryRow(process)
                     }
                 }
             }
         }
+    }
+
+    private func processSummaryRow(_ process: ProcessUsage) -> some View {
+        let memoryPercent = snapshot.memory.totalBytes > 0
+            ? Double(process.memoryBytes) / Double(snapshot.memory.totalBytes) * 100
+            : 0
+
+        return VStack(spacing: 3) {
+            HStack(spacing: 7) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(process.name)
+                        .lineLimit(1)
+                        .fontWeight(.semibold)
+                    Text("PID \(process.pid)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 4)
+                Text("\(percent(process.cpuPercent)) CPU")
+                    .monospacedDigit()
+                Text("\(percent(memoryPercent)) MEM")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 6) {
+                ProgressView(value: min(100, process.cpuPercent), total: 100)
+                    .tint(MoniPalette.pink)
+                ProgressView(value: min(100, memoryPercent), total: 100)
+                    .tint(MoniPalette.blue)
+            }
+        }
+        .font(.system(size: 10.5))
     }
 
     private var powerCard: some View {
