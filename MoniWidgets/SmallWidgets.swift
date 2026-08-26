@@ -413,3 +413,48 @@ struct DockerSmallWidgetView: View {
         .padding(16)
     }
 }
+
+struct GPUSmallWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .gpuSmall,
+            displayName: "GPU",
+            description: "查看图形处理器利用率、功耗与已分配内存。",
+            family: .systemSmall
+        )
+    }
+}
+
+struct GPUSmallWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(
+                title: "GPU",
+                symbol: "display",
+                color: WidgetTheme.green,
+                trailing: snapshot.gpu.coreCount.map { "\($0) cores" }
+            )
+            Text(snapshot.gpu.utilizationPercent.map { "\(Int($0.rounded()))%" } ?? "—")
+                .font(.system(size: 38, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .padding(.top, 8)
+            HStack(spacing: 5) {
+                Text(snapshot.gpu.powerWatts.map { String(format: "%.1f W", $0) } ?? "— W")
+                Text("·")
+                Text(snapshot.gpu.allocatedMemoryBytes.map(bytes) ?? "—")
+            }
+            .font(.system(size: 10.5, weight: .medium))
+            .foregroundStyle(WidgetTheme.secondary)
+            Spacer(minLength: 8)
+            WidgetLineChart(values: snapshot.histories.gpu, color: WidgetTheme.green)
+                .frame(height: 42)
+        }
+        .padding(16)
+    }
+
+    private func bytes(_ value: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
+    }
+}

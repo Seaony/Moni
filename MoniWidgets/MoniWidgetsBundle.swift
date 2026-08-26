@@ -12,5 +12,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         ProcessesSmallWidget()
         AISpendSmallWidget()
         DockerSmallWidget()
+        GPUSmallWidget()
     }
 }
