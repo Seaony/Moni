@@ -65,7 +65,7 @@ actor AIUsageScanner {
             requests += max(1, event.requestCount)
             if let eventCost = event.costUSD {
                 cost += eventCost
-                pricedRequests += 1
+                pricedRequests += max(1, event.requestCount)
             }
         }
     }
