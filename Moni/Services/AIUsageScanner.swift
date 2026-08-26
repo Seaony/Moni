@@ -203,6 +203,30 @@ actor AIUsageScanner {
         let events: [UsageEvent]
     }
 
+    private struct DeepSeekRecord {
+        let turn: Int
+        let step: Int
+        let priority: Int
+        let usage: UsageEvent
+    }
+
+    private struct DeepSeekCacheEntry {
+        let signature: FileSignature
+        let sessionID: String
+        let records: [DeepSeekRecord]
+    }
+
+    private struct DeepSeekRecordKey: Hashable {
+        let turn: Int
+        let step: Int
+    }
+
+    private struct DeepSeekGlobalKey: Hashable {
+        let sessionID: String
+        let turn: Int
+        let step: Int
+    }
+
     private struct ProtobufField {
         let number: Int
         let wireType: Int
@@ -222,6 +246,7 @@ actor AIUsageScanner {
     private var codexCache: [String: CodexCacheEntry] = [:]
     private var claudeCache: [String: ClaudeCacheEntry] = [:]
     private var geminiCache: [String: GeminiCacheEntry] = [:]
+    private var deepSeekCache: [String: DeepSeekCacheEntry] = [:]
     private let recordNeedles = [
         Data(#""token_count""#.utf8),
         Data(#""turn_context""#.utf8),
@@ -268,6 +293,7 @@ actor AIUsageScanner {
         let openCode = scanOpenCode(start: start, end: end, daily: &daily)
         let kimi = scanKimi(start: start, end: end, daily: &daily)
         let gemini = scanGemini(start: start, end: end, daily: &daily)
+        let deepSeek = scanDeepSeek(start: start, end: end, daily: &daily)
         var quotas = includeQuotas ? await AIQuotaFetcher.fetchAll(homeDirectory: homeDirectory) : [:]
         if includeQuotas, quotas["Codex"]?.windows.isEmpty != false, let localQuota = codex.quota {
             quotas["Codex"] = localQuota
@@ -279,6 +305,7 @@ actor AIUsageScanner {
             provider("OpenCode", totals: openCode, quota: nil),
             provider("Kimi Code", totals: kimi, quota: nil),
             provider("Gemini CLI", totals: gemini, quota: nil),
+            provider("DeepSeek Harness", totals: deepSeek, quota: nil),
         ].filter { $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty }
         let lastDay = calendar.date(byAdding: .day, value: -1, to: end) ?? start
         return AIUsageSummary(
@@ -660,6 +687,227 @@ actor AIUsageScanner {
         }
         guard trimmed.hasPrefix("/") else { return nil }
         return URL(fileURLWithPath: trimmed).standardizedFileURL
+    }
+
+    private func scanDeepSeek(start: Date, end: Date, daily: inout [Date: DailyBucket]) -> Totals {
+        let files = deepSeekFiles()
+        let paths = Set(files.map(\.path))
+        deepSeekCache = deepSeekCache.filter { paths.contains($0.key) }
+
+        var flattened: [(path: String, sessionID: String, record: DeepSeekRecord)] = []
+        for url in files {
+            let entry = cachedDeepSeekFile(url)
+            flattened.append(
+                contentsOf: entry.records.map { (url.path, entry.sessionID, $0) }
+            )
+        }
+        flattened.sort {
+            if $0.record.usage.date != $1.record.usage.date {
+                return $0.record.usage.date < $1.record.usage.date
+            }
+            return $0.path < $1.path
+        }
+
+        var totals = Totals()
+        var sessions: Set<String> = []
+        var seen: Set<DeepSeekGlobalKey> = []
+        for item in flattened {
+            let key = DeepSeekGlobalKey(
+                sessionID: item.sessionID,
+                turn: item.record.turn,
+                step: item.record.step
+            )
+            guard seen.insert(key).inserted else { continue }
+            let usage = item.record.usage
+            guard usage.date >= start, usage.date < end else { continue }
+            totals.add(usage)
+            addDaily(usage, to: &daily)
+            sessions.insert(item.sessionID)
+        }
+        totals.sessions = sessions.count
+        return totals
+    }
+
+    private func cachedDeepSeekFile(_ url: URL) -> DeepSeekCacheEntry {
+        guard let signature = fileSignature(url) else { return parseDeepSeekFile(url) }
+        if let cached = deepSeekCache[url.path], cached.signature == signature {
+            return cached
+        }
+        let entry = parseDeepSeekFile(url, signature: signature)
+        deepSeekCache[url.path] = entry
+        return entry
+    }
+
+    private func parseDeepSeekFile(
+        _ url: URL,
+        signature: FileSignature? = nil
+    ) -> DeepSeekCacheEntry {
+        let fallbackSignature = signature
+            ?? FileSignature(size: 0, modifiedAt: .distantPast)
+        let baseName = url.lastPathComponent
+            .replacingOccurrences(of: ".jsonl.zstd", with: "")
+            .replacingOccurrences(of: ".jsonl", with: "")
+        var sessionID = baseName
+        var currentModel = "deepseek-v4-pro"
+        var currentProvider = "deepseek-official"
+        var candidates: [DeepSeekRecordKey: DeepSeekRecord] = [:]
+
+        guard let data = deepSeekLogData(url) else {
+            return DeepSeekCacheEntry(
+                signature: fallbackSignature,
+                sessionID: sessionID,
+                records: []
+            )
+        }
+        enumerateLines(in: data) { line in
+            guard let item = json(line), let type = string(item["type"]) else { return }
+            if type == "session" {
+                if let id = string(item["id"]), !id.isEmpty { sessionID = id }
+                return
+            }
+            guard let values = item["data"] as? [String: Any] else { return }
+            if type == "request/header" {
+                guard let header = values["header"] as? [String: Any],
+                    let config = header["config"] as? [String: Any]
+                else { return }
+                if let model = string(config["model"]), !model.isEmpty {
+                    currentModel = model
+                }
+                if let provider = string(config["provider"]), !provider.isEmpty {
+                    currentProvider = provider
+                }
+                return
+            }
+            guard
+                let record = deepSeekRecord(
+                    item,
+                    values: values,
+                    fallbackModel: currentModel,
+                    fallbackProvider: currentProvider
+                )
+            else { return }
+            let key = DeepSeekRecordKey(turn: record.turn, step: record.step)
+            if record.priority >= candidates[key]?.priority ?? -1 {
+                candidates[key] = record
+            }
+        }
+        return DeepSeekCacheEntry(
+            signature: fallbackSignature,
+            sessionID: sessionID,
+            records: candidates.values.sorted { $0.usage.date < $1.usage.date }
+        )
+    }
+
+    private func deepSeekRecord(
+        _ item: [String: Any],
+        values: [String: Any],
+        fallbackModel: String,
+        fallbackProvider: String
+    ) -> DeepSeekRecord? {
+        guard let type = string(item["type"]),
+            let timestamp = flexibleDate(item["time"]),
+            let turn = nonnegativeInt(values["turn"]),
+            let step = nonnegativeInt(values["step"])
+        else { return nil }
+
+        let usage: [String: Any]
+        let priority: Int
+        var model = fallbackModel
+        var provider = fallbackProvider
+        if type == "assistant/message" {
+            guard let parsed = values["usage"] as? [String: Any] else { return nil }
+            usage = parsed
+            if let message = values["message"] as? [String: Any],
+                let source = message["source"] as? [String: Any]
+            {
+                if let value = string(source["model"]), !value.isEmpty { model = value }
+                if let value = string(source["provider"]), !value.isEmpty { provider = value }
+            }
+            priority = 2
+        } else if type == "assistant/chunk" {
+            guard let chunk = values["chunk"] as? [String: Any],
+                string(chunk["type"]) == "usage",
+                let parsed = chunk["usage"] as? [String: Any]
+            else { return nil }
+            usage = parsed
+            priority = 1
+        } else {
+            return nil
+        }
+
+        let input = nonnegativeUInt(usage["inputTokens"])
+        let rawOutput = nonnegativeUInt(usage["outputTokens"])
+        let cacheRead = nonnegativeUInt(usage["cacheReadTokens"])
+        let cacheWrite = nonnegativeUInt(usage["cacheWriteTokens"])
+        let reasoning = min(nonnegativeUInt(usage["reasoningTokens"]), rawOutput)
+        guard input + rawOutput + cacheRead + cacheWrite > 0 else { return nil }
+
+        let normalizedModel = AIUsagePricing.normalize(
+            model.isEmpty ? "deepseek-v4-pro" : model,
+            provider: .deepSeek
+        )
+        let cost = provider.lowercased() == "deepseek-official"
+            ? AIUsagePricing.estimatedCostUSD(
+                provider: .deepSeek,
+                model: normalizedModel,
+                date: timestamp,
+                inputTokens: input,
+                cacheReadTokens: cacheRead,
+                cacheWriteTokens: cacheWrite,
+                outputTokens: rawOutput
+            )
+            : nil
+        return DeepSeekRecord(
+            turn: turn,
+            step: step,
+            priority: priority,
+            usage: UsageEvent(
+                date: timestamp,
+                model: normalizedModel,
+                tokens: TokenValues(
+                    input: input,
+                    cacheRead: cacheRead,
+                    cacheWrite: cacheWrite,
+                    output: rawOutput - reasoning,
+                    reasoning: reasoning
+                ),
+                cacheWrite1h: 0,
+                costUSD: cost,
+                reasoningCountsSeparately: true
+            )
+        )
+    }
+
+    private func deepSeekFiles() -> [URL] {
+        let root: URL
+        if let configured = ProcessInfo.processInfo.environment["TOKEI_DSH_DIR"],
+            let url = qwenAbsoluteURL(configured)
+        {
+            root = url
+        } else {
+            root = homeDirectory.appending(path: ".dsh/sessions")
+        }
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var files: [URL] = []
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            guard name.hasSuffix(".jsonl.zstd") || name.hasSuffix(".jsonl"),
+                (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            else { continue }
+            files.append(url)
+        }
+        return files.sorted { $0.path < $1.path }
+    }
+
+    private func deepSeekLogData(_ url: URL) -> Data? {
+        guard let source = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        return url.lastPathComponent.hasSuffix(".zstd")
+            ? MoniZstdDecompressFrames(source)
+            : source
     }
 
     private func scanOpenCode(start: Date, end: Date, daily: inout [Date: DailyBucket]) -> Totals {
@@ -1828,6 +2076,19 @@ actor AIUsageScanner {
         }
     }
 
+    private func enumerateLines(in data: Data, body: (Data) -> Void) {
+        var lineStart = data.startIndex
+        while lineStart < data.endIndex,
+            let newline = data[lineStart...].firstIndex(of: 0x0A)
+        {
+            autoreleasepool { body(Data(data[lineStart..<newline])) }
+            lineStart = data.index(after: newline)
+        }
+        if lineStart < data.endIndex {
+            autoreleasepool { body(Data(data[lineStart...])) }
+        }
+    }
+
     private func json(_ line: Data) -> [String: Any]? {
         (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
     }
@@ -1868,5 +2129,21 @@ actor AIUsageScanner {
         if let value = value as? Int { return UInt64(max(0, value)) }
         if let value = value as? NSNumber { return value.uint64Value }
         return 0
+    }
+
+    private func nonnegativeUInt(_ value: Any?) -> UInt64 {
+        guard let number = value as? NSNumber else { return 0 }
+        let raw = number.int64Value
+        guard raw >= 0, number.doubleValue == Double(raw) else { return 0 }
+        return UInt64(raw)
+    }
+
+    private func nonnegativeInt(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber else { return nil }
+        let raw = number.doubleValue
+        guard raw.isFinite, raw >= 0, raw.rounded(.towardZero) == raw,
+            raw <= Double(Int.max)
+        else { return nil }
+        return Int(raw)
     }
 }

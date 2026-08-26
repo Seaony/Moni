@@ -5,6 +5,7 @@ enum AIUsageProvider: Sendable {
     case claude
     case qwen
     case gemini
+    case deepSeek
 }
 
 enum AIUsagePricing {
@@ -156,6 +157,11 @@ enum AIUsagePricing {
         "gemini-2.5-flash-lite": Price(input: 0.1, cacheRead: 0.01, output: 0.4),
     ]
 
+    private nonisolated static let deepSeekPrices: [String: Price] = [
+        "deepseek-v4-pro": Price(input: 0.435, cacheRead: 0.003625, cacheWrite: 0, output: 0.87),
+        "deepseek-v4-flash": Price(input: 0.14, cacheRead: 0.0028, cacheWrite: 0, output: 0.28),
+    ]
+
     nonisolated static func normalize(_ model: String, provider: AIUsageProvider) -> String {
         var value = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch provider {
@@ -171,6 +177,8 @@ enum AIUsagePricing {
             value.removeFirst("google/".count)
         case .gemini where value.hasPrefix("models/"):
             value.removeFirst("models/".count)
+        case .deepSeek where value.hasPrefix("deepseek/"):
+            value.removeFirst("deepseek/".count)
         default:
             break
         }
@@ -296,6 +304,8 @@ enum AIUsagePricing {
                     : Price(input: 1.5, cacheRead: 0.15, output: 7.5)
             }
             if let exact = geminiPrices[normalized] { return exact }
+        case .deepSeek:
+            if let exact = deepSeekPrices[normalized] { return exact }
         }
         return nil
     }
