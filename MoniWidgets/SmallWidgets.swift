@@ -318,3 +318,48 @@ struct ProcessesSmallWidgetView: View {
         .padding(16)
     }
 }
+
+struct AISpendSmallWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .aiSpendSmall,
+            displayName: "AI Spend",
+            description: "查看今日 AI 使用成本与 Token 用量。",
+            family: .systemSmall
+        )
+    }
+}
+
+struct AISpendSmallWidgetView: View {
+    let snapshot: WidgetAISnapshot
+
+    private var today: WidgetAISnapshot.Day? {
+        snapshot.daily.max { $0.date < $1.date }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "AI Spend", symbol: "sparkles", color: WidgetTheme.indigo, trailing: "Today")
+            Text(today.map { $0.costUSD.formatted(.currency(code: "USD")) } ?? "—")
+                .font(.system(size: 31, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+                .padding(.top, 9)
+            Text(today.map { compact($0.tokens) + " tokens" } ?? "No usage")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(WidgetTheme.secondary)
+            Spacer(minLength: 8)
+            WidgetBars(
+                values: snapshot.daily.suffix(14).map { $0.costUSD },
+                color: WidgetTheme.indigo
+            )
+            .frame(height: 40)
+        }
+        .padding(16)
+    }
+
+    private func compact(_ value: UInt64) -> String {
+        value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
+    }
+}
