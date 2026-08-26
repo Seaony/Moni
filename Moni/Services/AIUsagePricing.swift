@@ -3,6 +3,7 @@ import Foundation
 enum AIUsageProvider: Sendable {
     case codex
     case claude
+    case qwen
 }
 
 enum AIUsagePricing {
@@ -118,6 +119,15 @@ enum AIUsagePricing {
         "claude-haiku-4-5": Price(input: 1, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2, output: 5),
     ]
 
+    private nonisolated static let qwenPrices: [String: Price] = [
+        "qwen3-coder": Price(input: 0.22, cacheRead: 0, output: 1.8),
+        "qwen3-coder-30b-a3b-instruct": Price(input: 0.07, cacheRead: 0, output: 0.27),
+        "qwen3-coder-flash": Price(input: 0.195, cacheRead: 0.039, cacheWrite: 0.24375, output: 0.975),
+        "qwen3-coder-next": Price(input: 0.11, cacheRead: 0.07, output: 0.8),
+        "qwen3-coder-plus": Price(input: 0.65, cacheRead: 0.13, cacheWrite: 0.8125, output: 3.25),
+        "qwen3.7-plus": Price(input: 0.39, cacheRead: 0.078, cacheWrite: 0.49, output: 1.16),
+    ]
+
     nonisolated static func normalize(_ model: String, provider: AIUsageProvider) -> String {
         var value = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch provider {
@@ -127,8 +137,14 @@ enum AIUsagePricing {
             value.removeFirst("anthropic/".count)
         case .claude where value.hasPrefix("anthropic."):
             value.removeFirst("anthropic.".count)
+        case .qwen where value.hasPrefix("qwen/"):
+            value.removeFirst("qwen/".count)
         default:
             break
+        }
+        if case .qwen = provider {
+            value = value.replacingOccurrences(of: " ", with: "-")
+            if value == "qwen-latest-series-invite-beta-v23" { return "qwen3.7-plus" }
         }
         if case .claude = provider,
             let lastDot = value.lastIndex(of: ".")
@@ -225,6 +241,8 @@ enum AIUsagePricing {
             if let exact = codexPrices[normalized] { return exact }
         case .claude:
             if let exact = claudePrices[normalized] { return exact }
+        case .qwen:
+            if let exact = qwenPrices[normalized] { return exact }
         }
         return nil
     }

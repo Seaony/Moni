@@ -38,6 +38,8 @@ actor AIUsageScanner {
         let tokens: TokenValues
         let cacheWrite1h: UInt64
         let costUSD: Double?
+        var requestCount = 1
+        var reasoningCountsSeparately = false
     }
 
     private struct ModelTotals {
@@ -54,12 +56,13 @@ actor AIUsageScanner {
         mutating func add(_ event: UsageEvent) {
             totalTokens +=
                 event.tokens.input + event.tokens.cacheRead + event.tokens.cacheWrite + event.tokens.output
+                    + (event.reasoningCountsSeparately ? event.tokens.reasoning : 0)
             input += event.tokens.input
             output += event.tokens.output
             cacheRead += event.tokens.cacheRead
             cacheWrite += event.tokens.cacheWrite
             reasoning += event.tokens.reasoning
-            requests += 1
+            requests += max(1, event.requestCount)
             if let eventCost = event.costUSD {
                 cost += eventCost
                 pricedRequests += 1
@@ -90,8 +93,9 @@ actor AIUsageScanner {
         mutating func add(_ event: UsageEvent) {
             tokens +=
                 event.tokens.input + event.tokens.cacheRead + event.tokens.cacheWrite + event.tokens.output
+                    + (event.reasoningCountsSeparately ? event.tokens.reasoning : 0)
             cost += event.costUSD ?? 0
-            requests += 1
+            requests += max(1, event.requestCount)
         }
     }
 
@@ -158,6 +162,12 @@ actor AIUsageScanner {
 
     }
 
+    private struct QwenEvent {
+        let requestID: String?
+        let sessionID: String
+        let usages: [UsageEvent]
+    }
+
     private let fileManager = FileManager.default
     private let homeDirectory: URL
     private let calendar: Calendar
@@ -211,6 +221,7 @@ actor AIUsageScanner {
         var daily: [Date: DailyBucket] = [:]
         let codex = scanCodex(start: start, end: end, daily: &daily)
         let claude = scanClaude(start: start, end: end, daily: &daily)
+        let qwen = scanQwen(start: start, end: end, daily: &daily)
         var quotas = includeQuotas ? await AIQuotaFetcher.fetchAll(homeDirectory: homeDirectory) : [:]
         if includeQuotas, quotas["Codex"]?.windows.isEmpty != false, let localQuota = codex.quota {
             quotas["Codex"] = localQuota
@@ -218,6 +229,7 @@ actor AIUsageScanner {
         let providers = [
             provider("Claude", totals: claude, quota: quotas["Claude"]),
             provider("Codex", totals: codex.totals, quota: quotas["Codex"]),
+            provider("Qwen Code", totals: qwen, quota: nil),
         ].filter { $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty }
         let lastDay = calendar.date(byAdding: .day, value: -1, to: end) ?? start
         return AIUsageSummary(
@@ -445,6 +457,162 @@ actor AIUsageScanner {
         return totals
     }
 
+    private func scanQwen(start: Date, end: Date, daily: inout [Date: DailyBucket]) -> Totals {
+        var requests: [String: QwenEvent] = [:]
+        for url in qwenRequestFiles() {
+            enumerateLines(in: url) { line in
+                guard let record = json(line),
+                    let event = qwenRequestEvent(record),
+                    let requestID = event.requestID
+                else { return }
+                requests[requestID] = event
+            }
+        }
+
+        let requestSessions = Set(requests.values.map(\.sessionID))
+        var summaries: [String: QwenEvent] = [:]
+        let summaryURL = homeDirectory.appending(path: ".qwen/usage_record.jsonl")
+        enumerateLines(in: summaryURL) { line in
+            guard let record = json(line), let event = qwenSummaryEvent(record) else { return }
+            summaries[event.sessionID] = event
+        }
+
+        let events = Array(requests.values)
+            + summaries.values.filter { !requestSessions.contains($0.sessionID) }
+        var totals = Totals()
+        var sessions: Set<String> = []
+        for event in events {
+            var countedSession = false
+            for usage in event.usages where usage.date >= start && usage.date < end {
+                totals.add(usage)
+                addDaily(usage, to: &daily)
+                countedSession = true
+            }
+            if countedSession { sessions.insert(event.sessionID) }
+        }
+        totals.sessions = sessions.count
+        return totals
+    }
+
+    private func qwenRequestEvent(_ record: [String: Any]) -> QwenEvent? {
+        guard uint(record["schemaVersion"]) == 1,
+            let requestID = string(record["id"]), !requestID.isEmpty,
+            let sessionID = string(record["sessionId"]), !sessionID.isEmpty,
+            let timestamp = flexibleDate(record["timestamp"])
+                ?? localDayDate(string(record["localDate"])),
+            let model = string(record["model"]), !model.isEmpty
+        else { return nil }
+
+        return QwenEvent(
+            requestID: requestID,
+            sessionID: sessionID,
+            usages: [qwenUsageEvent(model: model, values: record, date: timestamp, requestCount: 1)]
+        )
+    }
+
+    private func qwenSummaryEvent(_ record: [String: Any]) -> QwenEvent? {
+        guard uint(record["version"]) == 1,
+            let sessionID = string(record["sessionId"]), !sessionID.isEmpty,
+            let timestamp = flexibleDate(record["timestamp"])
+                ?? flexibleDate(record["startTime"]),
+            let models = record["models"] as? [String: Any]
+        else { return nil }
+
+        let usages = models.compactMap { model, rawValues -> UsageEvent? in
+            guard let values = rawValues as? [String: Any] else { return nil }
+            return qwenUsageEvent(
+                model: model,
+                values: values,
+                date: timestamp,
+                requestCount: max(1, Int(uint(values["requests"])))
+            )
+        }
+        guard !usages.isEmpty else { return nil }
+        return QwenEvent(requestID: nil, sessionID: sessionID, usages: usages)
+    }
+
+    private func qwenUsageEvent(
+        model rawModel: String,
+        values: [String: Any],
+        date: Date,
+        requestCount: Int
+    ) -> UsageEvent {
+        var inputTotal = uint(values["inputTokens"])
+        var cached = uint(values["cachedTokens"])
+        if inputTotal == 0, cached > 0 { inputTotal = cached }
+        cached = min(cached, inputTotal)
+        let input = inputTotal - cached
+        let output = uint(values["outputTokens"])
+        let reasoning = uint(values["thoughtsTokens"])
+        let model = AIUsagePricing.normalize(rawModel, provider: .qwen)
+        return UsageEvent(
+            date: date,
+            model: model,
+            tokens: TokenValues(
+                input: input,
+                cacheRead: cached,
+                output: output,
+                reasoning: reasoning
+            ),
+            cacheWrite1h: 0,
+            costUSD: AIUsagePricing.estimatedCostUSD(
+                provider: .qwen,
+                model: model,
+                date: date,
+                inputTokens: input,
+                cacheReadTokens: cached,
+                cacheWriteTokens: 0,
+                outputTokens: output + reasoning
+            ),
+            requestCount: requestCount,
+            reasoningCountsSeparately: true
+        )
+    }
+
+    private func qwenRequestFiles() -> [URL] {
+        qwenRuntimeDirectories().flatMap { root -> [URL] in
+            let usage = root.appending(path: "usage")
+            guard let files = try? fileManager.contentsOfDirectory(
+                at: usage,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { return [] }
+            return files.filter {
+                $0.pathExtension == "jsonl" && $0.lastPathComponent.hasPrefix("token-usage-")
+            }
+        }.sorted { $0.path < $1.path }
+    }
+
+    private func qwenRuntimeDirectories() -> [URL] {
+        if let configured = ProcessInfo.processInfo.environment["QWEN_RUNTIME_DIR"],
+            let url = qwenAbsoluteURL(configured)
+        {
+            return [url]
+        }
+
+        let defaultRoot = homeDirectory.appending(path: ".qwen")
+        let settingsURL = defaultRoot.appending(path: "settings.json")
+        if let data = try? Data(contentsOf: settingsURL),
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let advanced = root["advanced"] as? [String: Any],
+            let configured = string(advanced["runtimeOutputDir"]),
+            let url = qwenAbsoluteURL(configured)
+        {
+            return [url]
+        }
+        return [defaultRoot]
+    }
+
+    private func qwenAbsoluteURL(_ path: String) -> URL? {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "~" { return homeDirectory }
+        if trimmed.hasPrefix("~/") {
+            return homeDirectory.appending(path: String(trimmed.dropFirst(2)))
+        }
+        guard trimmed.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: trimmed).standardizedFileURL
+    }
+
     private func parseClaudeFile(_ url: URL) -> [ClaudeEvent] {
         var keyed: [String: ClaudeEvent] = [:]
         var unkeyed: [ClaudeEvent] = []
@@ -623,6 +791,7 @@ actor AIUsageScanner {
 
     private func eventTotal(_ event: UsageEvent) -> UInt64 {
         event.tokens.input + event.tokens.cacheRead + event.tokens.cacheWrite + event.tokens.output
+            + (event.reasoningCountsSeparately ? event.tokens.reasoning : 0)
     }
 
     private func tokenValues(_ values: [String: Any]) -> TokenValues {
@@ -809,6 +978,22 @@ actor AIUsageScanner {
     private func date(_ value: Any?) -> Date? {
         guard let string = string(value) else { return nil }
         return formatter.date(from: string) ?? fallbackFormatter.date(from: string)
+    }
+
+    private func flexibleDate(_ value: Any?) -> Date? {
+        if let number = value as? NSNumber {
+            let raw = number.doubleValue
+            guard raw.isFinite, raw > 0 else { return nil }
+            return Date(timeIntervalSince1970: raw > 10_000_000_000 ? raw / 1_000 : raw)
+        }
+        return date(value)
+    }
+
+    private func localDayDate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let parts = value.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
     }
 
     private func string(_ value: Any?) -> String? {

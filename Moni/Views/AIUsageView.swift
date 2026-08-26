@@ -33,19 +33,21 @@ struct AIUsageView: View {
                     .transition(MoniMotion.itemTransition)
                 }
 
-                DetailPanel {
-                    HStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.circle")
-                            .foregroundStyle(MoniPalette.orange)
-                        Text("No local logs found for: Gemini CLI · Qwen Code · Kimi Code · DeepSeek Harness · OpenCode")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                        Button("Add source…", action: onAddSource)
-                            .font(.system(size: 12))
-                            .foregroundStyle(MoniPalette.blue)
-                            .buttonStyle(.plain)
-                            .moniPointingHand()
+                if !missingSources.isEmpty {
+                    DetailPanel {
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.circle")
+                                .foregroundStyle(MoniPalette.orange)
+                            Text("No local logs found for: \(missingSources.joined(separator: " · "))")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Button("Add source…", action: onAddSource)
+                                .font(.system(size: 12))
+                                .foregroundStyle(MoniPalette.blue)
+                                .buttonStyle(.plain)
+                                .moniPointingHand()
+                        }
                     }
                 }
             }
@@ -163,7 +165,7 @@ struct AIUsageView: View {
                 providerStat("Input", tokens(provider.inputTokens))
                 providerStat("Output", tokens(provider.outputTokens))
                 providerStat("Cache read", tokens(provider.cacheReadTokens))
-                if provider.provider == "Codex" {
+                if provider.reasoningTokens > 0 {
                     providerStat("Reasoning", tokens(provider.reasoningTokens))
                 } else {
                     providerStat("Cache write", tokens(provider.cacheWriteTokens))
@@ -286,7 +288,22 @@ struct AIUsageView: View {
     }
 
     private func providerColor(_ provider: AIProviderUsage) -> Color {
-        provider.provider == "Codex" ? MoniPalette.cyan : MoniPalette.claude
+        switch provider.provider {
+        case "Codex": MoniPalette.cyan
+        case "Claude": MoniPalette.claude
+        case "Qwen Code": MoniPalette.purple
+        case "Gemini CLI": MoniPalette.blue
+        case "Kimi Code": MoniPalette.yellow
+        case "DeepSeek Harness": MoniPalette.indigo
+        case "OpenCode": MoniPalette.green
+        default: MoniPalette.foregroundSecondary
+        }
+    }
+
+    private var missingSources: [String] {
+        let detected = Set(store.summary.providers.map(\.provider))
+        return ["Gemini CLI", "Qwen Code", "Kimi Code", "DeepSeek Harness", "OpenCode"]
+            .filter { !detected.contains($0) }
     }
 
     private func tokens(_ value: UInt64) -> String {

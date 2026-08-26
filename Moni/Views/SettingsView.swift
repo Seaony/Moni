@@ -134,6 +134,11 @@ private struct AIUsageSettings: View {
                 DetailPanel("Detected providers") {
                     providerStatus("Codex", detected: store.summary.providers.contains { $0.provider == "Codex" })
                     providerStatus("Claude", detected: store.summary.providers.contains { $0.provider == "Claude" })
+                    providerStatus("Qwen Code", detected: store.summary.providers.contains { $0.provider == "Qwen Code" })
+                    providerStatus("Gemini CLI", detected: store.summary.providers.contains { $0.provider == "Gemini CLI" })
+                    providerStatus("Kimi Code", detected: store.summary.providers.contains { $0.provider == "Kimi Code" })
+                    providerStatus("DeepSeek Harness", detected: store.summary.providers.contains { $0.provider == "DeepSeek Harness" })
+                    providerStatus("OpenCode", detected: store.summary.providers.contains { $0.provider == "OpenCode" })
                     HStack {
                         Text("Costs are local estimates using public API rates; quota percentages come from each provider.")
                             .font(.caption)
@@ -162,10 +167,17 @@ private struct AIUsageSettings: View {
 
     private func providerStatus(_ name: String, detected: Bool) -> some View {
         HStack {
-            Label(name, systemImage: name == "Codex" ? "terminal" : "brain")
+            Label(name, systemImage: providerSymbol(name))
             Spacer()
             Label(detected ? "Detected" : "Not detected", systemImage: detected ? "checkmark.circle.fill" : "minus.circle")
                 .foregroundStyle(detected ? MoniPalette.green : MoniPalette.foregroundSecondary)
+        }
+    }
+
+    private func providerSymbol(_ name: String) -> String {
+        switch name {
+        case "Codex", "Qwen Code", "Gemini CLI", "Kimi Code", "DeepSeek Harness", "OpenCode": "terminal"
+        default: "brain"
         }
     }
 }
