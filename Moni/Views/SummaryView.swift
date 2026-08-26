@@ -199,26 +199,70 @@ struct SummaryView: View {
     }
 
     private var networkCard: some View {
-        cardButton(.network) {
+        let isWide = cardSize(.network).columns == 2
+
+        return cardButton(.network) {
             MetricCard(title: "Network", symbol: MonitorSection.network.symbol, color: MoniPalette.cyan, trailing: "Live") {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("↓ \(rate(snapshot.network.downloadBytesPerSecond))")
+                HStack(alignment: .bottom, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Label("Download", systemImage: "arrow.down")
+                            .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(MoniPalette.cyan)
+                        Text(rate(snapshot.network.downloadBytesPerSecond))
+                            .font(.system(size: 23, weight: .bold, design: .rounded))
                             .moniNumericTransition(snapshot.network.downloadBytesPerSecond)
-                        Text("↑ \(rate(snapshot.network.uploadBytesPerSecond))")
+                        Label("Upload", systemImage: "arrow.up")
+                            .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(MoniPalette.orange)
+                        Text(rate(snapshot.network.uploadBytesPerSecond))
+                            .font(.system(size: 23, weight: .bold, design: .rounded))
                             .moniNumericTransition(snapshot.network.uploadBytesPerSecond)
                     }
-                    .font(.system(size: 19, weight: .bold, design: .rounded))
-                    Sparkline(values: monitor.downloadHistory, color: MoniPalette.cyan)
-                        .frame(height: cardSize(.network).rows == 2 ? 245 : 72)
+                    ZStack {
+                        Sparkline(values: monitor.downloadHistory, color: MoniPalette.cyan)
+                        Sparkline(values: monitor.uploadHistory, color: MoniPalette.orange, showsFill: false)
+                    }
+                    .frame(maxWidth: isWide ? .infinity : 112)
+                    .frame(height: cardSize(.network).rows == 2 ? 245 : 72)
                 }
-                MetricRow(label: "Received", value: bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan)
-                MetricRow(label: "Sent", value: bytes(snapshot.network.totalSentBytes), color: MoniPalette.orange)
-                MetricRow(label: "Active", value: "\(snapshot.network.interfaces.filter(\.isActive).count) interfaces", color: MoniPalette.green)
+                HStack(spacing: 16) {
+                    networkTotal("Received", bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan)
+                    networkTotal("Sent", bytes(snapshot.network.totalSentBytes), color: MoniPalette.orange)
+                }
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(MoniPalette.green)
+                        .frame(width: 7, height: 7)
+                    Text(primaryNetworkLabel)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text("\(snapshot.network.interfaces.filter(\.isActive).count) active")
+                        .foregroundStyle(.tertiary)
+                }
+                .font(.system(size: 11.5))
             }
         }
+    }
+
+    private func networkTotal(_ label: String, _ value: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .fontWeight(.bold)
+                .monospacedDigit()
+        }
+        .font(.system(size: 11.5))
+    }
+
+    private var primaryNetworkLabel: String {
+        [snapshot.network.primaryInterfaceName, snapshot.network.wifi?.physicalMode]
+            .compactMap { $0 }
+            .joined(separator: " · ")
     }
 
     private var storageCard: some View {
