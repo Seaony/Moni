@@ -211,3 +211,65 @@ struct StorageSmallWidgetView: View {
         ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 }
+
+struct WiFiSmallWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .wifiSmall,
+            displayName: "Wi-Fi",
+            description: "查看当前无线网络的信号、信道与连接速率。",
+            family: .systemSmall
+        )
+    }
+}
+
+struct WiFiSmallWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private var signal: Int { snapshot.network.signalStrengthDBm ?? -100 }
+    private var strength: Double { min(1, max(0, Double(signal + 100) / 60)) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Wi-Fi", symbol: "wifi", color: WidgetTheme.cyan, trailing: snapshot.network.networkName)
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(snapshot.network.signalStrengthDBm.map(String.init) ?? "—")
+                    .font(.system(size: 34, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                Text("dBm")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(WidgetTheme.secondary)
+            }
+            .padding(.top, 9)
+            HStack(alignment: .bottom, spacing: 4) {
+                ForEach(0..<5, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Double(index + 1) / 5 <= strength ? WidgetTheme.cyan : WidgetTheme.track)
+                        .frame(height: CGFloat(7 + index * 4))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
+            Spacer(minLength: 8)
+            HStack(spacing: 10) {
+                stat("Channel", snapshot.network.channel ?? "—")
+                stat("Link", linkRate)
+            }
+        }
+        .padding(16)
+    }
+
+    private var linkRate: String {
+        guard let value = snapshot.network.transmitRateBitsPerSecond else { return "—" }
+        return "\(value / 1_000_000)M"
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(value).fontWeight(.bold).monospacedDigit()
+        }
+        .font(.system(size: 10.5))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}

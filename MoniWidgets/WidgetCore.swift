@@ -35,6 +35,7 @@ enum MoniWidgetKind: String {
     case memorySmall = "com.seaony.Moni.widget.memory-small"
     case powerSmall = "com.seaony.Moni.widget.power-small"
     case storageSmall = "com.seaony.Moni.widget.storage-small"
+    case wifiSmall = "com.seaony.Moni.widget.wifi-small"
 }
 
 struct MoniWidgetView: View {
@@ -51,6 +52,8 @@ struct MoniWidgetView: View {
             PowerSmallWidgetView(snapshot: entry.system)
         case .storageSmall:
             StorageSmallWidgetView(snapshot: entry.system)
+        case .wifiSmall:
+            WiFiSmallWidgetView(snapshot: entry.system)
         }
     }
 }
