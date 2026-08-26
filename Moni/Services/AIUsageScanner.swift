@@ -175,6 +175,16 @@ actor AIUsageScanner {
         let usage: UsageEvent
     }
 
+    private struct KimiRecord {
+        let key: String
+        let usage: UsageEvent
+    }
+
+    private struct KimiWireGroup {
+        var agentWires: [URL] = []
+        var rootWire: URL?
+    }
+
     private let fileManager = FileManager.default
     private let homeDirectory: URL
     private let calendar: Calendar
@@ -230,6 +240,7 @@ actor AIUsageScanner {
         let claude = scanClaude(start: start, end: end, daily: &daily)
         let qwen = scanQwen(start: start, end: end, daily: &daily)
         let openCode = scanOpenCode(start: start, end: end, daily: &daily)
+        let kimi = scanKimi(start: start, end: end, daily: &daily)
         var quotas = includeQuotas ? await AIQuotaFetcher.fetchAll(homeDirectory: homeDirectory) : [:]
         if includeQuotas, quotas["Codex"]?.windows.isEmpty != false, let localQuota = codex.quota {
             quotas["Codex"] = localQuota
@@ -239,6 +250,7 @@ actor AIUsageScanner {
             provider("Codex", totals: codex.totals, quota: quotas["Codex"]),
             provider("Qwen Code", totals: qwen, quota: nil),
             provider("OpenCode", totals: openCode, quota: nil),
+            provider("Kimi Code", totals: kimi, quota: nil),
         ].filter { $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty }
         let lastDay = calendar.date(byAdding: .day, value: -1, to: end) ?? start
         return AIUsageSummary(
@@ -833,6 +845,193 @@ actor AIUsageScanner {
             cacheReadTokens: cacheRead,
             cacheWriteTokens: cacheWrite,
             outputTokens: output + reasoning
+        )
+    }
+
+    private func scanKimi(start: Date, end: Date, daily: inout [Date: DailyBucket]) -> Totals {
+        var totals = Totals()
+        var sessions: Set<String> = []
+        for (sessionDirectory, group) in kimiWireGroups() {
+            let agentRecords = group.agentWires.flatMap(kimiRecords)
+            var mirrorCounts: [String: Int] = [:]
+            for record in agentRecords { mirrorCounts[record.key, default: 0] += 1 }
+
+            var records = agentRecords
+            if let rootWire = group.rootWire {
+                for record in kimiRecords(rootWire) {
+                    if let count = mirrorCounts[record.key], count > 0 {
+                        mirrorCounts[record.key] = count - 1
+                    } else {
+                        records.append(record)
+                    }
+                }
+            }
+
+            var countedSession = false
+            for record in records where record.usage.date >= start && record.usage.date < end {
+                totals.add(record.usage)
+                addDaily(record.usage, to: &daily)
+                countedSession = true
+            }
+            if countedSession { sessions.insert(kimiSessionID(sessionDirectory)) }
+        }
+        totals.sessions = sessions.count
+        return totals
+    }
+
+    private func kimiWireGroups() -> [URL: KimiWireGroup] {
+        var groups: [URL: KimiWireGroup] = [:]
+        for root in kimiRoots() {
+            let sessionsRoot = root.appending(path: "sessions")
+            guard let enumerator = fileManager.enumerator(
+                at: sessionsRoot,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for case let url as URL in enumerator where url.lastPathComponent == "wire.jsonl" {
+                let parent = url.deletingLastPathComponent()
+                let sessionDirectory: URL
+                if parent.deletingLastPathComponent().lastPathComponent == "agents" {
+                    sessionDirectory = parent.deletingLastPathComponent().deletingLastPathComponent()
+                    groups[sessionDirectory, default: KimiWireGroup()].agentWires.append(url)
+                } else {
+                    sessionDirectory = parent
+                    groups[sessionDirectory, default: KimiWireGroup()].rootWire = url
+                }
+            }
+        }
+        for key in groups.keys {
+            groups[key]?.agentWires.sort { $0.path < $1.path }
+        }
+        return groups
+    }
+
+    private func kimiRoots() -> [URL] {
+        for key in ["TOKEI_KIMI_DIR", "KIMI_CODE_HOME", "KIMI_SHARE_DIR"] {
+            if let value = ProcessInfo.processInfo.environment[key], let url = qwenAbsoluteURL(value) {
+                return [url]
+            }
+        }
+        return [homeDirectory.appending(path: ".kimi-code"), homeDirectory.appending(path: ".kimi")]
+    }
+
+    private func kimiSessionID(_ directory: URL) -> String {
+        let stateURL = directory.appending(path: "state.json")
+        if let data = try? Data(contentsOf: stateURL),
+            let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let id = string(state["id"]), !id.isEmpty
+        {
+            return id
+        }
+        return directory.lastPathComponent
+    }
+
+    private func kimiRecords(_ url: URL) -> [KimiRecord] {
+        var records: [KimiRecord] = []
+        var seenMessages: Set<String> = []
+        enumerateLines(in: url) { line in
+            guard let record = json(line) else { return }
+            if string(record["type"]) == "usage.record" {
+                guard let timestamp = flexibleDate(record["time"]),
+                    let values = record["usage"] as? [String: Any]
+                else { return }
+                let input = uint(values["inputOther"])
+                let output = uint(values["output"])
+                let cacheRead = uint(values["inputCacheRead"])
+                let cacheWrite = uint(values["inputCacheCreation"])
+                guard input + output + cacheRead + cacheWrite > 0 else { return }
+                let model = string(record["model"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let displayModel = model.flatMap { $0.isEmpty ? nil : $0 } ?? "unknown"
+                let key = [
+                    "usage", String(Int64(timestamp.timeIntervalSince1970 * 1_000)), displayModel,
+                    String(input), String(output), String(cacheRead), String(cacheWrite),
+                ].joined(separator: ":")
+                records.append(
+                    KimiRecord(
+                        key: key,
+                        usage: kimiUsage(
+                            date: timestamp,
+                            model: displayModel,
+                            input: input,
+                            output: output,
+                            cacheRead: cacheRead,
+                            cacheWrite: cacheWrite
+                        )
+                    ))
+                return
+            }
+
+            guard let timestamp = flexibleDate(record["timestamp"]),
+                let message = record["message"] as? [String: Any]
+            else { return }
+            for (scope, payload) in kimiStatusPayloads(message) {
+                guard let values = payload["token_usage"] as? [String: Any] else { continue }
+                let messageID = string(payload["message_id"])
+                if let messageID {
+                    let deduplicationKey = "\(scope):\(messageID)"
+                    guard seenMessages.insert(deduplicationKey).inserted else { continue }
+                }
+                let input = uint(values["input_other"])
+                let output = uint(values["output"])
+                let cacheRead = uint(values["input_cache_read"])
+                let cacheWrite = uint(values["input_cache_creation"])
+                guard input + output + cacheRead + cacheWrite > 0 else { continue }
+                let key = messageID.map { "message:\(scope):\($0)" }
+                    ?? [
+                        "tokens", String(Int64(timestamp.timeIntervalSince1970 * 1_000)), scope,
+                        String(input), String(output), String(cacheRead), String(cacheWrite),
+                    ].joined(separator: ":")
+                records.append(
+                    KimiRecord(
+                        key: key,
+                        usage: kimiUsage(
+                            date: timestamp,
+                            model: "unknown",
+                            input: input,
+                            output: output,
+                            cacheRead: cacheRead,
+                            cacheWrite: cacheWrite
+                        )
+                    ))
+            }
+        }
+        return records
+    }
+
+    private func kimiStatusPayloads(
+        _ message: [String: Any],
+        scope: String = "main"
+    ) -> [(String, [String: Any])] {
+        guard let type = string(message["type"]),
+            let payload = message["payload"] as? [String: Any]
+        else { return [] }
+        if type == "StatusUpdate" { return [(scope, payload)] }
+        guard type == "SubagentEvent", let event = payload["event"] as? [String: Any] else { return [] }
+        let agent = string(payload["agent_id"])
+            ?? string(payload["parent_tool_call_id"])
+            ?? string(payload["task_tool_call_id"])
+        return kimiStatusPayloads(event, scope: agent.map { "\(scope)/\($0)" } ?? scope)
+    }
+
+    private func kimiUsage(
+        date: Date,
+        model: String,
+        input: UInt64,
+        output: UInt64,
+        cacheRead: UInt64,
+        cacheWrite: UInt64
+    ) -> UsageEvent {
+        UsageEvent(
+            date: date,
+            model: model,
+            tokens: TokenValues(
+                input: input,
+                cacheRead: cacheRead,
+                cacheWrite: cacheWrite,
+                output: output
+            ),
+            cacheWrite1h: 0,
+            costUSD: nil
         )
     }
 
