@@ -99,3 +99,60 @@ struct MemorySmallWidgetView: View {
         ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
     }
 }
+
+struct PowerSmallWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .powerSmall,
+            displayName: "Power",
+            description: "查看电池、温度与风扇状态。",
+            family: .systemSmall
+        )
+    }
+}
+
+struct PowerSmallWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private var battery: Double { snapshot.power.batteryPercent ?? 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(
+                title: "Power",
+                symbol: "battery.75percent",
+                color: WidgetTheme.yellow,
+                trailing: snapshot.power.isCharging ? "Charging" : nil
+            )
+            Text(snapshot.power.batteryPercent.map { "\(Int($0.rounded()))%" } ?? "—")
+                .font(.system(size: 36, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .padding(.top, 9)
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(WidgetTheme.track)
+                    Capsule()
+                        .fill(WidgetTheme.green)
+                        .frame(width: geometry.size.width * min(1, max(0, battery / 100)))
+                }
+            }
+            .frame(height: 7)
+            .padding(.top, 3)
+            Spacer(minLength: 8)
+            HStack(spacing: 10) {
+                stat("CPU die", snapshot.power.cpuTemperatureCelsius.map { "\(Int($0.rounded()))°" } ?? "—")
+                stat("Fan", snapshot.power.fanRPM.map { "\(Int($0.rounded())) rpm" } ?? "—")
+            }
+        }
+        .padding(16)
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(value).fontWeight(.bold).foregroundStyle(WidgetTheme.foreground).monospacedDigit()
+        }
+        .font(.system(size: 10.5))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
