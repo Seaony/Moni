@@ -190,7 +190,51 @@ private struct NetworkDetailView: View {
                 }
 
                 DetailPanel("Active connections") {
-                    unavailableRow("Connection ownership is not collected by Moni.")
+                    HStack(spacing: 10) {
+                        Text("Process")
+                        Spacer(minLength: 8)
+                        Text("Remote").frame(width: 190, alignment: .leading)
+                        Text("Proto").frame(width: 58, alignment: .leading)
+                        Text("In").frame(width: 78, alignment: .trailing)
+                        Text("Out").frame(width: 78, alignment: .trailing)
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 10)
+
+                    if network.connections.isEmpty {
+                        Text("No active external connections")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                    } else {
+                        ForEach(network.connections) { connection in
+                            HStack(spacing: 10) {
+                                Text(connection.processName)
+                                    .fontWeight(.semibold)
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                Text(connection.remoteEndpoint)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .frame(width: 190, alignment: .leading)
+                                Text(connection.transport)
+                                    .foregroundStyle(.tertiary)
+                                    .frame(width: 58, alignment: .leading)
+                                Text(bytes(connection.receivedBytes))
+                                    .foregroundStyle(MoniPalette.cyan)
+                                    .frame(width: 78, alignment: .trailing)
+                                Text(bytes(connection.sentBytes))
+                                    .foregroundStyle(MoniPalette.orange)
+                                    .frame(width: 78, alignment: .trailing)
+                            }
+                            .font(.system(size: 13))
+                            .monospacedDigit()
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                        }
+                    }
                 }
             }
         }

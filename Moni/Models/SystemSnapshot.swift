@@ -77,25 +77,40 @@ struct NetworkInterfaceUsage: Identifiable, Sendable {
     var id: String { name }
 }
 
+struct NetworkConnectionUsage: Identifiable, Sendable {
+    let processName: String
+    let pid: Int32
+    let localEndpoint: String
+    let remoteEndpoint: String
+    let transport: String
+    let receivedBytes: UInt64
+    let sentBytes: UInt64
+
+    var id: String { "\(pid)-\(transport)-\(localEndpoint)-\(remoteEndpoint)" }
+}
+
 struct NetworkUsage: Sendable {
     var downloadBytesPerSecond: Double = 0
     var uploadBytesPerSecond: Double = 0
     var totalReceivedBytes: UInt64 = 0
     var totalSentBytes: UInt64 = 0
     var interfaces: [NetworkInterfaceUsage] = []
+    var connections: [NetworkConnectionUsage] = []
 
     nonisolated init(
         downloadBytesPerSecond: Double = 0,
         uploadBytesPerSecond: Double = 0,
         totalReceivedBytes: UInt64 = 0,
         totalSentBytes: UInt64 = 0,
-        interfaces: [NetworkInterfaceUsage] = []
+        interfaces: [NetworkInterfaceUsage] = [],
+        connections: [NetworkConnectionUsage] = []
     ) {
         self.downloadBytesPerSecond = downloadBytesPerSecond
         self.uploadBytesPerSecond = uploadBytesPerSecond
         self.totalReceivedBytes = totalReceivedBytes
         self.totalSentBytes = totalSentBytes
         self.interfaces = interfaces
+        self.connections = connections
     }
 }
 

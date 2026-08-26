@@ -39,13 +39,16 @@ actor SystemSampler {
     private var didLoadGPUDevices = false
     private var cachedVolumes: [VolumeUsage] = []
     private var cachedProcesses: [ProcessUsage] = []
+    private var cachedNetworkConnections: [NetworkConnectionUsage] = []
     private var cachedPower = PowerUsage()
     private var cachedDocker = DockerStatus()
     private var lastProcessSample: Date?
     private var lastPeripheralSample: Date?
+    private var lastConnectionSample: Date?
 
     private let processInterval: TimeInterval = 2
     private let peripheralInterval: TimeInterval = 5
+    private let connectionInterval: TimeInterval = 5
 
     func sample(forceSlowMetrics: Bool = false) -> SystemSnapshot {
         let now = Date()
@@ -199,6 +202,11 @@ actor SystemSampler {
     }
 
     private func sampleNetwork(at date: Date) -> NetworkUsage {
+        if shouldRefresh(lastConnectionSample, at: date, interval: connectionInterval) {
+            cachedNetworkConnections = sampleNetworkConnections()
+            lastConnectionSample = date
+        }
+
         var pointer: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&pointer) == 0, let first = pointer else { return NetworkUsage() }
         defer { freeifaddrs(pointer) }
@@ -247,8 +255,75 @@ actor SystemSampler {
             uploadBytesPerSecond: upload,
             totalReceivedBytes: received,
             totalSentBytes: sent,
-            interfaces: interfaces.sorted { $0.name < $1.name }
+            interfaces: interfaces.sorted { $0.name < $1.name },
+            connections: cachedNetworkConnections
         )
+    }
+
+    private func sampleNetworkConnections() -> [NetworkConnectionUsage] {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
+        process.arguments = ["-L", "1", "-n", "-J", "bytes_in,bytes_out", "-x"]
+        process.environment = [
+            "NSUnbufferedIO": "YES",
+            "LC_ALL": "en_US.UTF-8",
+        ]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return []
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return [] }
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+
+        var currentProcess: (name: String, pid: Int32)?
+        var connections: [NetworkConnectionUsage] = []
+        output.enumerateLines { line, _ in
+            let columns = line.split(separator: ",", omittingEmptySubsequences: false)
+            guard columns.count >= 3 else { return }
+            let label = String(columns[0])
+
+            if label.hasPrefix("tcp") || label.hasPrefix("udp") {
+                guard let currentProcess,
+                      let separator = label.range(of: "<->")
+                else { return }
+                let localAndProtocol = label[..<separator.lowerBound]
+                guard let firstSpace = localAndProtocol.firstIndex(of: " ") else { return }
+                let transport = String(localAndProtocol[..<firstSpace]).uppercased()
+                let local = String(localAndProtocol[localAndProtocol.index(after: firstSpace)...])
+                let remote = String(label[separator.upperBound...])
+                guard !remote.contains("*") else { return }
+                let received = UInt64(columns[1]) ?? 0
+                let sent = UInt64(columns[2]) ?? 0
+                connections.append(NetworkConnectionUsage(
+                    processName: currentProcess.name,
+                    pid: currentProcess.pid,
+                    localEndpoint: local,
+                    remoteEndpoint: remote,
+                    transport: transport,
+                    receivedBytes: received,
+                    sentBytes: sent
+                ))
+                return
+            }
+
+            guard let dot = label.lastIndex(of: "."),
+                  let pid = Int32(label[label.index(after: dot)...])
+            else { return }
+            currentProcess = (String(label[..<dot]), pid)
+        }
+
+        return connections.sorted {
+            ($0.receivedBytes + $0.sentBytes) > ($1.receivedBytes + $1.sentBytes)
+        }
+        .prefix(8)
+        .map { $0 }
     }
 
     private func sampleVolumes() -> [VolumeUsage] {
