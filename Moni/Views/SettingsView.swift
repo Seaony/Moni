@@ -34,7 +34,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var section: SettingsSection
-    @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
+    @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -262,7 +262,7 @@ private struct AlertSettings: View {
 
 private struct GeneralSettings: View {
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
-    @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
+    @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
 

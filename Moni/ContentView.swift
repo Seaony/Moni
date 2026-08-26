@@ -72,7 +72,7 @@ struct ContentView: View {
     @State private var hoveredSection: MonitorSection?
     @State private var settingsSection: SettingsSection = .general
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
-    @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
+    @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
 
     var body: some View {
         VStack(spacing: 0) {

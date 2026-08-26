@@ -29,7 +29,7 @@ final class SystemMonitor: ObservableObject {
     private var lastNetworkExternalLoad: Date?
     private var samplingInterval: TimeInterval
 
-    init(samplingInterval: TimeInterval = 1) {
+    init(samplingInterval: TimeInterval = 0.7) {
         self.samplingInterval = samplingInterval
         refresh()
         start()
