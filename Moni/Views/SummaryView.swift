@@ -16,6 +16,7 @@ struct SummaryView: View {
     @AppStorage(PreferenceKey.showProcesses) private var showProcesses = true
     @AppStorage(PreferenceKey.showPower) private var showPower = true
     @AppStorage(PreferenceKey.showDocker) private var showDocker = true
+    @State private var liveCardSizes: [DashboardCardID: DashboardCardSize] = [:]
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
 
@@ -27,7 +28,8 @@ struct SummaryView: View {
                         card: card,
                         size: cardSize(card),
                         limits: card.limits,
-                        onResize: { setCardSize($0, for: card) },
+                        onResizeChanged: { previewCardResize($0, for: card) },
+                        onResizeEnded: { finishCardResize($0, for: card) },
                         onMove: moveCard
                     ) {
                         cardView(card)
@@ -36,8 +38,8 @@ struct SummaryView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .moniAnimation(value: cardLayoutData)
-            .moniAnimation(value: orderedCards.map(\.rawValue))
+            .moniAnimation(MoniMotion.dashboardReflow, value: cardLayoutData)
+            .moniAnimation(MoniMotion.dashboardReflow, value: orderedCards.map(\.rawValue))
         }
         .task {
             aiUsage.loadIfNeeded(days: aiUsageRangeDays)
@@ -63,7 +65,7 @@ struct SummaryView: View {
     private var hostCard: some View {
         cardButton(.host) {
             MetricCard(title: snapshot.host.name, symbol: MonitorSection.host.symbol, color: MoniPalette.cyan) {
-                if cardSize(.host).columns == 2 {
+                if cardSize(.host).columns >= 2 {
                     HStack(alignment: .top, spacing: 32) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(snapshot.host.model)
@@ -108,7 +110,7 @@ struct SummaryView: View {
                         .monospacedDigit()
                         .moniNumericTransition(snapshot.cpu.total)
                     Sparkline(values: monitor.cpuHistory, color: MoniPalette.pink)
-                        .frame(height: cardSize(.cpu).rows == 2 ? 245 : 66)
+                        .frame(height: chartHeight(for: cardSize(.cpu), compact: 66))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     compactCardStat("User", percent(snapshot.cpu.user), color: MoniPalette.pink)
@@ -134,7 +136,7 @@ struct SummaryView: View {
                             .foregroundStyle(.secondary)
                     }
                     Sparkline(values: monitor.memoryHistory, color: MoniPalette.blue)
-                        .frame(height: cardSize(.memory).rows == 2 ? 245 : 66)
+                        .frame(height: chartHeight(for: cardSize(.memory), compact: 66))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     compactCardStat("Used", bytes(snapshot.memory.usedBytes), color: MoniPalette.blue)
@@ -164,7 +166,8 @@ struct SummaryView: View {
     }
 
     private var gpuCard: some View {
-        let isWide = cardSize(.gpu).columns == 2
+        let size = cardSize(.gpu)
+        let isWide = size.columns >= 2
 
         return cardButton(.gpu) {
             MetricCard(title: "GPU", symbol: MonitorSection.gpu.symbol, color: MoniPalette.green, trailing: "\(snapshot.gpuDevices.count) device\(snapshot.gpuDevices.count == 1 ? "" : "s")") {
@@ -181,7 +184,7 @@ struct SummaryView: View {
                     }
                     Sparkline(values: monitor.gpuHistory, color: MoniPalette.green)
                         .frame(maxWidth: isWide ? .infinity : 104)
-                        .frame(height: 66)
+                        .frame(height: chartHeight(for: size, compact: 66))
                 }
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.flexible()), count: isWide ? 3 : 2),
@@ -198,7 +201,8 @@ struct SummaryView: View {
     }
 
     private var networkCard: some View {
-        let isWide = cardSize(.network).columns == 2
+        let size = cardSize(.network)
+        let isWide = size.columns >= 2
 
         return cardButton(.network) {
             MetricCard(title: "Network", symbol: MonitorSection.network.symbol, color: MoniPalette.cyan, trailing: "Live") {
@@ -222,7 +226,7 @@ struct SummaryView: View {
                         Sparkline(values: monitor.uploadHistory, color: MoniPalette.orange, showsFill: false)
                     }
                     .frame(maxWidth: isWide ? .infinity : 112)
-                    .frame(height: cardSize(.network).rows == 2 ? 245 : 72)
+                    .frame(height: chartHeight(for: size, compact: 72))
                 }
                 HStack(spacing: 16) {
                     networkTotal("Received", bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan)
@@ -265,7 +269,7 @@ struct SummaryView: View {
     }
 
     private var storageCard: some View {
-        let isWide = cardSize(.storage).columns == 2
+        let size = cardSize(.storage)
 
         return cardButton(.storage) {
             MetricCard(title: "Storage", symbol: MonitorSection.storage.symbol, color: MoniPalette.orange, trailing: "\(snapshot.volumes.count) volumes") {
@@ -274,10 +278,10 @@ struct SummaryView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible()), count: isWide ? 2 : 1),
+                        columns: Array(repeating: GridItem(.flexible()), count: size.columns),
                         spacing: 8
                     ) {
-                        ForEach(snapshot.volumes.prefix(isWide ? 4 : 2)) { volume in
+                        ForEach(snapshot.volumes.prefix(max(2, size.columns * size.rows * 2))) { volume in
                             compactVolume(volume)
                         }
                     }
@@ -315,9 +319,7 @@ struct SummaryView: View {
 
     private var processCard: some View {
         let size = cardSize(.processes)
-        let itemCount = size.columns == 2
-            ? (size.rows == 2 ? 12 : 8)
-            : (size.rows == 2 ? 9 : 4)
+        let itemCount = max(4, size.columns * size.rows * 4)
 
         return cardButton(.processes) {
             MetricCard(title: "Processes", symbol: MonitorSection.processes.symbol, color: MoniPalette.purple, trailing: snapshot.processes.count.formatted()) {
@@ -370,7 +372,8 @@ struct SummaryView: View {
     }
 
     private var powerCard: some View {
-        let isWide = cardSize(.power).columns == 2
+        let size = cardSize(.power)
+        let isWide = size.columns >= 2
 
         return cardButton(.sensors) {
             MetricCard(title: "Power & Sensors", symbol: MonitorSection.sensors.symbol, color: MoniPalette.yellow, trailing: powerSourceTitle) {
@@ -391,7 +394,7 @@ struct SummaryView: View {
                     }
                     Sparkline(values: monitor.cpuTemperatureHistory, color: MoniPalette.orange)
                         .frame(maxWidth: isWide ? .infinity : 96)
-                        .frame(height: 54)
+                        .frame(height: chartHeight(for: size, compact: 54))
                 }
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.flexible()), count: isWide ? 4 : 2),
@@ -436,7 +439,7 @@ struct SummaryView: View {
                 color: color,
                 trailing: docker.isRunning ? "Live" : nil
             ) {
-                if cardSize(.docker).columns == 2 {
+                if cardSize(.docker).columns >= 2 {
                     HStack(alignment: .top, spacing: 32) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(docker.statusTitle)
@@ -507,22 +510,22 @@ struct SummaryView: View {
                     }
                     Spacer()
                     MetricRow(label: "Providers", value: "0", color: MoniPalette.indigo)
-                } else if size.columns == 2 {
+                } else if size.columns >= 2 {
                     HStack(alignment: .bottom, spacing: 18) {
                         aiUsageTotals
                             .frame(width: 170, alignment: .leading)
                         DailyUsageChart(values: summary.daily)
                             .frame(maxWidth: .infinity)
-                            .frame(height: size.rows == 2 ? 280 : 112)
+                            .frame(height: chartHeight(for: size, compact: 112))
                     }
-                    if size.rows == 2 {
+                    if size.rows >= 2 {
                         aiUsageProviders
                     }
                 } else {
                     aiUsageTotals
-                    if size.rows == 2 {
+                    if size.rows >= 2 {
                         DailyUsageChart(values: summary.daily)
-                            .frame(height: 190)
+                            .frame(height: 190 + CGFloat(size.rows - 2) * 179)
                         aiUsageProviders
                     }
                 }
@@ -600,13 +603,35 @@ struct SummaryView: View {
     }
 
     private func cardSize(_ card: DashboardCardID) -> DashboardCardSize {
-        DashboardCardLayout.decode(cardLayoutData).size(for: card)
+        liveCardSizes[card] ?? DashboardCardLayout.decode(cardLayoutData).size(for: card)
     }
 
-    private func setCardSize(_ size: DashboardCardSize, for card: DashboardCardID) {
+    private func previewCardResize(_ size: DashboardCardSize, for card: DashboardCardID) {
+        if reduceMotion {
+            liveCardSizes[card] = size
+        } else {
+            withAnimation(MoniMotion.dashboardReflow) {
+                liveCardSizes[card] = size
+            }
+        }
+    }
+
+    private func finishCardResize(_ size: DashboardCardSize, for card: DashboardCardID) {
         var layout = DashboardCardLayout.decode(cardLayoutData)
-        layout.setSize(size, for: card)
-        cardLayoutData = layout.encoded()
+        let finish = {
+            if layout.size(for: card) != size {
+                layout.setSize(size, for: card)
+                cardLayoutData = layout.encoded()
+            }
+            liveCardSizes.removeValue(forKey: card)
+        }
+        if reduceMotion {
+            finish()
+        } else {
+            withAnimation(MoniMotion.dashboardSnap) {
+                finish()
+            }
+        }
     }
 
     private func moveCard(
@@ -617,6 +642,10 @@ struct SummaryView: View {
         var layout = DashboardCardLayout.decode(cardLayoutData)
         layout.move(source, relativeTo: target, placeAfter: placeAfter)
         cardLayoutData = layout.encoded()
+    }
+
+    private func chartHeight(for size: DashboardCardSize, compact: CGFloat) -> CGFloat {
+        compact + CGFloat(size.rows - 1) * 179
     }
 
     private func percent(_ value: Double) -> String {

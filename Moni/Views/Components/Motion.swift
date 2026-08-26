@@ -6,6 +6,16 @@ enum MoniMotion {
     static let data = Animation.easeOut(duration: 0.24)
     static let standard = Animation.spring(response: 0.32, dampingFraction: 0.86)
     static let navigation = Animation.spring(response: 0.38, dampingFraction: 0.9)
+    static let dashboardReflow = Animation.interactiveSpring(
+        response: 0.5,
+        dampingFraction: 0.92,
+        blendDuration: 0.18
+    )
+    static let dashboardSnap = Animation.spring(
+        response: 0.42,
+        dampingFraction: 0.95,
+        blendDuration: 0.12
+    )
 
     static let pageTransition = AnyTransition.opacity.combined(
         with: .scale(scale: 0.985, anchor: .top)

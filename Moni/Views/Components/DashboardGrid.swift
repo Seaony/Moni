@@ -6,13 +6,12 @@ enum DashboardCardID: String, CaseIterable, Codable, Hashable, Identifiable {
 
     var id: String { rawValue }
 
+    var defaultSize: DashboardCardSize {
+        self == .aiUsage ? DashboardCardSize(columns: 3, rows: 1) : .compact
+    }
+
     var limits: DashboardCardLimits {
-        switch self {
-        case .cpu, .memory, .network, .processes, .aiUsage:
-            DashboardCardLimits(maxColumns: 2, maxRows: 2)
-        case .host, .gpu, .storage, .power, .docker:
-            DashboardCardLimits(maxColumns: 2, maxRows: 1)
-        }
+        DashboardCardLimits(maxColumns: 3)
     }
 }
 
@@ -25,34 +24,41 @@ struct DashboardCardSize: Codable, Equatable, Hashable {
     func clamped(to limits: DashboardCardLimits) -> DashboardCardSize {
         DashboardCardSize(
             columns: min(max(1, columns), limits.maxColumns),
-            rows: min(max(1, rows), limits.maxRows)
+            rows: max(1, rows)
         )
     }
 }
 
 struct DashboardCardLimits: Equatable {
     let maxColumns: Int
-    let maxRows: Int
 }
 
 struct DashboardCardLayout: Codable {
+    private static let currentVersion = 1
+
+    private var version = currentVersion
     private var sizes: [String: DashboardCardSize] = [:]
     private var order: [String] = []
 
     private enum CodingKeys: String, CodingKey {
-        case sizes, order
+        case version, sizes, order
     }
 
     init() {}
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let storedVersion = try container.decodeIfPresent(Int.self, forKey: .version) ?? 0
         sizes = try container.decodeIfPresent([String: DashboardCardSize].self, forKey: .sizes) ?? [:]
         order = try container.decodeIfPresent([String].self, forKey: .order) ?? []
+        if storedVersion < Self.currentVersion {
+            sizes.removeValue(forKey: DashboardCardID.aiUsage.rawValue)
+        }
+        version = Self.currentVersion
     }
 
     func size(for card: DashboardCardID) -> DashboardCardSize {
-        (sizes[card.rawValue] ?? .compact).clamped(to: card.limits)
+        (sizes[card.rawValue] ?? card.defaultSize).clamped(to: card.limits)
     }
 
     mutating func setSize(_ size: DashboardCardSize, for card: DashboardCardID) {
@@ -97,10 +103,11 @@ struct DashboardCardLayout: Codable {
 nonisolated private struct DashboardCardSpan: Equatable {
     let columns: Int
     let rows: Int
+    let renderedSize: CGSize?
 }
 
 nonisolated private struct DashboardCardSpanKey: LayoutValueKey {
-    static let defaultValue = DashboardCardSpan(columns: 1, rows: 1)
+    static let defaultValue = DashboardCardSpan(columns: 1, rows: 1, renderedSize: nil)
 }
 
 struct DashboardGridLayout: Layout {
@@ -113,6 +120,7 @@ struct DashboardGridLayout: Layout {
         let column: Int
         let row: Int
         let size: DashboardCardSize
+        let renderedSize: CGSize?
     }
 
     let columns: Int
@@ -132,10 +140,16 @@ struct DashboardGridLayout: Layout {
     ) -> CGSize {
         let width = proposal.width ?? 0
         let result = placements(for: subviews)
-        let height = result.rowCount > 0
+        let gridHeight = result.rowCount > 0
             ? CGFloat(result.rowCount) * rowHeight + CGFloat(result.rowCount - 1) * spacing
             : 0
-        return CGSize(width: width, height: height)
+        let renderedHeight = result.items.map { placement in
+            let itemHeight = placement.renderedSize?.height
+                ?? CGFloat(placement.size.rows) * rowHeight
+                    + CGFloat(placement.size.rows - 1) * spacing
+            return CGFloat(placement.row) * (rowHeight + spacing) + itemHeight
+        }.max() ?? 0
+        return CGSize(width: width, height: max(gridHeight, renderedHeight))
     }
 
     func placeSubviews(
@@ -148,10 +162,12 @@ struct DashboardGridLayout: Layout {
         let columnWidth = max(0, (bounds.width - CGFloat(columns - 1) * spacing) / CGFloat(columns))
 
         for (index, placement) in result.items.enumerated() {
-            let width = CGFloat(placement.size.columns) * columnWidth
-                + CGFloat(placement.size.columns - 1) * spacing
-            let height = CGFloat(placement.size.rows) * rowHeight
-                + CGFloat(placement.size.rows - 1) * spacing
+            let width = placement.renderedSize?.width
+                ?? CGFloat(placement.size.columns) * columnWidth
+                    + CGFloat(placement.size.columns - 1) * spacing
+            let height = placement.renderedSize?.height
+                ?? CGFloat(placement.size.rows) * rowHeight
+                    + CGFloat(placement.size.rows - 1) * spacing
             let point = CGPoint(
                 x: bounds.minX + CGFloat(placement.column) * (columnWidth + spacing),
                 y: bounds.minY + CGFloat(placement.row) * (rowHeight + spacing)
@@ -188,7 +204,14 @@ struct DashboardGridLayout: Layout {
                     guard cells.allSatisfy({ !occupied.contains($0) }) else { continue }
 
                     occupied.formUnion(cells)
-                    items.append(Placement(column: column, row: row, size: size))
+                    items.append(
+                        Placement(
+                            column: column,
+                            row: row,
+                            size: size,
+                            renderedSize: requested.renderedSize
+                        )
+                    )
                     rowCount = max(rowCount, row + size.rows)
                     didPlace = true
                     break
@@ -203,31 +226,44 @@ struct DashboardGridLayout: Layout {
 }
 
 struct ResizableDashboardCard<Content: View>: View {
+    private enum ResizeAxis {
+        case width
+        case height
+    }
+
     let card: DashboardCardID
     let size: DashboardCardSize
     let limits: DashboardCardLimits
-    let onResize: (DashboardCardSize) -> Void
+    let onResizeChanged: (DashboardCardSize) -> Void
+    let onResizeEnded: (DashboardCardSize) -> Void
     let onMove: (DashboardCardID, DashboardCardID, Bool) -> Void
     @ViewBuilder let content: Content
 
     @State private var dragOrigin: DashboardCardSize?
     @State private var dragCellSize = CGSize.zero
+    @State private var dragRenderedSize = CGSize.zero
+    @State private var liveRenderedSize: CGSize?
+    @State private var pendingSize: DashboardCardSize?
+    @State private var pendingSnappedSize: DashboardCardSize?
     @State private var isRightHandleHovered = false
-    @State private var isCornerHandleHovered = false
+    @State private var isBottomHandleHovered = false
+    @State private var isResizingRows = false
     @State private var isDropTargeted = false
 
     init(
         card: DashboardCardID,
         size: DashboardCardSize,
         limits: DashboardCardLimits,
-        onResize: @escaping (DashboardCardSize) -> Void,
+        onResizeChanged: @escaping (DashboardCardSize) -> Void,
+        onResizeEnded: @escaping (DashboardCardSize) -> Void,
         onMove: @escaping (DashboardCardID, DashboardCardID, Bool) -> Void,
         @ViewBuilder content: () -> Content
     ) {
         self.card = card
         self.size = size
         self.limits = limits
-        self.onResize = onResize
+        self.onResizeChanged = onResizeChanged
+        self.onResizeEnded = onResizeEnded
         self.onMove = onMove
         self.content = content()
     }
@@ -242,33 +278,41 @@ struct ResizableDashboardCard<Content: View>: View {
                     Capsule()
                         .fill(isRightHandleHovered ? MoniPalette.foregroundSecondary : MoniPalette.foregroundQuaternary)
                         .frame(width: 3, height: 36)
+                        .opacity(isRightHandleHovered || (dragOrigin != nil && !isResizingRows) ? 1 : 0)
                         .frame(width: 14)
                         .frame(maxHeight: .infinity, alignment: .trailing)
                         .contentShape(Rectangle())
-                        .highPriorityGesture(resizeGesture(in: geometry.size, includesRows: false))
+                        .highPriorityGesture(resizeGesture(in: geometry.size, axis: .width))
                         .onHover { isHovered in
+                            if isHovered {
+                                NSCursor.resizeLeftRight.push()
+                            } else {
+                                NSCursor.pop()
+                            }
                             isRightHandleHovered = isHovered
-                            (isHovered ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
                         }
                         .help("Drag to change card width")
+                        .moniAnimation(MoniMotion.press, value: isRightHandleHovered)
                 }
 
-                if limits.maxRows > 1 {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
-                        .padding(6)
-                        .background(MoniPalette.control, in: Circle())
-                        .opacity(isCornerHandleHovered ? 1 : 0.62)
-                        .padding(6)
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(resizeGesture(in: geometry.size, includesRows: true))
-                        .onHover { isHovered in
-                            isCornerHandleHovered = isHovered
-                            (isHovered ? NSCursor.crosshair : NSCursor.arrow).set()
+                Capsule()
+                    .fill(isBottomHandleHovered ? MoniPalette.foregroundSecondary : MoniPalette.foregroundQuaternary)
+                    .frame(width: 36, height: 3)
+                    .opacity(isBottomHandleHovered || isResizingRows ? 1 : 0)
+                    .frame(height: 14)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                    .highPriorityGesture(resizeGesture(in: geometry.size, axis: .height))
+                    .onHover { isHovered in
+                        if isHovered {
+                            NSCursor.resizeUpDown.push()
+                        } else {
+                            NSCursor.pop()
                         }
-                        .help("Drag to change card width and height")
-                }
+                        isBottomHandleHovered = isHovered
+                    }
+                    .help("Drag to change card height")
+                    .moniAnimation(MoniMotion.press, value: isBottomHandleHovered)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -290,39 +334,85 @@ struct ResizableDashboardCard<Content: View>: View {
             } isTargeted: { isTargeted in
                 isDropTargeted = isTargeted
             }
-            .onDisappear { NSCursor.arrow.set() }
+            .onDisappear {
+                if isRightHandleHovered {
+                    NSCursor.pop()
+                    isRightHandleHovered = false
+                }
+                if isBottomHandleHovered {
+                    NSCursor.pop()
+                    isBottomHandleHovered = false
+                }
+            }
         }
         .layoutValue(
             key: DashboardCardSpanKey.self,
-            value: DashboardCardSpan(columns: size.columns, rows: size.rows)
+            value: DashboardCardSpan(
+                columns: size.columns,
+                rows: size.rows,
+                renderedSize: liveRenderedSize
+            )
         )
+        .zIndex(dragOrigin == nil ? 0 : 1)
     }
 
-    private func resizeGesture(in renderedSize: CGSize, includesRows: Bool) -> some Gesture {
-        DragGesture(minimumDistance: 2)
+    private func resizeGesture(in renderedSize: CGSize, axis: ResizeAxis) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { value in
                 let origin = dragOrigin ?? size
                 let cellSize = dragOrigin == nil ? baseCellSize(in: renderedSize) : dragCellSize
                 if dragOrigin == nil {
                     dragOrigin = origin
                     dragCellSize = cellSize
+                    dragRenderedSize = renderedSize
+                    isResizingRows = axis == .height
                 }
 
-                let columnDelta = Int((value.translation.width / max(1, cellSize.width)).rounded())
-                let rowDelta = includesRows
-                    ? Int((value.translation.height / max(1, cellSize.height)).rounded())
-                    : 0
-                let resized = DashboardCardSize(
-                    columns: origin.columns + columnDelta,
-                    rows: origin.rows + rowDelta
+                let width = axis == .width
+                    ? min(
+                        max(cellSize.width, dragRenderedSize.width + value.translation.width),
+                        CGFloat(limits.maxColumns) * cellSize.width
+                            + CGFloat(limits.maxColumns - 1) * 12
+                    )
+                    : dragRenderedSize.width
+                let height = axis == .height
+                    ? max(cellSize.height, dragRenderedSize.height + value.translation.height)
+                    : dragRenderedSize.height
+                liveRenderedSize = CGSize(width: width, height: height)
+
+                let columnProgress = (width + 12) / max(1, cellSize.width + 12)
+                let rowProgress = (height + 12) / max(1, cellSize.height + 12)
+                let occupiedColumns = axis == .width
+                    ? Int(ceil(columnProgress - 0.0001))
+                    : origin.columns
+                let occupiedRows = axis == .height
+                    ? Int(ceil(rowProgress - 0.0001))
+                    : origin.rows
+                let occupiedSize = DashboardCardSize(
+                    columns: occupiedColumns,
+                    rows: occupiedRows
                 ).clamped(to: limits)
-                if resized != size {
-                    onResize(resized)
+                pendingSnappedSize = DashboardCardSize(
+                    columns: axis == .width ? Int(columnProgress.rounded()) : origin.columns,
+                    rows: axis == .height ? Int(rowProgress.rounded()) : origin.rows
+                ).clamped(to: limits)
+                if pendingSize != occupiedSize {
+                    pendingSize = occupiedSize
+                    onResizeChanged(occupiedSize)
                 }
             }
             .onEnded { _ in
+                let finalSize = pendingSnappedSize ?? size
                 dragOrigin = nil
                 dragCellSize = .zero
+                dragRenderedSize = .zero
+                pendingSize = nil
+                pendingSnappedSize = nil
+                isResizingRows = false
+                onResizeEnded(finalSize)
+                withAnimation(MoniMotion.dashboardSnap) {
+                    liveRenderedSize = nil
+                }
             }
     }
 
