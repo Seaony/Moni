@@ -9,5 +9,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         PowerSmallWidget()
         StorageSmallWidget()
         WiFiSmallWidget()
+        ProcessesSmallWidget()
     }
 }

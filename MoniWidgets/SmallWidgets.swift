@@ -273,3 +273,48 @@ struct WiFiSmallWidgetView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+struct ProcessesSmallWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .processesSmall,
+            displayName: "Processes",
+            description: "查看进程与线程总数以及最繁忙的进程。",
+            family: .systemSmall
+        )
+    }
+}
+
+struct ProcessesSmallWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Processes", symbol: "list.bullet.rectangle", color: WidgetTheme.purple, trailing: "running")
+            Text(snapshot.processCount.formatted())
+                .font(.system(size: 34, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .padding(.top, 9)
+            Text("\(snapshot.threadCount.formatted()) threads")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(WidgetTheme.secondary)
+            Spacer(minLength: 8)
+            VStack(spacing: 6) {
+                ForEach(Array(snapshot.processes.prefix(2).enumerated()), id: \.offset) { _, process in
+                    HStack(spacing: 6) {
+                        Text(process.name)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text("\(Int(process.cpuPercent.rounded()))%")
+                            .fontWeight(.bold)
+                            .foregroundStyle(WidgetTheme.pink)
+                            .monospacedDigit()
+                    }
+                    .font(.system(size: 10.5))
+                }
+            }
+        }
+        .padding(16)
+    }
+}
