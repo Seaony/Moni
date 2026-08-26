@@ -10,8 +10,7 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let showsDockIcon = UserDefaults.standard.bool(forKey: PreferenceKey.showDockIcon)
-        NSApp.setActivationPolicy(showsDockIcon ? .regular : .accessory)
+        NSApp.setActivationPolicy(.accessory)
     }
 }
 
@@ -23,7 +22,6 @@ struct MoniApp: App {
     @StateObject private var updates = UpdateController()
     @AppStorage(PreferenceKey.compactMenuBar) private var compactMenuBar = false
     @AppStorage(PreferenceKey.menuBarMetric) private var menuBarMetric = MenuBarMetric.cpu.rawValue
-    @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
 
     var body: some Scene {
         MenuBarExtra {
@@ -45,15 +43,6 @@ struct MoniApp: App {
             .moniAnimation(value: compactMenuBar)
         }
         .menuBarExtraStyle(.window)
-
-        Window("Moni", id: "dashboard") {
-            ContentView()
-                .environmentObject(monitor)
-                .environmentObject(aiUsage)
-                .environmentObject(updates)
-        }
-        .windowResizability(.contentSize)
-        .defaultLaunchBehavior(showDockIcon ? .presented : .suppressed)
         .commands {
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesCommand(updateController: updates)

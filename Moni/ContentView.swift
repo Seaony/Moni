@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 private enum DashboardSizing {
@@ -69,14 +68,12 @@ enum MonitorSection: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @EnvironmentObject private var aiUsage: AIUsageStore
-    @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: MonitorSection = .summary
     @State private var hoveredSection: MonitorSection?
     @State private var refreshRotation = 0.0
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
-    @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -117,16 +114,9 @@ struct ContentView: View {
         .preferredColorScheme(preferredColorScheme)
         .onAppear {
             monitor.setSamplingInterval(samplingInterval)
-            applyDockIconPreference(showDockIcon)
         }
         .onChange(of: samplingInterval) { _, value in
             monitor.setSamplingInterval(value)
-        }
-        .onChange(of: showDockIcon) { _, value in
-            applyDockIconPreference(value)
-            if value {
-                openWindow(id: "dashboard")
-            }
         }
         .scaleEffect(DashboardSizing.interfaceScale, anchor: .topLeading)
         .frame(
@@ -143,10 +133,6 @@ struct ContentView: View {
         case .light: .light
         case .dark: .dark
         }
-    }
-
-    private func applyDockIconPreference(_ isVisible: Bool) {
-        NSApp.setActivationPolicy(isVisible ? .regular : .accessory)
     }
 
     private var animatedSelection: Binding<MonitorSection> {

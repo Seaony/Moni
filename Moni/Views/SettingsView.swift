@@ -251,7 +251,6 @@ private struct AlertSettings: View {
 private struct GeneralSettings: View {
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
-    @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
 
@@ -294,8 +293,6 @@ private struct GeneralSettings: View {
                         set: updateLoginItem
                     ))
                     .moniPointingHand()
-                    Toggle("Show Moni in the Dock", isOn: $showDockIcon)
-                        .moniPointingHand()
                     if let loginItemError {
                         Text(loginItemError)
                             .font(.caption)

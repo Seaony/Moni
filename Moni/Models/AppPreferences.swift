@@ -6,8 +6,6 @@ enum PreferenceKey {
     static let launchAtLogin = "launchAtLogin"
     static let menuBarMetric = "menuBarMetric"
     static let samplingInterval = "samplingInterval"
-    static let showDockIcon = "showDockIcon"
-
     static let cpuAlertEnabled = "cpuAlertEnabled"
     static let cpuAlertThreshold = "cpuAlertThreshold"
     static let memoryAlertEnabled = "memoryAlertEnabled"
