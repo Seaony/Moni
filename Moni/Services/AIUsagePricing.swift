@@ -224,6 +224,7 @@ enum AIUsagePricing {
         cacheReadTokens: UInt64,
         cacheWriteTokens: UInt64,
         cacheWrite1hTokens: UInt64 = 0,
+        cacheWrite5mTokens: UInt64? = nil,
         outputTokens: UInt64
     ) -> Double? {
         guard let price = price(provider: provider, model: model, date: date) else { return nil }
@@ -233,8 +234,10 @@ enum AIUsagePricing {
         let cacheReadRate = usesLongContext ? price.longCacheRead ?? price.cacheRead : price.cacheRead
         let cacheWriteRate = usesLongContext ? price.longCacheWrite ?? price.cacheWrite : price.cacheWrite
         let outputRate = usesLongContext ? price.longOutput ?? price.output : price.output
-        let oneHourWrites = min(cacheWriteTokens, cacheWrite1hTokens)
-        let regularWrites = cacheWriteTokens - oneHourWrites
+        let oneHourWrites = cacheWrite5mTokens == nil
+            ? min(cacheWriteTokens, cacheWrite1hTokens)
+            : cacheWrite1hTokens
+        let regularWrites = cacheWrite5mTokens ?? (cacheWriteTokens - oneHourWrites)
         let oneHourRate = usesLongContext ? (price.longInput ?? price.input) * 2 : price.cacheWrite1h
 
         return

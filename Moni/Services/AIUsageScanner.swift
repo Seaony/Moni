@@ -161,7 +161,6 @@ actor AIUsageScanner {
         let requestID: String?
         let eventID: String?
         let isSidechain: Bool
-        let isSubagent: Bool
         let usage: UsageEvent
 
         var inFileKey: String? {
@@ -527,7 +526,7 @@ actor AIUsageScanner {
         for event in events where event.usage.date >= start && event.usage.date < end {
             totals.add(event.usage)
             addDaily(event.usage, to: &daily)
-            sessions.insert(event.sessionID)
+            sessions.insert(event.path)
         }
         totals.sessions = sessions.count
         return totals
@@ -1736,10 +1735,12 @@ actor AIUsageScanner {
             let output = uint(usage["output_tokens"])
             let cacheRead = uint(usage["cache_read_input_tokens"])
             let cacheWrite = uint(usage["cache_creation_input_tokens"])
-            let cacheWrite1h = min(
-                cacheWrite,
-                uint((usage["cache_creation"] as? [String: Any])?["ephemeral_1h_input_tokens"])
-            )
+            let cacheCreation = usage["cache_creation"] as? [String: Any]
+            let cacheWrite1h = uint(cacheCreation?["ephemeral_1h_input_tokens"])
+            let cacheWrite5m = cacheCreation?["ephemeral_5m_input_tokens"] == nil
+                && cacheCreation?["ephemeral_1h_input_tokens"] == nil
+                ? nil
+                : uint(cacheCreation?["ephemeral_5m_input_tokens"])
             let tokens = TokenValues(
                 input: input,
                 cacheRead: cacheRead,
@@ -1758,7 +1759,6 @@ actor AIUsageScanner {
                 requestID: string(object["requestId"]) ?? string(object["request_id"]),
                 eventID: string(object["uuid"]),
                 isSidechain: bool(object["isSidechain"]),
-                isSubagent: url.path.contains("/subagents/"),
                 usage: UsageEvent(
                     date: timestamp,
                     model: model,
@@ -1772,6 +1772,7 @@ actor AIUsageScanner {
                         cacheReadTokens: cacheRead,
                         cacheWriteTokens: cacheWrite,
                         cacheWrite1hTokens: cacheWrite1h,
+                        cacheWrite5mTokens: cacheWrite5m,
                         outputTokens: output
                     )
                 )
@@ -1835,15 +1836,12 @@ actor AIUsageScanner {
         if candidate.isSidechain != current.isSidechain {
             return candidate.isSidechain ? current : candidate
         }
-        if candidate.isSubagent != current.isSubagent {
-            return candidate.isSubagent ? current : candidate
-        }
         let candidateTokens = eventTotal(candidate.usage)
         let currentTokens = eventTotal(current.usage)
         if candidateTokens != currentTokens {
             return candidateTokens > currentTokens ? candidate : current
         }
-        return candidate.usage.date >= current.usage.date ? candidate : current
+        return (candidate.usage.costUSD ?? 0) > (current.usage.costUSD ?? 0) ? candidate : current
     }
 
     private func provider(
