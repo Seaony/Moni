@@ -42,6 +42,7 @@ enum MoniWidgetKind: String {
     case gpuSmall = "com.seaony.Moni.widget.gpu-small"
     case uptimeSmall = "com.seaony.Moni.widget.uptime-small"
     case networkMedium = "com.seaony.Moni.widget.network-medium"
+    case aiUsageMedium = "com.seaony.Moni.widget.ai-usage-medium"
 }
 
 struct MoniWidgetView: View {
@@ -72,6 +73,8 @@ struct MoniWidgetView: View {
             UptimeSmallWidgetView(snapshot: entry.system)
         case .networkMedium:
             NetworkMediumWidgetView(snapshot: entry.system)
+        case .aiUsageMedium:
+            AIUsageMediumWidgetView(snapshot: entry.ai)
         }
     }
 }

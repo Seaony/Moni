@@ -15,5 +15,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         GPUSmallWidget()
         UptimeSmallWidget()
         NetworkMediumWidget()
+        AIUsageMediumWidget()
     }
 }

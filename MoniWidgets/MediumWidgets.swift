@@ -59,3 +59,81 @@ struct NetworkMediumWidgetView: View {
         }
     }
 }
+
+struct AIUsageMediumWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .aiUsageMedium,
+            displayName: "AI Usage",
+            description: "查看 AI 总成本、Token 和各服务周额度。",
+            family: .systemMedium
+        )
+    }
+}
+
+struct AIUsageMediumWidgetView: View {
+    let snapshot: WidgetAISnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "AI Usage", symbol: "sparkles", color: WidgetTheme.indigo, trailing: "This month")
+            HStack(spacing: 18) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(snapshot.estimatedCostUSD?.formatted(.currency(code: "USD").precision(.fractionLength(0))) ?? "—")
+                        .font(.system(size: 27, weight: .heavy, design: .rounded))
+                        .monospacedDigit()
+                    Text(compact(snapshot.totalTokens) + " tokens")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(WidgetTheme.secondary)
+                    Spacer(minLength: 4)
+                    WidgetBars(values: snapshot.daily.suffix(14).map { Double($0.tokens) }, color: WidgetTheme.indigo)
+                        .frame(height: 36)
+                }
+                .frame(width: 90, alignment: .leading)
+                VStack(spacing: 7) {
+                    ForEach(Array(snapshot.providers.prefix(3).enumerated()), id: \.offset) { index, provider in
+                        providerRow(provider, color: providerColor(index))
+                    }
+                }
+            }
+            .padding(.top, 10)
+        }
+        .padding(16)
+    }
+
+    private func providerRow(_ provider: WidgetAIProvider, color: Color) -> some View {
+        let remaining = provider.quotas.first?.remainingPercent
+        return VStack(spacing: 3) {
+            HStack(spacing: 5) {
+                Circle().fill(color).frame(width: 6, height: 6)
+                Text(provider.name == "Claude" ? "Claude Code" : provider.name)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text(compact(provider.totalTokens))
+                    .foregroundStyle(WidgetTheme.tertiary)
+                if let remaining {
+                    Text("\(Int(remaining.rounded()))%")
+                        .fontWeight(.bold)
+                        .foregroundStyle(color)
+                }
+            }
+            .font(.system(size: 9.5))
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(WidgetTheme.track)
+                    Capsule().fill(color).frame(width: geometry.size.width * min(1, max(0, (remaining ?? 0) / 100)))
+                }
+            }
+            .frame(height: 4)
+        }
+    }
+
+    private func compact(_ value: UInt64) -> String {
+        value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
+    }
+
+    private func providerColor(_ index: Int) -> Color {
+        [WidgetTheme.orange, WidgetTheme.cyan, WidgetTheme.blue][index % 3]
+    }
+}
