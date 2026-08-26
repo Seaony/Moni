@@ -165,39 +165,33 @@ struct SummaryView: View {
     }
 
     private var gpuCard: some View {
-        cardButton(.gpu) {
+        let isWide = cardSize(.gpu).columns == 2
+
+        return cardButton(.gpu) {
             MetricCard(title: "GPU", symbol: MonitorSection.gpu.symbol, color: MoniPalette.green, trailing: "\(snapshot.gpuDevices.count) device\(snapshot.gpuDevices.count == 1 ? "" : "s")") {
-                if cardSize(.gpu).columns == 2 {
-                    HStack(alignment: .top, spacing: 32) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Utilization")
-                                .foregroundStyle(.secondary)
-                            Text(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
-                                .font(.system(size: 30, weight: .bold, design: .rounded))
-                        }
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
-                                .fontWeight(.semibold)
-                            if let memory = snapshot.gpu.allocatedMemoryBytes {
-                                Text("\(bytes(memory)) allocated")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .bottom, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Utilization")
+                            .foregroundStyle(.secondary)
+                        Text(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                        Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                } else {
-                    Text("Utilization")
-                        .foregroundStyle(.secondary)
-                    Text(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if let memory = snapshot.gpu.allocatedMemoryBytes {
-                        Text("\(bytes(memory)) allocated")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
+                    Sparkline(values: monitor.gpuHistory, color: MoniPalette.green)
+                        .frame(maxWidth: isWide ? .infinity : 104)
+                        .frame(height: 66)
+                }
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible()), count: isWide ? 3 : 2),
+                    spacing: 8
+                ) {
+                    compactCardStat("Renderer", snapshot.gpu.rendererPercent.map(percent) ?? "—", color: MoniPalette.green)
+                    compactCardStat("Tiler", snapshot.gpu.tilerPercent.map(percent) ?? "—", color: MoniPalette.cyan)
+                    if isWide {
+                        compactCardStat("Allocated", snapshot.gpu.allocatedMemoryBytes.map(bytes) ?? "—", color: MoniPalette.blue)
                     }
                 }
             }
