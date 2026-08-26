@@ -77,8 +77,23 @@ extension WidgetSystemSnapshot {
                 powerWatts: snapshot.power.gpuPowerWatts
             ),
             docker: Docker(isInstalled: snapshot.docker.isInstalled, isRunning: snapshot.docker.isRunning, installation: snapshot.docker.installation, socketPath: snapshot.docker.socketPath),
-            histories: histories
+            histories: histories,
+            alerts: Self.alerts(for: snapshot)
         )
+    }
+
+    private static func alerts(for snapshot: SystemSnapshot) -> [Alert] {
+        var alerts: [Alert] = []
+        if snapshot.cpu.total >= 85 {
+            alerts.append(.init(message: "CPU usage is above 85%", date: snapshot.date, severity: 2))
+        }
+        if snapshot.memory.usedPercent >= 90 {
+            alerts.append(.init(message: "Memory usage is above 90%", date: snapshot.date, severity: 2))
+        }
+        if let disk = snapshot.volumes.first(where: { $0.mountPath == "/" }), disk.usedPercent >= 90 {
+            alerts.append(.init(message: "System disk usage is above 90%", date: snapshot.date, severity: 3))
+        }
+        return alerts
     }
 }
 

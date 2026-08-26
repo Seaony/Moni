@@ -21,5 +21,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         MemoryMediumWidget()
         DiskActivityMediumWidget()
         ContainersMediumWidget()
+        AlertsMediumWidget()
     }
 }

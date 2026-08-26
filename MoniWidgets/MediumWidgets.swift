@@ -448,3 +448,56 @@ struct ContainersMediumWidgetView: View {
         .background(WidgetTheme.inset, in: RoundedRectangle(cornerRadius: 10))
     }
 }
+
+struct AlertsMediumWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .alertsMedium,
+            displayName: "Alerts",
+            description: "查看当前 CPU、内存与磁盘用量告警。",
+            family: .systemMedium
+        )
+    }
+}
+
+struct AlertsMediumWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Alerts", symbol: "exclamationmark.triangle", color: WidgetTheme.red, trailing: "Current")
+            if snapshot.alerts.isEmpty {
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(WidgetTheme.green)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("All systems normal")
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                        Text("No active resource alerts")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(WidgetTheme.secondary)
+                    }
+                }
+                .frame(maxHeight: .infinity)
+            } else {
+                VStack(spacing: 7) {
+                    ForEach(Array(snapshot.alerts.prefix(3).enumerated()), id: \.offset) { _, alert in
+                        HStack(spacing: 8) {
+                            Circle().fill(alert.severity >= 3 ? WidgetTheme.red : WidgetTheme.orange).frame(width: 7, height: 7)
+                            Text(alert.message).fontWeight(.semibold).lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text(alert.date, style: .time).foregroundStyle(WidgetTheme.tertiary).monospacedDigit()
+                        }
+                        .font(.system(size: 10.5))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(WidgetTheme.inset, in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+                .padding(.top, 11)
+            }
+        }
+        .padding(16)
+    }
+}
