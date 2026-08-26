@@ -131,7 +131,7 @@ struct AIUsageLargeWidgetView: View {
     }
 
     private func providerCard(_ provider: WidgetAIProvider, color: Color) -> some View {
-        let quota = provider.quotas.first
+        let quota = provider.weeklyQuota
         return VStack(spacing: 6) {
             HStack(spacing: 6) {
                 Circle().fill(color).frame(width: 7, height: 7)
@@ -431,7 +431,7 @@ struct StorageBreakdownLargeWidgetView: View {
             }
             .padding(.top, 10)
             GeometryReader { geometry in
-                HStack(spacing: 2) {
+                HStack(spacing: 0) {
                     ForEach(Array(snapshot.storageItems.enumerated()), id: \.offset) { index, item in
                         RoundedRectangle(cornerRadius: 3)
                             .fill(colors[index % colors.count])
@@ -470,8 +470,10 @@ struct StorageBreakdownLargeWidgetView: View {
     }
 
     private func fraction(_ value: UInt64) -> CGFloat {
-        guard let total = snapshot.volume?.totalBytes, total > 0 else { return 0 }
-        return CGFloat(Double(value) / Double(total))
+        guard let volumeTotal = snapshot.volume?.totalBytes, volumeTotal > 0 else { return 0 }
+        let itemTotal = snapshot.storageItems.reduce(UInt64(0)) { $0 + $1.bytes }
+        let denominator = max(Double(volumeTotal), Double(itemTotal))
+        return CGFloat(Double(value) / denominator)
     }
 
     private func bytes(_ value: Int64) -> String {

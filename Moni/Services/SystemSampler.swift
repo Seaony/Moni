@@ -76,10 +76,12 @@ actor SystemSampler {
     private var lastProcessSample: Date?
     private var lastPeripheralSample: Date?
     private var lastConnectionSample: Date?
+    private var lastDockerSample: Date?
 
     private let processInterval: TimeInterval = 2
     private let peripheralInterval: TimeInterval = 5
     private let connectionInterval: TimeInterval = 5
+    private let dockerInterval: TimeInterval = 15
 
     func sample(forceSlowMetrics: Bool = false) -> SystemSnapshot {
         let now = Date()
@@ -100,9 +102,12 @@ actor SystemSampler {
                 cachedDriveHealth = sampleDriveHealth()
             }
             cachedPower = samplePower()
-            cachedDocker = sampleDockerStatus()
             cachedNetworkMetadata = Self.loadNetworkMetadata()
             lastPeripheralSample = now
+        }
+        if forceSlowMetrics || shouldRefresh(lastDockerSample, at: now, interval: dockerInterval) {
+            cachedDocker = sampleDockerStatus()
+            lastDockerSample = now
         }
 
         return SystemSnapshot(
@@ -1044,8 +1049,51 @@ actor SystemSampler {
             isInstalled: provider != nil,
             isRunning: connectedSocket != nil,
             installation: provider,
-            socketPath: detectedSocket?.path
+            socketPath: detectedSocket?.path,
+            containers: connectedSocket.map { Self.loadDockerContainers(socketPath: $0.path) } ?? []
         )
+    }
+
+    private nonisolated static func loadDockerContainers(socketPath: String) -> [DockerContainerUsage] {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        process.arguments = [
+            "--silent",
+            "--max-time", "1",
+            "--unix-socket", socketPath,
+            "http://localhost/containers/json?all=1"
+        ]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            else { return [] }
+            return rows.compactMap { row in
+                guard let rawName = (row["Names"] as? [String])?.first,
+                      let state = row["State"] as? String
+                else { return nil }
+                let name = rawName.hasPrefix("/") ? String(rawName.dropFirst()) : rawName
+                return DockerContainerUsage(
+                    name: name,
+                    state: state,
+                    status: row["Status"] as? String ?? state.capitalized
+                )
+            }
+            .sorted { lhs, rhs in
+                if (lhs.state == "running") != (rhs.state == "running") {
+                    return lhs.state == "running"
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+        } catch {
+            return []
+        }
     }
 
     private nonisolated static func canConnect(toUnixSocket path: String) -> Bool {

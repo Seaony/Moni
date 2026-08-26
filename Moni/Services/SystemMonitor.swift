@@ -163,7 +163,13 @@ final class SystemMonitor: ObservableObject {
     var diskWriteHistory: [Double] { recentHistory.map(\.diskWrite) }
     var cpuTemperatureHistory: [Double] { recentHistory.compactMap(\.cpuTemperature) }
     var gpuTemperatureHistory: [Double] { recentHistory.compactMap(\.gpuTemperature) }
-    var batteryHistory: [Double] { minuteHistory.compactMap(\.battery) }
+    var batteryHistory: [Double] {
+        let referenceDate = minuteHistory.last?.date ?? snapshot.date
+        let cutoff = referenceDate.addingTimeInterval(-12 * 60 * 60)
+        return minuteHistory.lazy
+            .filter { $0.date >= cutoff }
+            .compactMap(\.battery)
+    }
 
     func history(_ metric: SystemHistoryMetric, duration: TimeInterval) -> [Double] {
         let source = duration <= 60 ? recentHistory : minuteHistory

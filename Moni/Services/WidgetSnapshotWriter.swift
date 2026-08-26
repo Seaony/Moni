@@ -87,7 +87,15 @@ extension WidgetSystemSnapshot {
                 allocatedMemoryBytes: snapshot.gpu.allocatedMemoryBytes,
                 powerWatts: snapshot.power.gpuPowerWatts
             ),
-            docker: Docker(isInstalled: snapshot.docker.isInstalled, isRunning: snapshot.docker.isRunning, installation: snapshot.docker.installation, socketPath: snapshot.docker.socketPath),
+            docker: Docker(
+                isInstalled: snapshot.docker.isInstalled,
+                isRunning: snapshot.docker.isRunning,
+                installation: snapshot.docker.installation,
+                socketPath: snapshot.docker.socketPath,
+                containers: snapshot.docker.containers.prefix(8).map {
+                    .init(name: $0.name, state: $0.state, status: $0.status)
+                }
+            ),
             histories: histories,
             alerts: Self.alerts(for: snapshot),
             storageItems: storageFolders.prefix(5).map {

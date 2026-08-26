@@ -378,6 +378,10 @@ struct DockerSmallWidget: Widget {
 struct DockerSmallWidgetView: View {
     let snapshot: WidgetSystemSnapshot
 
+    private var runningContainers: Int {
+        snapshot.docker.containers.filter { $0.state == "running" }.count
+    }
+
     private var status: String {
         if snapshot.docker.isRunning { return "Running" }
         if snapshot.docker.isInstalled { return "Stopped" }
@@ -408,6 +412,12 @@ struct DockerSmallWidgetView: View {
                 Spacer(minLength: 2)
                 Image(systemName: snapshot.docker.isRunning ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .foregroundStyle(statusColor)
+            }
+            if !snapshot.docker.containers.isEmpty {
+                Text("\(runningContainers) / \(snapshot.docker.containers.count) containers running")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(WidgetTheme.secondary)
+                    .padding(.top, 5)
             }
         }
         .padding(16)

@@ -43,6 +43,10 @@ final class AIUsageStore: ObservableObject {
         if let cached = cachedSummaries[query.cacheKey] {
             summary = cached.summary
             displayedQuery = query
+            let widgetSnapshot = WidgetAISnapshot(summary: cached.summary)
+            Task {
+                await WidgetSnapshotWriter.shared.persistAI(widgetSnapshot)
+            }
         }
     }
 

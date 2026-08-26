@@ -102,7 +102,7 @@ struct AIUsageMediumWidgetView: View {
     }
 
     private func providerRow(_ provider: WidgetAIProvider, color: Color) -> some View {
-        let remaining = provider.quotas.first?.remainingPercent
+        let remaining = provider.weeklyQuota?.remainingPercent
         return VStack(spacing: 3) {
             HStack(spacing: 5) {
                 Circle().fill(color).frame(width: 6, height: 6)
@@ -293,7 +293,7 @@ struct MemoryMediumWidgetView: View {
             }
             .padding(.top, 8)
             GeometryReader { geometry in
-                HStack(spacing: 2) {
+                HStack(spacing: 0) {
                     ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                         RoundedRectangle(cornerRadius: 3)
                             .fill(segment.2)
@@ -410,9 +410,15 @@ struct ContainersMediumWidget: Widget {
 struct ContainersMediumWidgetView: View {
     let snapshot: WidgetSystemSnapshot
 
+    private var headerDetail: String? {
+        guard !snapshot.docker.containers.isEmpty else { return snapshot.docker.installation }
+        let running = snapshot.docker.containers.filter { $0.state == "running" }.count
+        return "\(running) of \(snapshot.docker.containers.count) running"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            WidgetHeader(title: "Containers", symbol: "shippingbox", color: WidgetTheme.blue, trailing: snapshot.docker.installation)
+            WidgetHeader(title: "Containers", symbol: "shippingbox", color: WidgetTheme.blue, trailing: headerDetail)
             HStack(spacing: 14) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(snapshot.docker.isRunning ? "Running" : snapshot.docker.isInstalled ? "Stopped" : "Not Found")
@@ -428,9 +434,23 @@ struct ContainersMediumWidgetView: View {
             }
             .padding(.top, 12)
             Spacer(minLength: 8)
-            HStack(spacing: 10) {
-                statusTile("Provider", snapshot.docker.installation ?? "—")
-                statusTile("Socket", snapshot.docker.socketPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "—")
+            if snapshot.docker.containers.isEmpty {
+                HStack(spacing: 10) {
+                    statusTile("Provider", snapshot.docker.installation ?? "—")
+                    statusTile("Socket", snapshot.docker.socketPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "—")
+                }
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(Array(snapshot.docker.containers.prefix(3).enumerated()), id: \.offset) { _, container in
+                        HStack(spacing: 8) {
+                            Circle().fill(container.state == "running" ? WidgetTheme.green : WidgetTheme.tertiary).frame(width: 6, height: 6)
+                            Text(container.name).fontWeight(.semibold).lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text(container.status).foregroundStyle(WidgetTheme.tertiary).lineLimit(1)
+                        }
+                        .font(.system(size: 10))
+                    }
+                }
             }
         }
         .padding(16)

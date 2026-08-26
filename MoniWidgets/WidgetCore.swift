@@ -5,11 +5,14 @@ struct MoniWidgetEntry: TimelineEntry {
     let date: Date
     let system: WidgetSystemSnapshot
     let ai: WidgetAISnapshot
+    let isPlaceholder: Bool
 }
 
 struct MoniWidgetProvider: TimelineProvider {
+    let kind: MoniWidgetKind
+
     func placeholder(in context: Context) -> MoniWidgetEntry {
-        MoniWidgetEntry(date: .now, system: .placeholder, ai: .placeholder)
+        MoniWidgetEntry(date: .now, system: .placeholder, ai: .placeholder, isPlaceholder: false)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (MoniWidgetEntry) -> Void) {
@@ -22,10 +25,16 @@ struct MoniWidgetProvider: TimelineProvider {
     }
 
     private func entry(isPreview: Bool) -> MoniWidgetEntry {
-        MoniWidgetEntry(
+        guard !isPreview else {
+            return MoniWidgetEntry(date: .now, system: .placeholder, ai: .placeholder, isPlaceholder: false)
+        }
+        let system = kind.usesAIData ? nil : MoniWidgetStorage.loadSystem()
+        let ai = kind.usesAIData ? MoniWidgetStorage.loadAI() : nil
+        return MoniWidgetEntry(
             date: .now,
-            system: isPreview ? .placeholder : MoniWidgetStorage.loadSystem() ?? .placeholder,
-            ai: isPreview ? .placeholder : MoniWidgetStorage.loadAI() ?? .placeholder
+            system: system ?? .placeholder,
+            ai: ai ?? .placeholder,
+            isPlaceholder: kind.usesAIData ? ai == nil : system == nil
         )
     }
 }
@@ -56,6 +65,13 @@ enum MoniWidgetKind: String {
     case networkDetailLarge = "com.seaony.Moni.widget.network-detail-large"
     case activityMonitorLarge = "com.seaony.Moni.widget.activity-monitor-large"
     case storageBreakdownLarge = "com.seaony.Moni.widget.storage-breakdown-large"
+
+    var usesAIData: Bool {
+        switch self {
+        case .aiSpendSmall, .aiUsageMedium, .aiUsageLarge: true
+        default: false
+        }
+    }
 }
 
 struct MoniWidgetView: View {
@@ -124,8 +140,9 @@ func moniWidgetConfiguration(
     description: String,
     family: WidgetFamily
 ) -> some WidgetConfiguration {
-    StaticConfiguration(kind: kind.rawValue, provider: MoniWidgetProvider()) { entry in
+    StaticConfiguration(kind: kind.rawValue, provider: MoniWidgetProvider(kind: kind)) { entry in
         MoniWidgetView(kind: kind, entry: entry)
+            .redacted(reason: entry.isPlaceholder ? .placeholder : [])
             .containerBackground(for: .widget) {
                 Color(nsColor: .windowBackgroundColor)
             }
@@ -134,4 +151,12 @@ func moniWidgetConfiguration(
     .description(description)
     .supportedFamilies([family])
     .contentMarginsDisabled()
+}
+
+extension WidgetAIProvider {
+    var weeklyQuota: Quota? {
+        quotas.first {
+            $0.label.localizedCaseInsensitiveContains("week")
+        } ?? quotas.first
+    }
 }

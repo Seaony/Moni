@@ -329,22 +329,37 @@ struct GPUUsage: Sendable {
     }
 }
 
+struct DockerContainerUsage: Identifiable, Sendable {
+    let name: String
+    let state: String
+    let status: String
+
+    var id: String { name }
+}
+
 struct DockerStatus: Sendable {
     var isInstalled = false
     var isRunning = false
     var installation: String?
     var socketPath: String?
+    var containers: [DockerContainerUsage] = []
 
     nonisolated init(
         isInstalled: Bool = false,
         isRunning: Bool = false,
         installation: String? = nil,
-        socketPath: String? = nil
+        socketPath: String? = nil,
+        containers: [DockerContainerUsage] = []
     ) {
         self.isInstalled = isInstalled
         self.isRunning = isRunning
         self.installation = installation
         self.socketPath = socketPath
+        self.containers = containers
+    }
+
+    var runningContainerCount: Int {
+        containers.filter { $0.state == "running" }.count
     }
 
     var statusTitle: String {
