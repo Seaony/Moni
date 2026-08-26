@@ -156,3 +156,58 @@ struct PowerSmallWidgetView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+struct StorageSmallWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .storageSmall,
+            displayName: "Storage",
+            description: "查看系统磁盘空间与实时读写速率。",
+            family: .systemSmall
+        )
+    }
+}
+
+struct StorageSmallWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private var usedPercent: Double { snapshot.volume?.usedPercent ?? 0 }
+    private var accent: Color { usedPercent >= 90 ? WidgetTheme.red : WidgetTheme.orange }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Storage", symbol: "internaldrive", color: WidgetTheme.orange)
+            Spacer(minLength: 4)
+            WidgetRing(progress: usedPercent / 100, color: accent) {
+                VStack(spacing: 1) {
+                    Text("\(Int(usedPercent.rounded()))%")
+                        .font(.system(size: 25, weight: .heavy, design: .rounded))
+                        .monospacedDigit()
+                    Text(snapshot.volume.map { "\(bytes($0.availableBytes)) free" } ?? "Unavailable")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(WidgetTheme.tertiary)
+                        .minimumScaleFactor(0.7)
+                }
+            }
+            .frame(width: 103, height: 103)
+            .frame(maxWidth: .infinity)
+            Spacer(minLength: 4)
+            HStack(spacing: 12) {
+                rate("R", snapshot.diskReadBytesPerSecond)
+                rate("W", snapshot.diskWriteBytesPerSecond)
+            }
+        }
+        .padding(16)
+    }
+
+    private func rate(_ label: String, _ value: Double) -> some View {
+        Text("\(label) \(ByteCountFormatter.string(fromByteCount: Int64(max(0, value)), countStyle: .decimal))/s")
+            .font(.system(size: 10, weight: .bold))
+            .monospacedDigit()
+            .lineLimit(1)
+    }
+
+    private func bytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
+}

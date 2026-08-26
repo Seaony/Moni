@@ -7,5 +7,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         CPUSmallWidget()
         MemorySmallWidget()
         PowerSmallWidget()
+        StorageSmallWidget()
     }
 }
