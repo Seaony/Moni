@@ -25,7 +25,12 @@ actor WidgetSnapshotWriter {
 }
 
 extension WidgetSystemSnapshot {
-    init(snapshot: SystemSnapshot, histories: Histories) {
+    init(
+        snapshot: SystemSnapshot,
+        histories: Histories,
+        publicIPAddress: String?,
+        networkLatencyMilliseconds: Double?
+    ) {
         let root = snapshot.volumes.first { $0.mountPath == "/" }
         self.init(
             date: snapshot.date,
@@ -50,7 +55,12 @@ extension WidgetSystemSnapshot {
                 physicalMode: snapshot.network.wifi?.physicalMode,
                 signalStrengthDBm: snapshot.network.wifi?.signalStrengthDBm,
                 channel: snapshot.network.wifi?.channelDescription,
-                transmitRateBitsPerSecond: snapshot.network.wifi?.transmitRateBitsPerSecond
+                transmitRateBitsPerSecond: snapshot.network.wifi?.transmitRateBitsPerSecond,
+                publicIPAddress: publicIPAddress,
+                latencyMilliseconds: networkLatencyMilliseconds,
+                interfaces: snapshot.network.interfaces.prefix(4).map {
+                    .init(name: $0.name, kind: $0.kind, address: $0.address, isActive: $0.isActive, linkSpeedBitsPerSecond: $0.linkSpeedBitsPerSecond)
+                }
             ),
             processCount: snapshot.processes.count,
             threadCount: snapshot.processes.reduce(0) { $0 + $1.threadCount },

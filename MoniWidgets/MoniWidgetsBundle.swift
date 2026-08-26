@@ -26,5 +26,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         SystemOverviewLargeWidget()
         AIUsageLargeWidget()
         GPUThermalsLargeWidget()
+        NetworkDetailLargeWidget()
     }
 }

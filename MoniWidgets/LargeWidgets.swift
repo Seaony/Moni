@@ -261,3 +261,75 @@ struct GPUThermalsLargeWidgetView: View {
         .background(WidgetTheme.inset, in: RoundedRectangle(cornerRadius: 11))
     }
 }
+
+struct NetworkDetailLargeWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .networkDetailLarge,
+            displayName: "Network Detail",
+            description: "查看网络速率趋势、接口、延迟与公网地址。",
+            family: .systemLarge
+        )
+    }
+}
+
+struct NetworkDetailLargeWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Network Detail", symbol: "arrow.up.arrow.down", color: WidgetTheme.cyan, trailing: snapshot.network.publicIPAddress)
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
+                Text("↓ " + rate(snapshot.network.downloadBytesPerSecond)).foregroundStyle(WidgetTheme.cyan)
+                Text("↑ " + rate(snapshot.network.uploadBytesPerSecond)).foregroundStyle(WidgetTheme.orange)
+            }
+            .font(.system(size: 24, weight: .heavy, design: .rounded))
+            .monospacedDigit()
+            .padding(.top, 10)
+            ZStack {
+                WidgetLineChart(values: snapshot.histories.download, color: WidgetTheme.cyan)
+                WidgetLineChart(values: snapshot.histories.upload, color: WidgetTheme.orange, showsFill: false)
+            }
+            .frame(height: 76)
+            .padding(.top, 7)
+            VStack(spacing: 7) {
+                ForEach(Array(snapshot.network.interfaces.prefix(4).enumerated()), id: \.offset) { _, interface in
+                    HStack(spacing: 8) {
+                        Text(interface.name).fontWeight(.bold).frame(width: 40, alignment: .leading)
+                        Text([interface.kind, interface.address].compactMap { $0 }.joined(separator: " · "))
+                            .foregroundStyle(WidgetTheme.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(interface.isActive ? "Active" : "Inactive")
+                            .fontWeight(.bold)
+                            .foregroundStyle(interface.isActive ? WidgetTheme.green : WidgetTheme.tertiary)
+                    }
+                    .font(.system(size: 10))
+                }
+            }
+            .padding(.top, 10)
+            Spacer(minLength: 8)
+            HStack(spacing: 8) {
+                detailTile("Latency", snapshot.network.latencyMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "—")
+                detailTile("Wi-Fi", snapshot.network.signalStrengthDBm.map { "\($0) dBm" } ?? "—")
+                detailTile("Link", snapshot.network.transmitRateBitsPerSecond.map { "\($0 / 1_000_000)M" } ?? "—")
+            }
+        }
+        .padding(18)
+    }
+
+    private func rate(_ value: Double) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(max(0, value)), countStyle: .decimal) + "/s"
+    }
+
+    private func detailTile(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(value).font(.system(size: 16, weight: .heavy, design: .rounded)).monospacedDigit().lineLimit(1)
+        }
+        .font(.system(size: 9.5))
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(WidgetTheme.inset, in: RoundedRectangle(cornerRadius: 11))
+    }
+}

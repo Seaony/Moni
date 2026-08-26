@@ -35,6 +35,14 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
     }
 
     struct Network: Codable, Sendable {
+        struct Interface: Codable, Sendable {
+            let name: String
+            let kind: String
+            let address: String?
+            let isActive: Bool
+            let linkSpeedBitsPerSecond: UInt64
+        }
+
         let downloadBytesPerSecond: Double
         let uploadBytesPerSecond: Double
         let interfaceName: String?
@@ -43,6 +51,9 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
         let signalStrengthDBm: Int?
         let channel: String?
         let transmitRateBitsPerSecond: UInt64?
+        let publicIPAddress: String?
+        let latencyMilliseconds: Double?
+        let interfaces: [Interface]
     }
 
     struct Process: Codable, Sendable {
@@ -143,7 +154,7 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
         driveModel: "APPLE SSD",
         driveSmartStatus: "Verified",
         driveTemperatureCelsius: 36,
-        network: Network(downloadBytesPerSecond: 45_000, uploadBytesPerSecond: 8_000, interfaceName: "en0", networkName: "Studio 5G", physicalMode: "Wi-Fi 6", signalStrengthDBm: -46, channel: "149", transmitRateBitsPerSecond: 1_200_000_000),
+        network: Network(downloadBytesPerSecond: 45_000, uploadBytesPerSecond: 8_000, interfaceName: "en0", networkName: "Studio 5G", physicalMode: "Wi-Fi 6", signalStrengthDBm: -46, channel: "149", transmitRateBitsPerSecond: 1_200_000_000, publicIPAddress: "203.0.113.42", latencyMilliseconds: 9, interfaces: [.init(name: "en0", kind: "Wi-Fi", address: "192.168.1.24", isActive: true, linkSpeedBitsPerSecond: 1_200_000_000)]),
         processCount: 1_084,
         threadCount: 5_912,
         processes: [Process(name: "WindowServer", cpuPercent: 95, memoryBytes: 1_400_000_000, threadCount: 24), Process(name: "clangd", cpuPercent: 73, memoryBytes: 1_200_000_000, threadCount: 18)],
