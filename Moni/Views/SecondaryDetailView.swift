@@ -38,7 +38,7 @@ private struct GPUDetailView: View {
                         Text("GPU")
                             .font(.system(size: 17, weight: .bold))
                             .foregroundStyle(MoniPalette.green)
-                        Text(device?.name ?? "No Metal GPU")
+                        Text(deviceSubtitle)
                             .font(.system(size: 12.5))
                             .foregroundStyle(.tertiary)
                         Spacer(minLength: 12)
@@ -54,25 +54,32 @@ private struct GPUDetailView: View {
                 HStack(alignment: .top, spacing: 12) {
                     DetailPanel("Device") {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                            secondaryStat("Name", device?.name ?? "—")
-                            secondaryStat("Registry ID", device.map { String($0.registryID) } ?? "—")
-                            secondaryStat("Unified memory", device.map { $0.hasUnifiedMemory ? "Yes" : "No" } ?? "—")
-                            secondaryStat("Low power", device.map { $0.isLowPower ? "Yes" : "No" } ?? "—")
-                            secondaryStat("Removable", device.map { $0.isRemovable ? "Yes" : "No" } ?? "—")
-                            secondaryStat("Working set", device.map { bytes($0.recommendedMaxWorkingSetSize) } ?? "—")
+                            secondaryStat("Vendor", device?.vendor ?? "—")
+                            secondaryStat("Cores", device?.coreCount.map(String.init) ?? "—")
+                            secondaryStat("Metal", device?.metalSupport ?? "—")
+                            secondaryStat("VRAM", unifiedMemory)
+                            secondaryStat("Allocated", monitor.snapshot.gpu.allocatedMemoryBytes.map(bytes) ?? "—")
+                            secondaryStat("Display", device?.mainDisplayResolution ?? "—")
+                            secondaryStat("Refresh", refreshRate)
+                            secondaryStat("Power", monitor.snapshot.power.gpuPowerWatts.map { String(format: "%.1f W", $0) } ?? "—")
                         }
                     }
                     DetailPanel("Engine activity") {
                         ForEach(engineActivity, id: \.0) { engine, value in
                             HStack(spacing: 12) {
                                 Text(engine).foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
-                                ProgressView(value: value ?? 0, total: 100).tint(MoniPalette.green)
+                                GeometryReader { geometry in
+                                    ZStack(alignment: .leading) {
+                                        Capsule().fill(MoniPalette.track)
+                                        Capsule()
+                                            .fill(MoniPalette.green)
+                                            .frame(width: geometry.size.width * min(1, max(0, (value ?? 0) / 100)))
+                                    }
+                                }
+                                .frame(height: 6)
                                 Text(value.map(percent) ?? "—").fontWeight(.bold).frame(width: 40, alignment: .trailing)
                             }
                             .font(.system(size: 12.5))
-                        }
-                        if let memory = monitor.snapshot.gpu.allocatedMemoryBytes {
-                            secondaryStat("Allocated memory", bytes(memory))
                         }
                     }
                 }
@@ -113,9 +120,31 @@ private struct GPUDetailView: View {
 
     private var engineActivity: [(String, Double?)] {
         [
-            ("Renderer", monitor.snapshot.gpu.rendererPercent),
+            ("Overall", monitor.snapshot.gpu.utilizationPercent),
+            ("Render", monitor.snapshot.gpu.rendererPercent),
             ("Tiler", monitor.snapshot.gpu.tilerPercent),
         ]
+    }
+
+    private var deviceSubtitle: String {
+        guard let device else { return "No Metal GPU" }
+        var parts = [device.name]
+        if let coreCount = device.coreCount { parts.append("\(coreCount) cores") }
+        if let metalSupport = device.metalSupport { parts.append(metalSupport) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var unifiedMemory: String {
+        guard let device else { return "—" }
+        if let memory = device.unifiedMemoryBytes {
+            return "Unified \(bytes(memory))"
+        }
+        return device.hasUnifiedMemory ? "Unified" : "Dedicated"
+    }
+
+    private var refreshRate: String {
+        guard let value = device?.mainDisplayRefreshRateHertz else { return "—" }
+        return value.rounded() == value ? "\(Int(value)) Hz" : String(format: "%.1f Hz", value)
     }
 }
 

@@ -280,10 +280,13 @@ struct PowerUsage: Sendable {
 struct GPUDeviceInfo: Identifiable, Sendable {
     let registryID: UInt64
     let name: String
-    let isLowPower: Bool
-    let isRemovable: Bool
+    let vendor: String
+    let coreCount: Int?
+    let metalSupport: String?
     let hasUnifiedMemory: Bool
-    let recommendedMaxWorkingSetSize: UInt64
+    let unifiedMemoryBytes: UInt64?
+    let mainDisplayResolution: String?
+    let mainDisplayRefreshRateHertz: Double?
 
     var id: UInt64 { registryID }
 }

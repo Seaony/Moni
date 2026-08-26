@@ -32,6 +32,15 @@ actor SystemSampler {
         let wifi: WiFiUsage?
     }
 
+    private struct GPUHardwareMetadata {
+        let name: String?
+        let vendor: String?
+        let coreCount: Int?
+        let metalSupport: String?
+        let mainDisplayResolution: String?
+        let mainDisplayRefreshRateHertz: Double?
+    }
+
     private var previousCPUTicks: [CPUTicks] = []
     private var previousNetworkBytes: (received: UInt64, sent: UInt64, date: Date)?
     private var previousDiskCounters: (
@@ -809,16 +818,67 @@ actor SystemSampler {
     }
 
     private static func loadGPUDevices() -> [GPUDeviceInfo] {
-        MTLCopyAllDevices().map { device in
+        let metadata = loadGPUHardwareMetadata()
+        return MTLCopyAllDevices().map { device in
             GPUDeviceInfo(
                 registryID: device.registryID,
                 name: device.name,
-                isLowPower: device.isLowPower,
-                isRemovable: device.isRemovable,
+                vendor: metadata?.vendor ?? (device.name.hasPrefix("Apple") ? "Apple" : "Unknown"),
+                coreCount: metadata?.name == device.name ? metadata?.coreCount : nil,
+                metalSupport: metadata?.name == device.name ? metadata?.metalSupport : nil,
                 hasUnifiedMemory: device.hasUnifiedMemory,
-                recommendedMaxWorkingSetSize: device.recommendedMaxWorkingSetSize
+                unifiedMemoryBytes: device.hasUnifiedMemory ? ProcessInfo.processInfo.physicalMemory : nil,
+                mainDisplayResolution: metadata?.name == device.name ? metadata?.mainDisplayResolution : nil,
+                mainDisplayRefreshRateHertz: metadata?.name == device.name ? metadata?.mainDisplayRefreshRateHertz : nil
             )
         }
+    }
+
+    private static func loadGPUHardwareMetadata() -> GPUHardwareMetadata? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+        process.arguments = ["SPDisplaysDataType", "-json", "-detailLevel", "mini"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let adapters = root["SPDisplaysDataType"] as? [[String: Any]],
+                  let adapter = adapters.first else { return nil }
+
+            let name = adapter["sppci_model"] as? String ?? adapter["_name"] as? String
+            let vendorToken = adapter["spdisplays_vendor"] as? String
+            let vendor = vendorToken?.localizedCaseInsensitiveContains("apple") == true ? "Apple" : vendorToken
+            let coreCount = (adapter["sppci_cores"] as? String).flatMap(Int.init)
+            let metalSupport = (adapter["spdisplays_mtlgpufamilysupport"] as? String).flatMap { value in
+                value.last.flatMap(\.wholeNumberValue).map { "Metal \($0)" }
+            }
+            let displays = adapter["spdisplays_ndrvs"] as? [[String: Any]] ?? []
+            let mainDisplay = displays.first { $0["spdisplays_main"] as? String == "spdisplays_yes" }
+                ?? displays.first
+            let resolution = mainDisplay?["_spdisplays_pixels"] as? String
+            let refreshRate = (mainDisplay?["_spdisplays_resolution"] as? String).flatMap(refreshRate(from:))
+            return GPUHardwareMetadata(
+                name: name,
+                vendor: vendor,
+                coreCount: coreCount,
+                metalSupport: metalSupport,
+                mainDisplayResolution: resolution,
+                mainDisplayRefreshRateHertz: refreshRate
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private static func refreshRate(from resolution: String) -> Double? {
+        guard let marker = resolution.range(of: " @ "),
+              let suffix = resolution[marker.upperBound...].split(separator: "H").first else { return nil }
+        return Double(suffix)
     }
 
     private func sampleGPU(at date: Date) -> GPUUsage {
