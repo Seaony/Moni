@@ -44,6 +44,7 @@ final class SystemMonitor: ObservableObject {
         let diskWrite: Double
         let cpuTemperature: Double?
         let gpuTemperature: Double?
+        let battery: Double?
     }
 
     init(samplingInterval: TimeInterval = 0.7) {
@@ -162,6 +163,7 @@ final class SystemMonitor: ObservableObject {
     var diskWriteHistory: [Double] { recentHistory.map(\.diskWrite) }
     var cpuTemperatureHistory: [Double] { recentHistory.compactMap(\.cpuTemperature) }
     var gpuTemperatureHistory: [Double] { recentHistory.compactMap(\.gpuTemperature) }
+    var batteryHistory: [Double] { minuteHistory.compactMap(\.battery) }
 
     func history(_ metric: SystemHistoryMetric, duration: TimeInterval) -> [Double] {
         let source = duration <= 60 ? recentHistory : minuteHistory
@@ -201,7 +203,7 @@ final class SystemMonitor: ObservableObject {
                 gpu: gpuHistory,
                 diskRead: diskReadHistory,
                 diskWrite: diskWriteHistory,
-                battery: []
+                battery: batteryHistory
             )
         )
         Task {
@@ -221,7 +223,8 @@ final class SystemMonitor: ObservableObject {
             diskRead: snapshot.diskActivity.readBytesPerSecond,
             diskWrite: snapshot.diskActivity.writeBytesPerSecond,
             cpuTemperature: snapshot.power.cpuTemperatureCelsius,
-            gpuTemperature: snapshot.power.gpuTemperatureCelsius
+            gpuTemperature: snapshot.power.gpuTemperatureCelsius,
+            battery: snapshot.power.batteryPercent
         )
         recentHistory.append(sample)
         let recentCutoff = snapshot.date.addingTimeInterval(-60)

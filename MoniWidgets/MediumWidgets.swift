@@ -501,3 +501,51 @@ struct AlertsMediumWidgetView: View {
         .padding(16)
     }
 }
+
+struct BatteryHistoryMediumWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .batteryHistoryMedium,
+            displayName: "Battery History",
+            description: "查看电池电量趋势、健康状态与循环次数。",
+            family: .systemMedium
+        )
+    }
+}
+
+struct BatteryHistoryMediumWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Battery History", symbol: "clock", color: WidgetTheme.green, trailing: "last 12 h")
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(snapshot.power.batteryPercent.map { "\(Int($0.rounded()))%" } ?? "—")
+                    .font(.system(size: 27, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                Text(snapshot.power.isCharging ? "Charging" : "On battery")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(snapshot.power.isCharging ? WidgetTheme.green : WidgetTheme.secondary)
+            }
+            .padding(.top, 8)
+            WidgetLineChart(values: snapshot.histories.battery, color: WidgetTheme.green)
+                .frame(height: 45)
+                .padding(.top, 4)
+            Spacer(minLength: 3)
+            HStack(spacing: 16) {
+                detail("Health", snapshot.power.batteryHealth ?? "—")
+                detail("Cycles", snapshot.power.cycleCount?.formatted() ?? "—")
+                detail("Draw", snapshot.power.systemPowerWatts.map { String(format: "%.1f W", $0) } ?? "—")
+            }
+        }
+        .padding(16)
+    }
+
+    private func detail(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label).foregroundStyle(WidgetTheme.secondary)
+            Text(value).fontWeight(.bold).monospacedDigit()
+        }
+        .font(.system(size: 9.5))
+    }
+}
