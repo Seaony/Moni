@@ -296,34 +296,46 @@ private struct PowerDetailView: View {
                     DetailPanel {
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text("Thermals").font(.system(size: 15, weight: .bold)).foregroundStyle(MoniPalette.orange)
-                            Text(power.batteryTemperatureCelsius == nil ? "Not available" : "Battery sensor")
+                            Text(power.cpuTemperatureCelsius == nil ? "Waiting for sensors" : "Live HID sensors")
                                 .font(.system(size: 12.5)).foregroundStyle(.tertiary)
                             Spacer()
-                            Text(power.batteryTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "—")
+                            Text(power.cpuTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "—")
                                 .font(.system(size: 22, weight: .bold))
                         }
-                        unavailableChart("CPU/GPU die and fan telemetry require an undocumented HID/SMC backend.")
+                        ZStack {
+                            Sparkline(values: monitor.cpuTemperatureHistory, color: MoniPalette.orange)
+                            Sparkline(values: monitor.gpuTemperatureHistory, color: MoniPalette.green, showsFill: false)
+                        }
                             .frame(height: 108)
-                        HStack(spacing: 14) {
-                            secondaryStat("Fan 1", "—")
-                            secondaryStat("Fan 2", "—")
+                        if power.fans.isEmpty {
+                            secondaryStat("Fans", "No fan data")
+                        } else {
+                            HStack(spacing: 14) {
+                                ForEach(power.fans.prefix(2)) { fan in
+                                    secondaryStat(fan.name, String(format: "%.0f RPM", fan.revolutionsPerMinute))
+                                }
+                            }
                         }
                     }
                 }
 
                 DetailPanel("Temperature sensors") {
-                    if let temperature = power.batteryTemperatureCelsius {
-                        secondaryStat("Battery", String(format: "%.1f°C", temperature))
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        if let temperature = power.batteryTemperatureCelsius {
+                            secondaryStat("Battery", String(format: "%.1f°C", temperature))
+                        }
+                        ForEach(power.temperatureSensors) { sensor in
+                            secondaryStat(sensor.name, String(format: "%.1f°C", sensor.valueCelsius))
+                        }
                     }
-                    unavailableRow("CPU/GPU die sensors are not exposed through a stable documented API; the private HID/SMC backend is not enabled.")
                 }
 
                 DetailPanel("Power draw") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 14) {
                         insetStat("System input", power.systemPowerWatts.map { String(format: "%.1f W", $0) } ?? "—")
-                        insetStat("CPU package", "—")
-                        insetStat("GPU", "—")
-                        insetStat("Battery", power.currentAmps.map { String(format: "%.2f A", $0) } ?? "—")
+                        insetStat("CPU package", power.cpuPowerWatts.map { String(format: "%.1f W", $0) } ?? "—")
+                        insetStat("GPU", power.gpuPowerWatts.map { String(format: "%.1f W", $0) } ?? "—")
+                        insetStat("Memory", power.memoryPowerWatts.map { String(format: "%.1f W", $0) } ?? "—")
                     }
                 }
             }

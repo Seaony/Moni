@@ -29,6 +29,8 @@ actor SystemSampler {
     private var previousProcessTimes: [Int32: UInt64] = [:]
     private var previousProcessDate: Date?
     private var processMetadata: [Int32: (name: String, path: String)] = [:]
+    private var previousEnergyCounters: (values: [String: Double], date: Date)?
+    private let smcReader = SMCSensorReader()
 
     private var hostIdentity: HostIdentity?
     private var gpuDevices: [GPUDeviceInfo] = []
@@ -381,11 +383,27 @@ actor SystemSampler {
 
     private func samplePower() -> PowerUsage {
         let telemetry = Self.sampleBatteryTelemetry()
+        let thermals = sampleThermals()
+        let energy = sampleEnergy(at: Date())
         let snapshot = IOPSCopyPowerSourcesInfo().takeRetainedValue()
         let sources = IOPSCopyPowerSourcesList(snapshot).takeRetainedValue() as Array
         guard let source = sources.first,
               let description = IOPSGetPowerSourceDescription(snapshot, source)?.takeUnretainedValue() as? [String: Any] else {
-            return telemetry
+            return PowerUsage(
+                batteryTemperatureCelsius: telemetry.batteryTemperatureCelsius,
+                cycleCount: telemetry.cycleCount,
+                voltageVolts: telemetry.voltageVolts,
+                currentAmps: telemetry.currentAmps,
+                systemPowerWatts: telemetry.systemPowerWatts,
+                cpuTemperatureCelsius: thermals.cpu,
+                gpuTemperatureCelsius: thermals.gpu,
+                temperatureSensors: thermals.sensors,
+                fans: thermals.fans,
+                cpuPowerWatts: energy["CPU"],
+                gpuPowerWatts: energy["GPU"],
+                neuralEnginePowerWatts: energy["ANE"],
+                memoryPowerWatts: energy["RAM"]
+            )
         }
 
         let current = description[kIOPSCurrentCapacityKey] as? Double
@@ -406,8 +424,108 @@ actor SystemSampler {
             cycleCount: telemetry.cycleCount,
             voltageVolts: telemetry.voltageVolts,
             currentAmps: telemetry.currentAmps,
-            systemPowerWatts: telemetry.systemPowerWatts
+            systemPowerWatts: telemetry.systemPowerWatts,
+            cpuTemperatureCelsius: thermals.cpu,
+            gpuTemperatureCelsius: thermals.gpu,
+            temperatureSensors: thermals.sensors,
+            fans: thermals.fans,
+            cpuPowerWatts: energy["CPU"],
+            gpuPowerWatts: energy["GPU"],
+            neuralEnginePowerWatts: energy["ANE"],
+            memoryPowerWatts: energy["RAM"]
         )
+    }
+
+    private func sampleThermals() -> (
+        cpu: Double?,
+        gpu: Double?,
+        sensors: [TemperatureSensor],
+        fans: [FanUsage]
+    ) {
+        let raw = MoniAppleSiliconTemperatureSensors() ?? [:]
+        var sensors = raw.compactMap { name, number -> TemperatureSensor? in
+            let value = number.doubleValue
+            guard value >= 0, value <= 110 else { return nil }
+            return TemperatureSensor(name: name, valueCelsius: value)
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+
+        var cpuValues = sensors
+            .filter { $0.name.hasPrefix("pACC MTR Temp") || $0.name.hasPrefix("eACC MTR Temp") }
+            .map(\.valueCelsius)
+            .filter { $0 >= 10 }
+        var gpuValues = sensors
+            .filter { $0.name.hasPrefix("GPU MTR Temp") }
+            .map(\.valueCelsius)
+            .filter { $0 >= 10 }
+
+        if cpuValues.isEmpty, hostIdentity?.chip.contains("M3") == true {
+            let m3CPUKeys = [
+                "Te05", "Te0L", "Te0P", "Te0S",
+                "Tf04", "Tf09", "Tf0A", "Tf0B", "Tf0D", "Tf0E",
+                "Tf44", "Tf49", "Tf4A", "Tf4B", "Tf4D", "Tf4E",
+            ]
+            cpuValues = appendSMCTemperatures(keys: m3CPUKeys, prefix: "CPU", to: &sensors)
+        }
+        if gpuValues.isEmpty, hostIdentity?.chip.contains("M3") == true {
+            let m3GPUKeys = ["Tf14", "Tf18", "Tf19", "Tf1A", "Tf24", "Tf28", "Tf29", "Tf2A"]
+            gpuValues = appendSMCTemperatures(keys: m3GPUKeys, prefix: "GPU", to: &sensors)
+        }
+
+        let fanCount = min(8, max(0, Int(smcReader.value(for: "FNum") ?? 0)))
+        let fans = (0 ..< fanCount).compactMap { index -> FanUsage? in
+            guard let speed = smcReader.value(for: "F\(index)Ac"), speed >= 0 else { return nil }
+            let name: String
+            if fanCount == 2 {
+                name = index == 0 ? "Left fan" : "Right fan"
+            } else {
+                name = "Fan \(index + 1)"
+            }
+            return FanUsage(index: index, name: name, revolutionsPerMinute: speed)
+        }
+
+        return (
+            average(cpuValues),
+            average(gpuValues),
+            sensors,
+            fans
+        )
+    }
+
+    private func appendSMCTemperatures(
+        keys: [String],
+        prefix: String,
+        to sensors: inout [TemperatureSensor]
+    ) -> [Double] {
+        keys.enumerated().compactMap { index, key in
+            guard let value = smcReader.value(for: key), value >= 10, value <= 110 else { return nil }
+            sensors.append(TemperatureSensor(name: "\(prefix) core \(index + 1)", valueCelsius: value))
+            return value
+        }
+    }
+
+    private func sampleEnergy(at date: Date) -> [String: Double] {
+        let counters = (MoniAppleSiliconEnergyCounters() ?? [:]).reduce(into: [String: Double]()) {
+            $0[$1.key] = $1.value.doubleValue
+        }
+        defer { previousEnergyCounters = (counters, date) }
+        guard let previousEnergyCounters,
+              date > previousEnergyCounters.date
+        else { return [:] }
+
+        let elapsed = date.timeIntervalSince(previousEnergyCounters.date)
+        return counters.reduce(into: [String: Double]()) { result, item in
+            guard let previous = previousEnergyCounters.values[item.key], item.value >= previous else { return }
+            let watts = (item.value - previous) / elapsed
+            if watts.isFinite, watts >= 0 {
+                result[item.key] = watts
+            }
+        }
+    }
+
+    private func average(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
     }
 
     private static func sampleBatteryTelemetry() -> PowerUsage {

@@ -191,9 +191,6 @@ private struct AlertSettings: View {
                     thresholdRow("Memory usage", enabled: $memoryEnabled, value: $memoryThreshold)
                     Divider()
                     thresholdRow("System disk usage", enabled: $diskEnabled, value: $diskThreshold)
-                    Text("CPU/GPU die temperature alerts require an undocumented HID/SMC sensor backend, which is not enabled in this build.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 DetailPanel("Delivery") {

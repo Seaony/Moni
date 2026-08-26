@@ -11,6 +11,8 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var gpuHistory: [Double] = []
     @Published private(set) var diskReadHistory: [Double] = []
     @Published private(set) var diskWriteHistory: [Double] = []
+    @Published private(set) var cpuTemperatureHistory: [Double] = []
+    @Published private(set) var gpuTemperatureHistory: [Double] = []
 
     private let sampler = SystemSampler()
     private let alertMonitor = AlertMonitor()
@@ -65,6 +67,12 @@ final class SystemMonitor: ObservableObject {
         append(snapshot.diskActivity.writeBytesPerSecond, to: &diskWriteHistory)
         if let gpu = snapshot.gpu.utilizationPercent {
             append(gpu, to: &gpuHistory)
+        }
+        if let temperature = snapshot.power.cpuTemperatureCelsius {
+            append(temperature, to: &cpuTemperatureHistory)
+        }
+        if let temperature = snapshot.power.gpuTemperatureCelsius {
+            append(temperature, to: &gpuTemperatureHistory)
         }
     }
 

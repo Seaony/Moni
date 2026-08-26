@@ -286,9 +286,9 @@ struct SummaryView: View {
                     }
                     Spacer()
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Battery temp")
+                        Text("CPU die")
                             .foregroundStyle(.secondary)
-                        Text(snapshot.power.batteryTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "No Data")
+                        Text(snapshot.power.cpuTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "No Data")
                             .font(.system(size: 22, weight: .bold, design: .rounded))
                     }
                 }
@@ -298,11 +298,25 @@ struct SummaryView: View {
                     value: powerDetail,
                     color: snapshot.power.isCharging ? MoniPalette.green : MoniPalette.yellow
                 )
-                Text("CPU and GPU die sensors require an undocumented HID/SMC backend")
+                Text(sensorSummary)
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    private var sensorSummary: String {
+        var parts: [String] = []
+        if let temperature = snapshot.power.gpuTemperatureCelsius {
+            parts.append(String(format: "GPU %.1f°C", temperature))
+        }
+        if !snapshot.power.fans.isEmpty {
+            parts.append("\(snapshot.power.fans.count) fans")
+        }
+        if let watts = snapshot.power.cpuPowerWatts {
+            parts.append(String(format: "CPU %.1f W", watts))
+        }
+        return parts.isEmpty ? "Waiting for hardware sensor samples" : parts.joined(separator: " · ")
     }
 
     private var dockerCard: some View {

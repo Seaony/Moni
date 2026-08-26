@@ -134,6 +134,21 @@ struct ProcessUsage: Identifiable, Sendable {
     var id: Int32 { pid }
 }
 
+struct TemperatureSensor: Identifiable, Sendable {
+    let name: String
+    let valueCelsius: Double
+
+    var id: String { name }
+}
+
+struct FanUsage: Identifiable, Sendable {
+    let index: Int
+    let name: String
+    let revolutionsPerMinute: Double
+
+    var id: Int { index }
+}
+
 struct PowerUsage: Sendable {
     var batteryPercent: Double?
     var isCharging = false
@@ -143,6 +158,14 @@ struct PowerUsage: Sendable {
     var voltageVolts: Double?
     var currentAmps: Double?
     var systemPowerWatts: Double?
+    var cpuTemperatureCelsius: Double?
+    var gpuTemperatureCelsius: Double?
+    var temperatureSensors: [TemperatureSensor]
+    var fans: [FanUsage]
+    var cpuPowerWatts: Double?
+    var gpuPowerWatts: Double?
+    var neuralEnginePowerWatts: Double?
+    var memoryPowerWatts: Double?
 
     nonisolated init(
         batteryPercent: Double? = nil,
@@ -152,7 +175,15 @@ struct PowerUsage: Sendable {
         cycleCount: Int? = nil,
         voltageVolts: Double? = nil,
         currentAmps: Double? = nil,
-        systemPowerWatts: Double? = nil
+        systemPowerWatts: Double? = nil,
+        cpuTemperatureCelsius: Double? = nil,
+        gpuTemperatureCelsius: Double? = nil,
+        temperatureSensors: [TemperatureSensor] = [],
+        fans: [FanUsage] = [],
+        cpuPowerWatts: Double? = nil,
+        gpuPowerWatts: Double? = nil,
+        neuralEnginePowerWatts: Double? = nil,
+        memoryPowerWatts: Double? = nil
     ) {
         self.batteryPercent = batteryPercent
         self.isCharging = isCharging
@@ -162,6 +193,14 @@ struct PowerUsage: Sendable {
         self.voltageVolts = voltageVolts
         self.currentAmps = currentAmps
         self.systemPowerWatts = systemPowerWatts
+        self.cpuTemperatureCelsius = cpuTemperatureCelsius
+        self.gpuTemperatureCelsius = gpuTemperatureCelsius
+        self.temperatureSensors = temperatureSensors
+        self.fans = fans
+        self.cpuPowerWatts = cpuPowerWatts
+        self.gpuPowerWatts = gpuPowerWatts
+        self.neuralEnginePowerWatts = neuralEnginePowerWatts
+        self.memoryPowerWatts = memoryPowerWatts
     }
 }
 
