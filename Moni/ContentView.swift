@@ -57,6 +57,8 @@ struct ContentView: View {
                 PrimaryDetailView(section: selection, selection: $selection)
             } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
                 SecondaryDetailView(section: selection, selection: $selection)
+            } else if selection == .ai {
+                AIUsageView()
             } else {
                 ModulePlaceholder(section: selection) {
                     selection = .summary
@@ -137,4 +139,5 @@ private struct ModulePlaceholder: View {
 #Preview {
     ContentView()
         .environmentObject(SystemMonitor())
+        .environmentObject(AIUsageStore())
 }
