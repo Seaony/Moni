@@ -18,6 +18,7 @@ enum PreferenceKey {
     static let alertSounds = "alertSounds"
     static let repeatAlerts = "repeatAlerts"
     static let aiUsageRangeDays = "aiUsageRangeDays"
+    static let summaryCardLayout = "summaryCardLayout"
 
     static let showHost = "showHost"
     static let showCPU = "showCPU"
@@ -27,6 +28,7 @@ enum PreferenceKey {
     static let showStorage = "showStorage"
     static let showProcesses = "showProcesses"
     static let showPower = "showPower"
+    static let showDocker = "showDocker"
 }
 
 enum AppAppearance: String, CaseIterable, Identifiable {

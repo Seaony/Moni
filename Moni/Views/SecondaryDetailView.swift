@@ -28,7 +28,7 @@ private struct GPUDetailView: View {
     @EnvironmentObject private var monitor: SystemMonitor
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("GPU") {
                     HStack {
@@ -59,8 +59,10 @@ private struct GPUDetailView: View {
                         value("Removable", device.isRemovable ? "Yes" : "No")
                         value("Recommended working set", bytes(device.recommendedMaxWorkingSetSize))
                     }
+                    .transition(MoniMotion.itemTransition)
                 }
             }
+            .moniAnimation(value: monitor.snapshot.gpuDevices.map(\.id))
         }
     }
 }
@@ -71,7 +73,7 @@ private struct NetworkDetailView: View {
     private var network: NetworkUsage { monitor.snapshot.network }
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("Network") {
                     HStack(alignment: .bottom, spacing: 28) {
@@ -81,11 +83,13 @@ private struct NetworkDetailView: View {
                             Text(rate(network.downloadBytesPerSecond))
                                 .font(.system(size: 29, weight: .bold, design: .rounded))
                                 .monospacedDigit()
+                                .moniNumericTransition(network.downloadBytesPerSecond)
                             Text("↑ Upload")
                                 .foregroundStyle(.orange)
                             Text(rate(network.uploadBytesPerSecond))
                                 .font(.system(size: 29, weight: .bold, design: .rounded))
                                 .monospacedDigit()
+                                .moniNumericTransition(network.uploadBytesPerSecond)
                         }
                         VStack(spacing: 3) {
                             Sparkline(values: monitor.downloadHistory, color: .cyan)
@@ -119,8 +123,10 @@ private struct NetworkDetailView: View {
                         .font(.system(size: 12))
                         .monospacedDigit()
                         .padding(.vertical, 4)
+                        .transition(MoniMotion.itemTransition)
                     }
                 }
+                .moniAnimation(value: network.interfaces.map(\.id))
             }
         }
     }
@@ -131,7 +137,7 @@ private struct StorageDetailView: View {
     @Binding var selection: MonitorSection
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 ForEach(monitor.snapshot.volumes) { volume in
                     DetailPanel(volume.name) {
@@ -142,9 +148,11 @@ private struct StorageDetailView: View {
                             Text(percent(volume.usedPercent))
                                 .font(.title3.bold())
                                 .foregroundStyle(volume.usedPercent >= 90 ? .red : .orange)
+                                .moniNumericTransition(volume.usedPercent)
                         }
                         ProgressView(value: volume.usedPercent, total: 100)
                             .tint(volume.usedPercent >= 90 ? .red : .orange)
+                            .moniAnimation(MoniMotion.data, value: volume.usedPercent)
                         HStack {
                             Text("Used \(bytes(UInt64(volume.usedBytes)))")
                             Spacer()
@@ -155,6 +163,7 @@ private struct StorageDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     }
+                    .transition(MoniMotion.itemTransition)
                 }
 
                 Button {
@@ -166,6 +175,7 @@ private struct StorageDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
             }
+            .moniAnimation(value: monitor.snapshot.volumes.map(\.id))
         }
     }
 }
@@ -176,20 +186,24 @@ private struct PowerDetailView: View {
     private var power: PowerUsage { monitor.snapshot.power }
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("Battery") {
                     HStack(alignment: .center, spacing: 24) {
                         Image(systemName: power.isCharging ? "battery.100percent.bolt" : "battery.75percent")
                             .font(.system(size: 54))
                             .foregroundStyle(power.isCharging ? .green : .yellow)
+                            .id(power.isCharging)
+                            .transition(MoniMotion.itemTransition)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(power.batteryPercent.map(percent) ?? "No Battery")
                                 .font(.system(size: 38, weight: .bold, design: .rounded))
+                                .moniNumericTransition(power.batteryPercent)
                             Text(power.isCharging ? "Charging on AC power" : remainingTime)
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    .moniAnimation(value: power.isCharging)
                 }
 
                 DetailPanel("Sensors") {
@@ -235,9 +249,11 @@ private struct DockerDetailView: View {
                     .font(.system(size: 52))
                     .foregroundStyle(.blue)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(docker.isRunning ? "Running" : docker.isInstalled ? "Not Running" : "Unavailable")
+                    Text(docker.statusTitle)
                         .font(.system(size: 34, weight: .bold, design: .rounded))
-                    Text(docker.installation ?? "Docker Desktop, OrbStack, and Docker CLI were not found")
+                        .id(docker.statusTitle)
+                        .transition(MoniMotion.itemTransition)
+                    Text(docker.installation ?? "No supported installation")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -245,15 +261,19 @@ private struct DockerDetailView: View {
             value("Installed", docker.isInstalled ? "Yes" : "No")
             value("Engine socket", docker.socketPath ?? "Not found")
             value("Status", docker.isRunning ? "Local socket available" : "Engine unavailable")
+            Text(docker.statusReason)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Text("Moni checks only local installation and engine socket state; it does not start or modify Docker.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .moniAnimation(value: docker.statusTitle)
     }
 }
 
 private struct DiskBrowserView: View {
-    struct FileItem: Identifiable {
+    struct FileItem: Identifiable, Sendable {
         let url: URL
         let isDirectory: Bool
         let size: UInt64
@@ -261,30 +281,16 @@ private struct DiskBrowserView: View {
         var id: String { url.path }
     }
 
+    private struct LoadResult: Sendable {
+        let items: [FileItem]
+        let error: String?
+    }
+
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var selectedPath = "/"
-
-    private var items: [FileItem] {
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: URL(fileURLWithPath: selectedPath),
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        )) ?? []
-        return urls.compactMap { url in
-            guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
-            return FileItem(
-                url: url,
-                isDirectory: values.isDirectory ?? false,
-                size: UInt64(max(0, values.fileSize ?? 0)),
-                modified: values.contentModificationDate
-            )
-        }
-        .sorted {
-            if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
-            return $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
-        }
-    }
+    @State private var items: [FileItem] = []
+    @State private var isLoading = false
+    @State private var loadError: String?
 
     var body: some View {
         VStack(spacing: 10) {
@@ -307,40 +313,101 @@ private struct DiskBrowserView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
-                Text("\(items.count) items")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .transition(MoniMotion.itemTransition)
+                } else {
+                    Text("\(items.count) items")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .moniNumericTransition(items.count)
+                        .transition(MoniMotion.itemTransition)
+                }
             }
 
             DetailPanel("Disk browser") {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(items) { item in
-                            Button {
-                                if item.isDirectory { selectedPath = item.url.path }
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: item.isDirectory ? "folder.fill" : "doc")
-                                        .foregroundStyle(item.isDirectory ? .blue : .secondary)
-                                    Text(item.url.lastPathComponent)
-                                        .lineLimit(1)
-                                    Spacer()
-                                    Text(item.isDirectory ? "—" : bytes(item.size))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 90, alignment: .trailing)
-                                    Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
-                                        .foregroundStyle(.tertiary)
-                                        .frame(width: 145, alignment: .trailing)
+                if let loadError {
+                    ContentUnavailableView(
+                        "Unable to read folder",
+                        systemImage: "folder.badge.questionmark",
+                        description: Text(loadError)
+                    )
+                    .transition(MoniMotion.itemTransition)
+                } else {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(spacing: 2) {
+                            ForEach(items) { item in
+                                Button {
+                                    if item.isDirectory { selectedPath = item.url.path }
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: item.isDirectory ? "folder.fill" : "doc")
+                                            .foregroundStyle(item.isDirectory ? .blue : .secondary)
+                                        Text(item.url.lastPathComponent)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Text(item.isDirectory ? "—" : bytes(item.size))
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 90, alignment: .trailing)
+                                        Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
+                                            .foregroundStyle(.tertiary)
+                                            .frame(width: 145, alignment: .trailing)
+                                    }
+                                    .font(.system(size: 12))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .contentShape(Rectangle())
                                 }
-                                .font(.system(size: 12))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
+                                .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+                                .transition(MoniMotion.itemTransition)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .moniAnimation(value: items.map(\.id))
                     }
                 }
             }
+        }
+        .moniAnimation(value: isLoading)
+        .moniAnimation(value: loadError)
+        .task(id: selectedPath) {
+            isLoading = true
+            let requestedPath = selectedPath
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.loadItems(at: requestedPath)
+            }.value
+            guard !Task.isCancelled, selectedPath == requestedPath else { return }
+            items = result.items
+            loadError = result.error
+            isLoading = false
+        }
+    }
+
+    private nonisolated static func loadItems(at path: String) -> LoadResult {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
+        do {
+            let urls = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: path),
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            )
+            let items = urls.compactMap { url -> FileItem? in
+                guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
+                return FileItem(
+                    url: url,
+                    isDirectory: values.isDirectory ?? false,
+                    size: UInt64(max(0, values.fileSize ?? 0)),
+                    modified: values.contentModificationDate
+                )
+            }
+            .sorted {
+                if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+                return $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
+            }
+            return LoadResult(items: items, error: nil)
+        } catch {
+            return LoadResult(items: [], error: error.localizedDescription)
         }
     }
 }
@@ -349,7 +416,10 @@ private func value(_ key: String, _ text: String) -> some View {
     HStack {
         Text(key).foregroundStyle(.secondary)
         Spacer()
-        Text(text).fontWeight(.semibold).monospacedDigit()
+        Text(text)
+            .fontWeight(.semibold)
+            .monospacedDigit()
+            .moniNumericTransition(text)
     }
     .font(.system(size: 12.5))
 }

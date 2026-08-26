@@ -46,7 +46,9 @@ enum MonitorSection: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: MonitorSection = .summary
+    @State private var refreshRotation = 0.0
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
     @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
@@ -55,24 +57,31 @@ struct ContentView: View {
         VStack(spacing: 12) {
             toolbar
 
-            if selection == .summary {
-                SummaryView(selection: $selection)
-            } else if [.host, .cpu, .memory, .processes].contains(selection) {
-                PrimaryDetailView(section: selection, selection: $selection)
-            } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
-                SecondaryDetailView(section: selection, selection: $selection)
-            } else if selection == .ai {
-                AIUsageView()
-            } else if selection == .settings {
-                SettingsView()
-            } else {
-                ModulePlaceholder(section: selection) {
-                    selection = .summary
+            ZStack(alignment: .topLeading) {
+                Group {
+                    if selection == .summary {
+                        SummaryView(selection: animatedSelection)
+                    } else if [.host, .cpu, .memory, .processes].contains(selection) {
+                        PrimaryDetailView(section: selection, selection: animatedSelection)
+                    } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
+                        SecondaryDetailView(section: selection, selection: animatedSelection)
+                    } else if selection == .ai {
+                        AIUsageView()
+                    } else if selection == .settings {
+                        SettingsView()
+                    } else {
+                        ModulePlaceholder(section: selection) {
+                            select(.summary)
+                        }
+                    }
                 }
+                .id(selection)
+                .transition(reduceMotion ? .identity : MoniMotion.pageTransition)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding(16)
-        .frame(width: 900, height: 720)
+        .frame(width: 900, height: 720, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
         .preferredColorScheme(preferredColorScheme)
         .onAppear {
@@ -102,12 +111,27 @@ struct ContentView: View {
         NSApp.setActivationPolicy(isVisible ? .regular : .accessory)
     }
 
+    private var animatedSelection: Binding<MonitorSection> {
+        Binding(get: { selection }, set: select)
+    }
+
+    private func select(_ section: MonitorSection) {
+        guard section != selection else { return }
+        if reduceMotion {
+            selection = section
+        } else {
+            withAnimation(MoniMotion.navigation) {
+                selection = section
+            }
+        }
+    }
+
     private var toolbar: some View {
         HStack(spacing: 10) {
             HStack(spacing: 2) {
                 ForEach(MonitorSection.allCases.filter { $0 != .disks && $0 != .settings }) { section in
                     Button {
-                        selection = section
+                        select(section)
                     } label: {
                         Image(systemName: section.symbol)
                             .font(.system(size: 14, weight: .semibold))
@@ -115,8 +139,9 @@ struct ContentView: View {
                             .foregroundStyle(selection == section ? .white : .secondary)
                             .background(selection == section ? Color.accentColor : Color.clear)
                             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MoniPressButtonStyle())
                     .help(section.title)
                 }
             }
@@ -127,23 +152,31 @@ struct ContentView: View {
             Spacer()
 
             Button {
-                monitor.refresh()
+                monitor.refresh(forceSlowMetrics: true)
+                if !reduceMotion {
+                    withAnimation(.easeInOut(duration: 0.45)) {
+                        refreshRotation += 360
+                    }
+                }
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .frame(width: 30, height: 30)
+                    .rotationEffect(.degrees(refreshRotation))
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MoniPressButtonStyle())
             .help("Refresh")
 
             Button {
-                selection = .settings
+                select(.settings)
             } label: {
                 Image(systemName: "gearshape")
                     .frame(width: 30, height: 30)
                     .background(selection == .settings ? Color.primary.opacity(0.12) : Color.primary.opacity(0.06))
                     .clipShape(Circle())
+                    .contentShape(Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MoniPressButtonStyle())
             .help("Settings")
         }
     }

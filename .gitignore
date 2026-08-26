@@ -1,5 +1,11 @@
 .DS_Store
-DerivedData/
 *.xcuserstate
 xcuserdata/
-
+DerivedData/
+build/
+*.xcarchive
+*.dmg
+*.p12
+*.p8
+*.provisionprofile
+sparkle-private-key*

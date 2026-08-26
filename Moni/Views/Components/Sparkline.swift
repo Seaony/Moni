@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct Sparkline: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let values: [Double]
     let color: Color
 
@@ -31,6 +32,9 @@ struct Sparkline: View {
                     .stroke(color, style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
                 }
             }
+            .id(values)
+            .transition(.opacity)
+            .animation(reduceMotion ? nil : MoniMotion.data, value: values)
         }
         .accessibilityHidden(true)
     }

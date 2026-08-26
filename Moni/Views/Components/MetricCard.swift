@@ -31,6 +31,7 @@ struct MetricCard<Content: View>: View {
                 if let trailing {
                     Text(trailing)
                         .foregroundStyle(.secondary)
+                        .moniNumericTransition(trailing)
                 }
             }
             .font(.system(size: 14))
@@ -39,7 +40,7 @@ struct MetricCard<Content: View>: View {
             content
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 205, maxHeight: 205, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 205, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.primary.opacity(0.055))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -65,6 +66,7 @@ struct MetricRow: View {
             Text(value)
                 .fontWeight(.semibold)
                 .monospacedDigit()
+                .moniNumericTransition(value)
         }
         .font(.system(size: 12))
     }

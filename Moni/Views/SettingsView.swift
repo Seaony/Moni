@@ -32,6 +32,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var section: SettingsSection = .general
 
     var body: some View {
@@ -46,7 +47,7 @@ struct SettingsView: View {
 
                 ForEach(SettingsSection.allCases) { item in
                     Button {
-                        section = item
+                        select(item)
                     } label: {
                         Label(item.title, systemImage: item.symbol)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -55,8 +56,9 @@ struct SettingsView: View {
                             .foregroundStyle(section == item ? .white : .primary)
                             .background(section == item ? Color.accentColor : Color.clear)
                             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MoniPressButtonStyle())
                 }
                 Spacer()
             }
@@ -72,7 +74,20 @@ struct SettingsView: View {
                 case .about: AboutSettings()
                 }
             }
+            .id(section)
+            .transition(reduceMotion ? .identity : MoniMotion.pageTransition)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    private func select(_ newSection: SettingsSection) {
+        guard newSection != section else { return }
+        if reduceMotion {
+            section = newSection
+        } else {
+            withAnimation(MoniMotion.navigation) {
+                section = newSection
+            }
         }
     }
 }
@@ -82,7 +97,7 @@ private struct AIUsageSettings: View {
     @AppStorage(PreferenceKey.aiUsageRangeDays) private var rangeDays = 30
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("Usage range") {
                     Picker("History", selection: $rangeDays) {
@@ -91,7 +106,7 @@ private struct AIUsageSettings: View {
                         Text("90 days").tag(90)
                     }
                     .pickerStyle(.segmented)
-                    Text("Moni reads token counters from local session logs. It does not read prompts or responses.")
+                    Text("Moni reads usage metadata from local session logs. Prompt and response text is never shown.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -100,12 +115,14 @@ private struct AIUsageSettings: View {
                     providerStatus("Codex", detected: store.summary.providers.contains { $0.provider == "Codex" })
                     providerStatus("Claude", detected: store.summary.providers.contains { $0.provider == "Claude" })
                     HStack {
-                        Text("Cost estimates are not shown because local logs do not contain authoritative billing data.")
+                        Text("Costs are local estimates using public API rates, not subscription invoices or quota usage.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
                         if store.isLoading {
-                            ProgressView().controlSize(.small)
+                            ProgressView()
+                                .controlSize(.small)
+                                .transition(MoniMotion.itemTransition)
                         }
                         Button("Rescan") { store.refresh(days: rangeDays) }
                             .disabled(store.isLoading)
@@ -116,6 +133,10 @@ private struct AIUsageSettings: View {
         .onChange(of: rangeDays) { _, value in
             store.refresh(days: value)
         }
+        .task {
+            store.loadIfNeeded(days: rangeDays)
+        }
+        .moniAnimation(value: store.isLoading)
     }
 
     private func providerStatus(_ name: String, detected: Bool) -> some View {
@@ -141,7 +162,7 @@ private struct AlertSettings: View {
     @State private var notificationError: String?
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("Thresholds") {
                     thresholdRow("CPU usage", enabled: $cpuEnabled, value: $cpuThreshold)
@@ -166,10 +187,12 @@ private struct AlertSettings: View {
                         Text(notificationError)
                             .font(.caption)
                             .foregroundStyle(.red)
+                            .transition(MoniMotion.itemTransition)
                     }
                 }
             }
         }
+        .moniAnimation(value: notificationError)
     }
 
     private func thresholdRow(_ title: String, enabled: Binding<Bool>, value: Binding<Double>) -> some View {
@@ -180,6 +203,7 @@ private struct AlertSettings: View {
                 Text("\(Int(value.wrappedValue))%")
                     .monospacedDigit()
                     .frame(width: 42, alignment: .trailing)
+                    .moniNumericTransition(value.wrappedValue)
             }
             .disabled(!enabled.wrappedValue)
         }
@@ -209,7 +233,7 @@ private struct GeneralSettings: View {
     @State private var loginItemError: String?
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("Appearance") {
                     Picker("Appearance", selection: $appearance) {
@@ -249,10 +273,12 @@ private struct GeneralSettings: View {
                         Text(loginItemError)
                             .font(.caption)
                             .foregroundStyle(.red)
+                            .transition(MoniMotion.itemTransition)
                     }
                 }
             }
         }
+        .moniAnimation(value: loginItemError)
     }
 
     private func updateLoginItem(_ isEnabled: Bool) {
@@ -284,14 +310,17 @@ private struct MenuBarSettings: View {
                     HStack(spacing: 5) {
                         if !compactMenuBar {
                             Image(systemName: selectedMetric.symbol)
+                                .transition(MoniMotion.itemTransition)
                         }
                         Text(previewValue)
                             .monospacedDigit()
+                            .moniNumericTransition(previewValue)
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(Color.primary.opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .moniAnimation(value: compactMenuBar)
                     Spacer()
                 }
             }
@@ -332,6 +361,7 @@ private struct ModuleSettings: View {
     @AppStorage(PreferenceKey.showStorage) private var showStorage = true
     @AppStorage(PreferenceKey.showProcesses) private var showProcesses = true
     @AppStorage(PreferenceKey.showPower) private var showPower = true
+    @AppStorage(PreferenceKey.showDocker) private var showDocker = true
 
     var body: some View {
         DetailPanel("Summary cards") {
@@ -343,6 +373,10 @@ private struct ModuleSettings: View {
             moduleToggle("Storage", "internaldrive", $showStorage)
             moduleToggle("Processes", "list.bullet.rectangle", $showProcesses)
             moduleToggle("Power & Sensors", "battery.75percent", $showPower)
+            moduleToggle("Docker", "shippingbox", $showDocker)
+            Label("AI Usage is always shown", systemImage: "sparkles")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -354,6 +388,8 @@ private struct ModuleSettings: View {
 }
 
 private struct AboutSettings: View {
+    @EnvironmentObject private var updates: UpdateController
+
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
     }
@@ -381,6 +417,36 @@ private struct AboutSettings: View {
             }
 
             DetailPanel("Application") {
+                Button("Check for Updates…") {
+                    updates.checkForUpdates()
+                }
+                .disabled(!updates.canCheckForUpdates)
+
+                Toggle(
+                    "Check for updates automatically",
+                    isOn: Binding(
+                        get: { updates.automaticallyChecksForUpdates },
+                        set: updates.setAutomaticallyChecksForUpdates
+                    )
+                )
+                .disabled(updates.configurationError != nil)
+
+                Toggle(
+                    "Download and install updates automatically",
+                    isOn: Binding(
+                        get: { updates.automaticallyDownloadsUpdates },
+                        set: updates.setAutomaticallyDownloadsUpdates
+                    )
+                )
+                .disabled(!updates.allowsAutomaticUpdates)
+
+                if let configurationError = updates.configurationError {
+                    Text(configurationError)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
                 Button("Quit Moni") {
                     NSApp.terminate(nil)
                 }

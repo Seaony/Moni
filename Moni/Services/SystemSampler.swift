@@ -3,7 +3,16 @@ import Foundation
 import IOKit.ps
 import Metal
 
-final class SystemSampler {
+actor SystemSampler {
+    private struct HostIdentity {
+        let name: String
+        let model: String
+        let chip: String
+        let operatingSystem: String
+        let kernel: String
+        let processorCount: Int
+    }
+
     private struct CPUTicks {
         let user: UInt64
         let system: UInt64
@@ -17,22 +26,58 @@ final class SystemSampler {
     private var previousNetworkBytes: (received: UInt64, sent: UInt64, date: Date)?
     private var previousProcessTimes: [Int32: UInt64] = [:]
     private var previousProcessDate: Date?
+    private var processMetadata: [Int32: (name: String, path: String)] = [:]
 
-    func sample() -> SystemSnapshot {
+    private var hostIdentity: HostIdentity?
+    private var gpuDevices: [GPUDeviceInfo] = []
+    private var didLoadGPUDevices = false
+    private var cachedVolumes: [VolumeUsage] = []
+    private var cachedProcesses: [ProcessUsage] = []
+    private var cachedPower = PowerUsage()
+    private var cachedDocker = DockerStatus()
+    private var lastProcessSample: Date?
+    private var lastPeripheralSample: Date?
+
+    private let processInterval: TimeInterval = 2
+    private let peripheralInterval: TimeInterval = 5
+
+    func sample(forceSlowMetrics: Bool = false) -> SystemSnapshot {
         let now = Date()
-        let processes = sampleProcesses(at: now)
+        if hostIdentity == nil {
+            hostIdentity = Self.loadHostIdentity()
+        }
+        if !didLoadGPUDevices {
+            gpuDevices = Self.loadGPUDevices()
+            didLoadGPUDevices = true
+        }
+        if forceSlowMetrics || shouldRefresh(lastProcessSample, at: now, interval: processInterval) {
+            cachedProcesses = sampleProcesses(at: now)
+            lastProcessSample = now
+        }
+        if forceSlowMetrics || shouldRefresh(lastPeripheralSample, at: now, interval: peripheralInterval) {
+            cachedVolumes = sampleVolumes()
+            cachedPower = samplePower()
+            cachedDocker = sampleDockerStatus()
+            lastPeripheralSample = now
+        }
+
         return SystemSnapshot(
             date: now,
             host: sampleHost(),
             cpu: sampleCPU(),
             memory: sampleMemory(),
             network: sampleNetwork(at: now),
-            volumes: sampleVolumes(),
-            processes: processes,
-            power: samplePower(),
-            gpuDevices: sampleGPUDevices(),
-            docker: sampleDockerStatus()
+            volumes: cachedVolumes,
+            processes: cachedProcesses,
+            power: cachedPower,
+            gpuDevices: gpuDevices,
+            docker: cachedDocker
         )
+    }
+
+    private func shouldRefresh(_ previous: Date?, at date: Date, interval: TimeInterval) -> Bool {
+        guard let previous else { return true }
+        return date.timeIntervalSince(previous) >= interval
     }
 
     private func sampleCPU() -> CPUUsage {
@@ -57,10 +102,10 @@ final class SystemSampler {
         let current = (0 ..< Int(cpuCount)).map { index in
             let offset = index * stateCount
             return CPUTicks(
-                user: UInt64(info[offset + Int(CPU_STATE_USER)]),
-                system: UInt64(info[offset + Int(CPU_STATE_SYSTEM)]),
-                idle: UInt64(info[offset + Int(CPU_STATE_IDLE)]),
-                nice: UInt64(info[offset + Int(CPU_STATE_NICE)])
+                user: UInt64(UInt32(bitPattern: info[offset + Int(CPU_STATE_USER)])),
+                system: UInt64(UInt32(bitPattern: info[offset + Int(CPU_STATE_SYSTEM)])),
+                idle: UInt64(UInt32(bitPattern: info[offset + Int(CPU_STATE_IDLE)])),
+                nice: UInt64(UInt32(bitPattern: info[offset + Int(CPU_STATE_NICE)]))
             )
         }
 
@@ -71,10 +116,10 @@ final class SystemSampler {
 
         let deltas = zip(current, previousCPUTicks).map { current, previous in
             CPUTicks(
-                user: current.user &- previous.user,
-                system: current.system &- previous.system,
-                idle: current.idle &- previous.idle,
-                nice: current.nice &- previous.nice
+                user: tickDelta(current.user, previous: previous.user),
+                system: tickDelta(current.system, previous: previous.system),
+                idle: tickDelta(current.idle, previous: previous.idle),
+                nice: tickDelta(current.nice, previous: previous.nice)
             )
         }
         let aggregate = deltas.reduce(CPUTicks(user: 0, system: 0, idle: 0, nice: 0)) { partial, ticks in
@@ -99,6 +144,11 @@ final class SystemSampler {
             idle: percent(aggregate.idle, total: aggregate.total),
             perCore: perCore
         )
+    }
+
+    private func tickDelta(_ current: UInt64, previous: UInt64) -> UInt64 {
+        if current >= previous { return current - previous }
+        return UInt64(UInt32.max) - previous + current + 1
     }
 
     private func sampleMemory() -> MemoryUsage {
@@ -167,8 +217,12 @@ final class SystemSampler {
         }
 
         let elapsed = previousNetworkBytes.map { date.timeIntervalSince($0.date) } ?? 0
-        let download = elapsed > 0 ? Double(received &- (previousNetworkBytes?.received ?? received)) / elapsed : 0
-        let upload = elapsed > 0 ? Double(sent &- (previousNetworkBytes?.sent ?? sent)) / elapsed : 0
+        let previousReceived = previousNetworkBytes?.received ?? received
+        let previousSent = previousNetworkBytes?.sent ?? sent
+        let receivedDelta = received >= previousReceived ? received - previousReceived : 0
+        let sentDelta = sent >= previousSent ? sent - previousSent : 0
+        let download = elapsed > 0 ? Double(receivedDelta) / elapsed : 0
+        let upload = elapsed > 0 ? Double(sentDelta) / elapsed : 0
         previousNetworkBytes = (received, sent, date)
 
         return NetworkUsage(
@@ -230,21 +284,23 @@ final class SystemSampler {
 
             let totalTime = task.pti_total_user + task.pti_total_system
             currentTimes[pid] = totalTime
-            let previousTime = previousProcessTimes[pid] ?? totalTime
-            let cpu = elapsed > 0 ? Double(totalTime &- previousTime) / (elapsed * 1_000_000_000) * 100 : 0
-
-            var nameBuffer = [CChar](repeating: 0, count: Int(MAXCOMLEN * 4))
-            let nameLength = proc_name(pid, &nameBuffer, UInt32(nameBuffer.count))
-            let name = nameLength > 0 ? String(cString: nameBuffer) : "Process \(pid)"
-
-            var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN * 4))
-            let pathLength = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
-            let path = pathLength > 0 ? String(cString: pathBuffer) : name
+            let priorTime = previousProcessTimes[pid]
+            let previousTime = priorTime ?? totalTime
+            let timeDelta = totalTime >= previousTime ? totalTime - previousTime : 0
+            let cpu = elapsed > 0 ? Double(timeDelta) / (elapsed * 1_000_000_000) * 100 : 0
+            let wasReused = priorTime.map { totalTime < $0 } ?? false
+            let metadata: (name: String, path: String)
+            if !wasReused, let cachedMetadata = processMetadata[pid] {
+                metadata = cachedMetadata
+            } else {
+                metadata = loadProcessMetadata(pid: pid)
+            }
+            processMetadata[pid] = metadata
 
             usages.append(ProcessUsage(
                 pid: pid,
-                name: name,
-                path: path,
+                name: metadata.name,
+                path: metadata.path,
                 cpuPercent: max(0, cpu),
                 memoryBytes: task.pti_resident_size
             ))
@@ -252,10 +308,22 @@ final class SystemSampler {
 
         previousProcessTimes = currentTimes
         previousProcessDate = date
+        processMetadata = processMetadata.filter { currentTimes[$0.key] != nil }
         return usages.sorted { lhs, rhs in
             if lhs.cpuPercent == rhs.cpuPercent { return lhs.memoryBytes > rhs.memoryBytes }
             return lhs.cpuPercent > rhs.cpuPercent
         }
+    }
+
+    private func loadProcessMetadata(pid: pid_t) -> (name: String, path: String) {
+        var nameBuffer = [CChar](repeating: 0, count: Int(MAXCOMLEN * 4))
+        let nameLength = proc_name(pid, &nameBuffer, UInt32(nameBuffer.count))
+        let name = nameLength > 0 ? String(cString: nameBuffer) : "Process \(pid)"
+
+        var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN * 4))
+        let pathLength = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
+        let path = pathLength > 0 ? String(cString: pathBuffer) : name
+        return (name, path)
     }
 
     private func samplePower() -> PowerUsage {
@@ -283,7 +351,7 @@ final class SystemSampler {
         )
     }
 
-    private func sampleGPUDevices() -> [GPUDeviceInfo] {
+    private static func loadGPUDevices() -> [GPUDeviceInfo] {
         MTLCopyAllDevices().map { device in
             GPUDeviceInfo(
                 registryID: device.registryID,
@@ -298,32 +366,47 @@ final class SystemSampler {
 
     private func sampleDockerStatus() -> DockerStatus {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let installations = [
-            "/Applications/Docker.app": "Docker Desktop",
-            "/Applications/OrbStack.app": "OrbStack",
-            "/usr/local/bin/docker": "Docker CLI",
-            "/opt/homebrew/bin/docker": "Docker CLI"
+        let installations: [(path: String, provider: String)] = [
+            ("/Applications/Docker.app", "Docker Desktop"),
+            ("/Applications/OrbStack.app", "OrbStack"),
+            ("/usr/local/bin/docker", "Docker CLI"),
+            ("/opt/homebrew/bin/docker", "Docker CLI")
         ]
-        let sockets = [
-            "\(home)/.docker/run/docker.sock",
-            "\(home)/.orbstack/run/docker.sock",
-            "\(home)/Library/Containers/com.docker.docker/Data/docker-api.sock",
-            "/var/run/docker.sock"
+        let sockets: [(path: String, provider: String)] = [
+            ("\(home)/.orbstack/run/docker.sock", "OrbStack"),
+            ("\(home)/.docker/run/docker.sock", "Docker Desktop"),
+            ("\(home)/Library/Containers/com.docker.docker/Data/docker-api.sock", "Docker Desktop"),
+            ("/var/run/docker.sock", "Docker Engine")
         ]
-        let installation = installations.first { FileManager.default.fileExists(atPath: $0.key) }
-        let socket = sockets.first { FileManager.default.fileExists(atPath: $0) }
+        let installation = installations.first { FileManager.default.fileExists(atPath: $0.path) }
+        let socket = sockets.first { FileManager.default.fileExists(atPath: $0.path) }
+        let provider = socket?.provider ?? installation?.provider
         return DockerStatus(
-            isInstalled: installation != nil,
+            isInstalled: provider != nil,
             isRunning: socket != nil,
-            installation: installation?.value,
-            socketPath: socket
+            installation: provider,
+            socketPath: socket?.path
         )
     }
 
     private func sampleHost() -> HostDetails {
+        guard let hostIdentity else { return HostDetails() }
         var averages = [Double](repeating: 0, count: 3)
         _ = getloadavg(&averages, 3)
 
+        return HostDetails(
+            name: hostIdentity.name,
+            model: hostIdentity.model,
+            chip: hostIdentity.chip,
+            operatingSystem: hostIdentity.operatingSystem,
+            kernel: hostIdentity.kernel,
+            uptime: ProcessInfo.processInfo.systemUptime,
+            loadAverages: averages,
+            processorCount: hostIdentity.processorCount
+        )
+    }
+
+    private static func loadHostIdentity() -> HostIdentity {
         var system = utsname()
         uname(&system)
         var releaseField = system.release
@@ -333,20 +416,17 @@ final class SystemSampler {
                 String(cString: $0)
             }
         }
-
-        return HostDetails(
+        return HostIdentity(
             name: ProcessInfo.processInfo.hostName,
             model: sysctlString("hw.model") ?? "Mac",
             chip: sysctlString("machdep.cpu.brand_string") ?? "Apple Silicon",
             operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
             kernel: "Darwin \(release)",
-            uptime: ProcessInfo.processInfo.systemUptime,
-            loadAverages: averages,
             processorCount: ProcessInfo.processInfo.processorCount
         )
     }
 
-    private func sysctlString(_ name: String) -> String? {
+    private static func sysctlString(_ name: String) -> String? {
         var size = 0
         guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
         var buffer = [CChar](repeating: 0, count: size)

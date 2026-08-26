@@ -54,7 +54,7 @@ private struct HostDetailView: View {
     private var snapshot: SystemSnapshot { monitor.snapshot }
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("Host") {
                     HStack(alignment: .top, spacing: 20) {
@@ -69,6 +69,7 @@ private struct HostDetailView: View {
                             Text(uptime(snapshot.host.uptime))
                                 .font(.system(size: 38, weight: .bold, design: .rounded))
                                 .monospacedDigit()
+                                .moniNumericTransition(Int(snapshot.host.uptime))
                             Text("Uptime")
                                 .foregroundStyle(.secondary)
                         }
@@ -126,9 +127,11 @@ private struct HostDetailView: View {
                 Text(percent(value))
                     .fontWeight(.bold)
                     .monospacedDigit()
+                    .moniNumericTransition(value)
             }
             ProgressView(value: min(100, value), total: 100)
                 .tint(color)
+                .moniAnimation(MoniMotion.data, value: value)
         }
     }
 
@@ -156,7 +159,7 @@ private struct CPUDetailView: View {
     private var snapshot: SystemSnapshot { monitor.snapshot }
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("CPU") {
                     HStack(alignment: .firstTextBaseline) {
@@ -166,6 +169,7 @@ private struct CPUDetailView: View {
                         Text(percent(snapshot.cpu.total))
                             .font(.system(size: 32, weight: .bold, design: .rounded))
                             .monospacedDigit()
+                            .moniNumericTransition(snapshot.cpu.total)
                     }
                     Sparkline(values: monitor.cpuHistory, color: .pink)
                         .frame(height: 155)
@@ -187,10 +191,12 @@ private struct CPUDetailView: View {
                                         .frame(width: 48, alignment: .leading)
                                     ProgressView(value: value, total: 100)
                                         .tint(value > 80 ? .red : value > 45 ? .orange : .green)
+                                        .moniAnimation(MoniMotion.data, value: value)
                                     Text(percent(value))
                                         .font(.caption.bold())
                                         .monospacedDigit()
                                         .frame(width: 34, alignment: .trailing)
+                                        .moniNumericTransition(value)
                                 }
                             }
                         }
@@ -223,7 +229,7 @@ private struct MemoryDetailView: View {
     private var snapshot: SystemSnapshot { monitor.snapshot }
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("Memory") {
                     HStack(alignment: .firstTextBaseline) {
@@ -233,6 +239,7 @@ private struct MemoryDetailView: View {
                         Text(percent(snapshot.memory.usedPercent))
                             .font(.system(size: 32, weight: .bold, design: .rounded))
                             .monospacedDigit()
+                            .moniNumericTransition(snapshot.memory.usedPercent)
                     }
                     Sparkline(values: monitor.memoryHistory, color: .blue)
                         .frame(height: 155)
@@ -253,6 +260,7 @@ private struct MemoryDetailView: View {
                             .foregroundStyle(pressureColor)
                         ProgressView(value: snapshot.memory.usedPercent, total: 100)
                             .tint(pressureColor)
+                            .moniAnimation(MoniMotion.data, value: snapshot.memory.usedPercent)
                         Text("Calculated from physical memory usage")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -278,6 +286,10 @@ private struct MemoryDetailView: View {
                 Rectangle().fill(Color.green)
             }
             .clipShape(Capsule())
+            .moniAnimation(
+                MoniMotion.data,
+                value: [snapshot.memory.usedBytes, snapshot.memory.cachedBytes]
+            )
         }
         .frame(height: 10)
     }
@@ -342,7 +354,7 @@ private struct ProcessesDetailView: View {
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
 
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 2) {
                         ForEach(processes) { process in
                             HStack(spacing: 10) {
@@ -374,7 +386,7 @@ private func processHeader(action: @escaping () -> Void) -> some View {
         Text("Name")
         Spacer()
         Button("All processes ›", action: action)
-            .buttonStyle(.plain)
+            .buttonStyle(MoniPressButtonStyle())
             .foregroundStyle(.blue)
     }
     .font(.caption)
@@ -392,6 +404,7 @@ private func processRow(_ process: ProcessUsage, metric: String, color: Color) -
             .fontWeight(.bold)
             .foregroundStyle(color)
             .monospacedDigit()
+            .moniNumericTransition(metric)
     }
     .font(.system(size: 12))
     .padding(.vertical, 3)
@@ -401,7 +414,10 @@ private func detailValue(_ key: String, _ value: String) -> some View {
     HStack {
         Text(key).foregroundStyle(.secondary)
         Spacer()
-        Text(value).fontWeight(.semibold).monospacedDigit()
+        Text(value)
+            .fontWeight(.semibold)
+            .monospacedDigit()
+            .moniNumericTransition(value)
     }
     .font(.system(size: 12.5))
 }

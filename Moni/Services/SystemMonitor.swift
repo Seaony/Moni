@@ -12,6 +12,7 @@ final class SystemMonitor: ObservableObject {
     private let sampler = SystemSampler()
     private let alertMonitor = AlertMonitor()
     private var timer: AnyCancellable?
+    private var refreshTask: Task<Void, Never>?
     private var samplingInterval: TimeInterval
 
     init(samplingInterval: TimeInterval = 1) {
@@ -30,15 +31,28 @@ final class SystemMonitor: ObservableObject {
     func stop() {
         timer?.cancel()
         timer = nil
+        refreshTask?.cancel()
+        refreshTask = nil
     }
 
     func setSamplingInterval(_ interval: TimeInterval) {
+        guard samplingInterval != interval else { return }
         samplingInterval = interval
         start()
     }
 
-    func refresh() {
-        snapshot = sampler.sample()
+    func refresh(forceSlowMetrics: Bool = false) {
+        guard refreshTask == nil else { return }
+        refreshTask = Task { [weak self, sampler] in
+            let snapshot = await sampler.sample(forceSlowMetrics: forceSlowMetrics)
+            guard !Task.isCancelled, let self else { return }
+            apply(snapshot)
+            refreshTask = nil
+        }
+    }
+
+    private func apply(_ snapshot: SystemSnapshot) {
+        self.snapshot = snapshot
         alertMonitor.evaluate(snapshot)
         append(snapshot.cpu.total, to: &cpuHistory)
         append(snapshot.memory.usedPercent, to: &memoryHistory)
