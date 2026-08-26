@@ -203,6 +203,7 @@ struct ProcessUsage: Identifiable, Sendable {
     let path: String
     let cpuPercent: Double
     let memoryBytes: UInt64
+    let threadCount: Int
 
     var id: Int32 { pid }
 }

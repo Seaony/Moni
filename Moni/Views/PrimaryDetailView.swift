@@ -439,7 +439,7 @@ private struct ProcessesDetailView: View {
                             Text(process.pid.formatted()).frame(width: 70, alignment: .trailing)
                             Text(percent(process.cpuPercent)).frame(width: 90, alignment: .trailing)
                             Text(bytes(process.memoryBytes)).frame(width: 90, alignment: .trailing)
-                            Text("—").foregroundStyle(.tertiary).frame(width: 80, alignment: .trailing)
+                            Text(process.threadCount.formatted()).frame(width: 80, alignment: .trailing)
                         }
                         .font(.system(size: 12.5))
                         .monospacedDigit()

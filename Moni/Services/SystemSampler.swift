@@ -612,7 +612,8 @@ actor SystemSampler {
                 name: metadata.name,
                 path: metadata.path,
                 cpuPercent: max(0, cpu),
-                memoryBytes: task.pti_resident_size
+                memoryBytes: task.pti_resident_size,
+                threadCount: Int(task.pti_threadnum)
             ))
         }
 
