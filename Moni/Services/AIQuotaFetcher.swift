@@ -15,13 +15,14 @@ enum AIQuotaFetcher {
     }
 
     private static func fetchCodex(homeDirectory: URL) async -> AIQuotaFetchResult {
-        let webQuota = await OpenAIWebQuotaFetcher.shared.fetch()
+        async let webQuotaTask = OpenAIWebQuotaFetcher.shared.fetch()
         let authURL = homeDirectory.appending(path: ".codex/auth.json")
         guard let authData = try? Data(contentsOf: authURL),
             let root = try? JSONSerialization.jsonObject(with: authData) as? [String: Any],
             let tokens = root["tokens"] as? [String: Any],
             let accessToken = nonEmptyString(tokens["access_token"])
         else {
+            let webQuota = await webQuotaTask
             return AIQuotaFetchResult(
                 planName: nil,
                 windows: webQuota.window.map { [$0] } ?? [],
@@ -46,6 +47,7 @@ enum AIQuotaFetcher {
 
         do {
             let json = try await responseJSON(for: request)
+            let webQuota = await webQuotaTask
             var windows: [AIQuotaWindow] = []
             if let rateLimit = json["rate_limit"] as? [String: Any] {
                 appendCodexWindows(
@@ -90,12 +92,14 @@ enum AIQuotaFetcher {
                 message: webQuota.message
             )
         } catch let error as QuotaFetchError {
+            let webQuota = await webQuotaTask
             return AIQuotaFetchResult(
                 planName: nil,
                 windows: webQuota.window.map { [$0] } ?? [],
                 message: joinedMessage(error.codexMessage, webQuota.message)
             )
         } catch {
+            let webQuota = await webQuotaTask
             return AIQuotaFetchResult(
                 planName: nil,
                 windows: webQuota.window.map { [$0] } ?? [],
