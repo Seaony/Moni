@@ -90,3 +90,87 @@ struct SystemOverviewLargeWidgetView: View {
         return "\(days)d \(hours)h"
     }
 }
+
+struct AIUsageLargeWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .aiUsageLarge,
+            displayName: "AI Usage Details",
+            description: "查看 AI 总用量、成本趋势和各服务额度。",
+            family: .systemLarge
+        )
+    }
+}
+
+struct AIUsageLargeWidgetView: View {
+    let snapshot: WidgetAISnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "AI Usage", symbol: "sparkles", color: WidgetTheme.indigo, trailing: "This month · \(snapshot.providers.count) accounts")
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(snapshot.estimatedCostUSD?.formatted(.currency(code: "USD").precision(.fractionLength(0))) ?? "—")
+                    .font(.system(size: 34, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                Text(compact(snapshot.totalTokens) + " tokens")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(WidgetTheme.secondary)
+            }
+            .padding(.top, 10)
+            WidgetLineChart(values: snapshot.daily.map { $0.costUSD }, color: WidgetTheme.indigo)
+                .frame(height: 74)
+                .padding(.top, 8)
+            Spacer(minLength: 8)
+            VStack(spacing: 7) {
+                ForEach(Array(snapshot.providers.prefix(4).enumerated()), id: \.offset) { index, provider in
+                    providerCard(provider, color: providerColor(index))
+                }
+            }
+        }
+        .padding(18)
+    }
+
+    private func providerCard(_ provider: WidgetAIProvider, color: Color) -> some View {
+        let quota = provider.quotas.first
+        return VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 7, height: 7)
+                Text(provider.name == "Claude" ? "Claude Code" : provider.name)
+                    .fontWeight(.bold)
+                if let plan = provider.plan {
+                    Text(plan).foregroundStyle(WidgetTheme.tertiary)
+                }
+                Spacer(minLength: 4)
+                Text(compact(provider.totalTokens))
+                    .foregroundStyle(WidgetTheme.secondary)
+                Text(provider.estimatedCostUSD?.formatted(.currency(code: "USD")) ?? "—")
+                    .fontWeight(.semibold)
+            }
+            .font(.system(size: 10))
+            HStack(spacing: 7) {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(WidgetTheme.track)
+                        Capsule().fill(color).frame(width: geometry.size.width * min(1, max(0, (quota?.remainingPercent ?? 0) / 100)))
+                    }
+                }
+                .frame(height: 4)
+                Text(quota.map { "\(Int($0.remainingPercent.rounded()))% left" } ?? "No quota")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(quota == nil ? WidgetTheme.tertiary : color)
+                    .frame(width: 56, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(WidgetTheme.inset, in: RoundedRectangle(cornerRadius: 11))
+    }
+
+    private func compact(_ value: UInt64) -> String {
+        value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
+    }
+
+    private func providerColor(_ index: Int) -> Color {
+        [WidgetTheme.orange, WidgetTheme.cyan, WidgetTheme.blue, WidgetTheme.purple][index % 4]
+    }
+}
