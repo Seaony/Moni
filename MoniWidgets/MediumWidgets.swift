@@ -194,3 +194,59 @@ struct TopProcessesMediumWidgetView: View {
         ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
     }
 }
+
+struct SensorsMediumWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .sensorsMedium,
+            displayName: "Sensors",
+            description: "查看处理器、图形处理器、电池等温度传感器。",
+            family: .systemMedium
+        )
+    }
+}
+
+struct SensorsMediumWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private var sensors: [WidgetSystemSnapshot.Sensor] {
+        var values = snapshot.sensors
+        append("CPU die", value: snapshot.power.cpuTemperatureCelsius, to: &values)
+        append("GPU die", value: snapshot.power.gpuTemperatureCelsius, to: &values)
+        append("Battery", value: snapshot.power.batteryTemperatureCelsius, to: &values)
+        return Array(values.prefix(6))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Sensors", symbol: "thermometer.medium", color: WidgetTheme.orange, trailing: isHot ? "High temperature" : "No throttling")
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 3), alignment: .leading, spacing: 14) {
+                ForEach(Array(sensors.enumerated()), id: \.offset) { _, sensor in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(sensor.name)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(WidgetTheme.tertiary)
+                            .lineLimit(1)
+                        Text("\(Int(sensor.celsius.rounded()))°")
+                            .font(.system(size: 20, weight: .heavy, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(color(sensor.celsius))
+                    }
+                }
+            }
+            .padding(.top, 14)
+        }
+        .padding(16)
+    }
+
+    private var isHot: Bool { sensors.contains { $0.celsius >= 90 } }
+
+    private func append(_ name: String, value: Double?, to values: inout [WidgetSystemSnapshot.Sensor]) {
+        guard let value, !values.contains(where: { $0.name.localizedCaseInsensitiveContains(name) }) else { return }
+        values.append(.init(name: name, celsius: value))
+    }
+
+    private func color(_ value: Double) -> Color {
+        value >= 90 ? WidgetTheme.red : value >= 75 ? WidgetTheme.orange : WidgetTheme.foreground
+    }
+}
