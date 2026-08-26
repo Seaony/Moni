@@ -120,7 +120,7 @@ struct AIUsageView: View {
             HStack {
                 Text(chartStartLabel)
                 Spacer()
-                Text(range == .yesterday || range == .lastWeek ? range.title.lowercased() : "today")
+                Text("today")
             }
             .font(.system(size: 11.5))
             .foregroundStyle(.quaternary)
