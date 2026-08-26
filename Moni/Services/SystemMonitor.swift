@@ -15,13 +15,18 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var gpuTemperatureHistory: [Double] = []
     @Published private(set) var largestFolders: [StorageFolderUsage] = []
     @Published private(set) var isScanningStorage = false
+    @Published private(set) var publicIPAddress: String?
+    @Published private(set) var networkLatencyMilliseconds: Double?
+    @Published private(set) var isLoadingNetworkExternalDetails = false
 
     private let sampler = SystemSampler()
     private let alertMonitor = AlertMonitor()
     private var timer: AnyCancellable?
     private var refreshTask: Task<Void, Never>?
     private var storageScanTask: Task<Void, Never>?
+    private var networkExternalTask: Task<Void, Never>?
     private var didCompleteStorageScan = false
+    private var lastNetworkExternalLoad: Date?
     private var samplingInterval: TimeInterval
 
     init(samplingInterval: TimeInterval = 1) {
@@ -44,6 +49,8 @@ final class SystemMonitor: ObservableObject {
         refreshTask = nil
         storageScanTask?.cancel()
         storageScanTask = nil
+        networkExternalTask?.cancel()
+        networkExternalTask = nil
     }
 
     func setSamplingInterval(_ interval: TimeInterval) {
@@ -90,6 +97,42 @@ final class SystemMonitor: ObservableObject {
             isScanningStorage = false
             didCompleteStorageScan = true
             storageScanTask = nil
+        }
+    }
+
+    func loadNetworkExternalDetailsIfNeeded(force: Bool = false) {
+        if !force, let lastNetworkExternalLoad,
+           Date().timeIntervalSince(lastNetworkExternalLoad) < 10 * 60 {
+            return
+        }
+        guard networkExternalTask == nil else { return }
+        isLoadingNetworkExternalDetails = true
+        networkExternalTask = Task { [weak self] in
+            var request = URLRequest(url: URL(string: "https://api.ipify.org")!)
+            request.timeoutInterval = 5
+            let startedAt = ContinuousClock.now
+            let result: (String, Double)?
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let elapsed = startedAt.duration(to: .now)
+                guard let http = response as? HTTPURLResponse,
+                      http.statusCode == 200,
+                      let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !value.isEmpty,
+                      value.rangeOfCharacter(from: CharacterSet(charactersIn: "0123456789abcdefABCDEF.:").inverted) == nil
+                else { throw URLError(.badServerResponse) }
+                let milliseconds = Double(elapsed.components.seconds) * 1_000
+                    + Double(elapsed.components.attoseconds) / 1e15
+                result = (value, milliseconds)
+            } catch {
+                result = nil
+            }
+            guard !Task.isCancelled, let self else { return }
+            publicIPAddress = result?.0
+            networkLatencyMilliseconds = result?.1
+            lastNetworkExternalLoad = result == nil ? nil : Date()
+            isLoadingNetworkExternalDetails = false
+            networkExternalTask = nil
         }
     }
 

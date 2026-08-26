@@ -69,12 +69,23 @@ struct MemoryUsage: Sendable {
 
 struct NetworkInterfaceUsage: Identifiable, Sendable {
     let name: String
+    let kind: String
+    let address: String?
     let receivedBytes: UInt64
     let sentBytes: UInt64
     let isActive: Bool
     let linkSpeedBitsPerSecond: UInt64
 
     var id: String { name }
+}
+
+struct WiFiUsage: Sendable {
+    let interfaceName: String
+    let physicalMode: String
+    let networkName: String?
+    let signalStrengthDBm: Int?
+    let channelDescription: String?
+    let transmitRateBitsPerSecond: UInt64
 }
 
 struct NetworkConnectionUsage: Identifiable, Sendable {
@@ -94,6 +105,9 @@ struct NetworkUsage: Sendable {
     var uploadBytesPerSecond: Double = 0
     var totalReceivedBytes: UInt64 = 0
     var totalSentBytes: UInt64 = 0
+    var primaryInterfaceName: String?
+    var gateway: String?
+    var wifi: WiFiUsage?
     var interfaces: [NetworkInterfaceUsage] = []
     var connections: [NetworkConnectionUsage] = []
 
@@ -102,6 +116,9 @@ struct NetworkUsage: Sendable {
         uploadBytesPerSecond: Double = 0,
         totalReceivedBytes: UInt64 = 0,
         totalSentBytes: UInt64 = 0,
+        primaryInterfaceName: String? = nil,
+        gateway: String? = nil,
+        wifi: WiFiUsage? = nil,
         interfaces: [NetworkInterfaceUsage] = [],
         connections: [NetworkConnectionUsage] = []
     ) {
@@ -109,6 +126,9 @@ struct NetworkUsage: Sendable {
         self.uploadBytesPerSecond = uploadBytesPerSecond
         self.totalReceivedBytes = totalReceivedBytes
         self.totalSentBytes = totalSentBytes
+        self.primaryInterfaceName = primaryInterfaceName
+        self.gateway = gateway
+        self.wifi = wifi
         self.interfaces = interfaces
         self.connections = connections
     }

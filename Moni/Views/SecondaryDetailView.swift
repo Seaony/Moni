@@ -124,7 +124,11 @@ private struct NetworkDetailView: View {
     @State private var historyRange = "1m"
 
     private var network: NetworkUsage { monitor.snapshot.network }
-    private var activeInterface: NetworkInterfaceUsage? { network.interfaces.first(where: \.isActive) }
+    private var activeInterface: NetworkInterfaceUsage? {
+        network.primaryInterfaceName.flatMap { name in
+            network.interfaces.first { $0.name == name }
+        } ?? network.interfaces.first(where: \.isActive)
+    }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -134,7 +138,7 @@ private struct NetworkDetailView: View {
                         Text("Network")
                             .font(.system(size: 17, weight: .bold))
                             .foregroundStyle(MoniPalette.cyan)
-                        Text(activeInterface.map { "\($0.name) · active" } ?? "No active interface")
+                        Text(networkHeader)
                             .font(.system(size: 12.5))
                             .foregroundStyle(.tertiary)
                         Spacer(minLength: 12)
@@ -156,10 +160,10 @@ private struct NetworkDetailView: View {
 
                 HStack(alignment: .top, spacing: 12) {
                     DetailPanel("Interfaces") {
-                        ForEach(network.interfaces) { interface in
+                        ForEach(visibleInterfaces) { interface in
                             HStack(spacing: 10) {
                                 Text(interface.name).fontWeight(.semibold).frame(width: 62, alignment: .leading)
-                                Text("↓ \(bytes(interface.receivedBytes)) · ↑ \(bytes(interface.sentBytes))")
+                                Text(interfaceDetail(interface))
                                     .foregroundStyle(.tertiary)
                                     .lineLimit(1)
                                 Spacer()
@@ -174,17 +178,17 @@ private struct NetworkDetailView: View {
                     }
                     DetailPanel("Link & totals") {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                            secondaryStat("Download", rate(network.downloadBytesPerSecond))
-                            secondaryStat("Upload", rate(network.uploadBytesPerSecond))
-                            secondaryStat("Received", bytes(network.totalReceivedBytes))
-                            secondaryStat("Sent", bytes(network.totalSentBytes))
-                            secondaryStat("Interfaces", network.interfaces.count.formatted())
-                            secondaryStat("Active", network.interfaces.filter(\.isActive).count.formatted())
+                            secondaryStat("Public IP", publicIPAddress)
+                            secondaryStat("Gateway", network.gateway ?? "Unavailable")
+                            secondaryStat("Signal", network.wifi?.signalStrengthDBm.map { "\($0) dBm" } ?? "Unavailable")
+                            secondaryStat("Channel", network.wifi?.channelDescription ?? "Unavailable")
                             secondaryStat(
                                 "Link speed",
                                 activeInterface.flatMap { $0.linkSpeedBitsPerSecond > 0 ? bitRate($0.linkSpeedBitsPerSecond) : nil } ?? "Unknown"
                             )
-                            secondaryStat("Public IP", "Not queried")
+                            secondaryStat("Latency", latency)
+                            secondaryStat("Received total", bytes(activeInterface?.receivedBytes ?? network.totalReceivedBytes))
+                            secondaryStat("Sent total", bytes(activeInterface?.sentBytes ?? network.totalSentBytes))
                         }
                     }
                 }
@@ -238,6 +242,66 @@ private struct NetworkDetailView: View {
                 }
             }
         }
+        .task {
+            monitor.loadNetworkExternalDetailsIfNeeded()
+        }
+    }
+
+    private var networkHeader: String {
+        guard let activeInterface else { return "No active interface" }
+        var parts = [activeInterface.name]
+        if let wifi = network.wifi, wifi.interfaceName == activeInterface.name {
+            parts.append(wifi.physicalMode)
+        } else {
+            parts.append(activeInterface.kind)
+        }
+        if let address = activeInterface.address { parts.append(address) }
+        if let publicIPAddress = monitor.publicIPAddress { parts.append("public \(publicIPAddress)") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var visibleInterfaces: [NetworkInterfaceUsage] {
+        var result: [NetworkInterfaceUsage] = []
+        func appendFirst(where predicate: (NetworkInterfaceUsage) -> Bool) {
+            guard let interface = network.interfaces.first(where: predicate),
+                  !result.contains(where: { $0.id == interface.id }) else { return }
+            result.append(interface)
+        }
+
+        if let primaryName = network.primaryInterfaceName {
+            appendFirst { $0.name == primaryName }
+        }
+        appendFirst { $0.name.hasPrefix("en") && $0.name != network.primaryInterfaceName }
+        appendFirst { $0.name.hasPrefix("utun") && $0.isActive }
+        appendFirst { $0.name == "bridge0" }
+        for interface in network.interfaces where result.count < 4 {
+            if interface.address != nil, !result.contains(where: { $0.id == interface.id }) {
+                result.append(interface)
+            }
+        }
+        return result
+    }
+
+    private func interfaceDetail(_ interface: NetworkInterfaceUsage) -> String {
+        var parts = [interface.kind]
+        if let address = interface.address { parts.append(address) }
+        if let wifi = network.wifi,
+           wifi.interfaceName == interface.name,
+           let networkName = wifi.networkName {
+            parts.append(networkName)
+        } else if interface.address == nil {
+            parts.append("no address")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var publicIPAddress: String {
+        monitor.publicIPAddress ?? (monitor.isLoadingNetworkExternalDetails ? "Querying…" : "Unavailable")
+    }
+
+    private var latency: String {
+        monitor.networkLatencyMilliseconds.map { "\(Int($0.rounded())) ms" }
+            ?? (monitor.isLoadingNetworkExternalDetails ? "Measuring…" : "Unavailable")
     }
 }
 

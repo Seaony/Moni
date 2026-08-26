@@ -1,8 +1,10 @@
 import Darwin
+import CoreWLAN
 import Foundation
 import IOKit
 import IOKit.ps
 import Metal
+import SystemConfiguration
 
 actor SystemSampler {
     private struct HostIdentity {
@@ -21,6 +23,13 @@ actor SystemSampler {
         let nice: UInt64
 
         var total: UInt64 { user + system + idle + nice }
+    }
+
+    private struct NetworkMetadata {
+        let primaryInterfaceName: String?
+        let gateway: String?
+        let interfaceKinds: [String: String]
+        let wifi: WiFiUsage?
     }
 
     private var previousCPUTicks: [CPUTicks] = []
@@ -47,6 +56,12 @@ actor SystemSampler {
     private var cachedDriveHealth = DriveHealth()
     private var cachedProcesses: [ProcessUsage] = []
     private var cachedNetworkConnections: [NetworkConnectionUsage] = []
+    private var cachedNetworkMetadata = NetworkMetadata(
+        primaryInterfaceName: nil,
+        gateway: nil,
+        interfaceKinds: [:],
+        wifi: nil
+    )
     private var cachedPower = PowerUsage()
     private var cachedDocker = DockerStatus()
     private var lastProcessSample: Date?
@@ -75,6 +90,7 @@ actor SystemSampler {
             cachedDriveHealth = sampleDriveHealth()
             cachedPower = samplePower()
             cachedDocker = sampleDockerStatus()
+            cachedNetworkMetadata = Self.loadNetworkMetadata()
             lastPeripheralSample = now
         }
 
@@ -221,9 +237,37 @@ actor SystemSampler {
         defer { freeifaddrs(pointer) }
 
         var interfaces: [NetworkInterfaceUsage] = []
+        var ipv4Addresses: [String: String] = [:]
+        var ipv6Addresses: [String: String] = [:]
         var received: UInt64 = 0
         var sent: UInt64 = 0
         var cursor: UnsafeMutablePointer<ifaddrs>? = first
+
+        while let item = cursor?.pointee {
+            defer { cursor = item.ifa_next }
+            guard let address = item.ifa_addr else { continue }
+            let family = Int32(address.pointee.sa_family)
+            guard family == AF_INET || family == AF_INET6 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(
+                address,
+                socklen_t(address.pointee.sa_len),
+                &host,
+                socklen_t(host.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            ) == 0 else { continue }
+            let name = String(cString: item.ifa_name)
+            let value = String(cString: host)
+            if family == AF_INET {
+                ipv4Addresses[name] = value
+            } else if !value.hasPrefix("fe80:") {
+                ipv6Addresses[name] = value
+            }
+        }
+
+        cursor = first
 
         while let item = cursor?.pointee {
             defer { cursor = item.ifa_next }
@@ -238,12 +282,17 @@ actor SystemSampler {
             let usage = data.assumingMemoryBound(to: if_data.self).pointee
             let name = String(cString: item.ifa_name)
             let isActive = flags & IFF_UP != 0 && flags & IFF_RUNNING != 0
+            let wifiRate = cachedNetworkMetadata.wifi.flatMap {
+                $0.interfaceName == name ? $0.transmitRateBitsPerSecond : nil
+            }
             let interface = NetworkInterfaceUsage(
                 name: name,
+                kind: cachedNetworkMetadata.interfaceKinds[name] ?? Self.fallbackInterfaceKind(name),
+                address: ipv4Addresses[name] ?? ipv6Addresses[name],
                 receivedBytes: UInt64(usage.ifi_ibytes),
                 sentBytes: UInt64(usage.ifi_obytes),
                 isActive: isActive,
-                linkSpeedBitsPerSecond: UInt64(usage.ifi_baudrate)
+                linkSpeedBitsPerSecond: wifiRate ?? UInt64(usage.ifi_baudrate)
             )
             interfaces.append(interface)
             received += interface.receivedBytes
@@ -264,9 +313,99 @@ actor SystemSampler {
             uploadBytesPerSecond: upload,
             totalReceivedBytes: received,
             totalSentBytes: sent,
-            interfaces: interfaces.sorted { $0.name < $1.name },
+            primaryInterfaceName: cachedNetworkMetadata.primaryInterfaceName,
+            gateway: cachedNetworkMetadata.gateway,
+            wifi: cachedNetworkMetadata.wifi,
+            interfaces: interfaces.sorted { lhs, rhs in
+                if lhs.name == cachedNetworkMetadata.primaryInterfaceName { return true }
+                if rhs.name == cachedNetworkMetadata.primaryInterfaceName { return false }
+                if lhs.isActive != rhs.isActive { return lhs.isActive }
+                return lhs.name < rhs.name
+            },
             connections: cachedNetworkConnections
         )
+    }
+
+    private nonisolated static func loadNetworkMetadata() -> NetworkMetadata {
+        let store = SCDynamicStoreCreate(nil, "Moni" as CFString, nil, nil)
+        let globalIPv4 = store.flatMap {
+            SCDynamicStoreCopyValue($0, "State:/Network/Global/IPv4" as CFString) as? [String: Any]
+        }
+        let primaryInterfaceName = globalIPv4?["PrimaryInterface"] as? String
+        let gateway = globalIPv4?["Router"] as? String
+
+        var kinds: [String: String] = [:]
+        if let allInterfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] {
+            for interface in allInterfaces {
+                guard let name = SCNetworkInterfaceGetBSDName(interface) as String? else { continue }
+                let displayName = SCNetworkInterfaceGetLocalizedDisplayName(interface) as String?
+                let type = SCNetworkInterfaceGetInterfaceType(interface) as String?
+                kinds[name] = displayName ?? type ?? fallbackInterfaceKind(name)
+            }
+        }
+
+        let wifiInterface = primaryInterfaceName.flatMap {
+            CWWiFiClient.shared().interface(withName: $0)
+        } ?? CWWiFiClient.shared().interface()
+        let wifi: WiFiUsage?
+        if let wifiInterface,
+           let interfaceName = wifiInterface.interfaceName,
+           wifiInterface.powerOn() {
+            let channel = wifiInterface.wlanChannel()
+            let channelDescription = channel.map {
+                "\($0.channelNumber) (\(channelBandName($0.channelBand.rawValue)))"
+            }
+            let signal = wifiInterface.rssiValue()
+            wifi = WiFiUsage(
+                interfaceName: interfaceName,
+                physicalMode: wifiModeName(wifiInterface.activePHYMode().rawValue),
+                networkName: wifiInterface.ssid(),
+                signalStrengthDBm: signal < 0 ? signal : nil,
+                channelDescription: channelDescription,
+                transmitRateBitsPerSecond: UInt64(max(0, wifiInterface.transmitRate()) * 1_000_000)
+            )
+            kinds[interfaceName] = "Wi-Fi"
+        } else {
+            wifi = nil
+        }
+
+        return NetworkMetadata(
+            primaryInterfaceName: primaryInterfaceName,
+            gateway: gateway,
+            interfaceKinds: kinds,
+            wifi: wifi
+        )
+    }
+
+    private nonisolated static func fallbackInterfaceKind(_ name: String) -> String {
+        if name.hasPrefix("utun") { return "VPN" }
+        if name.hasPrefix("bridge") { return "Bridge" }
+        if name.hasPrefix("en") { return "Ethernet" }
+        if name.hasPrefix("awdl") { return "Apple Wireless Direct Link" }
+        if name.hasPrefix("llw") { return "Low-latency Wi-Fi" }
+        return "Network interface"
+    }
+
+    private nonisolated static func wifiModeName(_ rawValue: Int) -> String {
+        switch rawValue {
+        case 7: "Wi-Fi 7"
+        case 6: "Wi-Fi 6"
+        case 5: "Wi-Fi 5"
+        case 4: "Wi-Fi 4"
+        case 3: "802.11g"
+        case 2: "802.11b"
+        case 1: "802.11a"
+        default: "Wi-Fi"
+        }
+    }
+
+    private nonisolated static func channelBandName(_ rawValue: Int) -> String {
+        switch rawValue {
+        case 3: "6 GHz"
+        case 2: "5 GHz"
+        case 1: "2.4 GHz"
+        default: "Unknown band"
+        }
     }
 
     private func sampleNetworkConnections() -> [NetworkConnectionUsage] {

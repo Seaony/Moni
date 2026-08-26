@@ -194,6 +194,9 @@ struct ContentView: View {
                 if selection == .ai {
                     aiUsage.refreshCurrent(includeQuotas: true)
                 }
+                if selection == .network {
+                    monitor.loadNetworkExternalDetailsIfNeeded(force: true)
+                }
                 if !reduceMotion {
                     withAnimation(.easeInOut(duration: 0.45)) {
                         refreshRotation += 360
