@@ -3,6 +3,14 @@ import SwiftUI
 struct SummaryView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @Binding var selection: MonitorSection
+    @AppStorage(PreferenceKey.showHost) private var showHost = true
+    @AppStorage(PreferenceKey.showCPU) private var showCPU = true
+    @AppStorage(PreferenceKey.showMemory) private var showMemory = true
+    @AppStorage(PreferenceKey.showGPU) private var showGPU = true
+    @AppStorage(PreferenceKey.showNetwork) private var showNetwork = true
+    @AppStorage(PreferenceKey.showStorage) private var showStorage = true
+    @AppStorage(PreferenceKey.showProcesses) private var showProcesses = true
+    @AppStorage(PreferenceKey.showPower) private var showPower = true
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
     private var rootVolume: VolumeUsage? { snapshot.volumes.first { $0.mountPath == "/" } }
@@ -10,14 +18,14 @@ struct SummaryView: View {
     var body: some View {
         ScrollView {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
-                hostCard
-                cpuCard
-                memoryCard
-                gpuCard
-                networkCard
-                storageCard
-                processCard
-                powerCard
+                if showHost { hostCard }
+                if showCPU { cpuCard }
+                if showMemory { memoryCard }
+                if showGPU { gpuCard }
+                if showNetwork { networkCard }
+                if showStorage { storageCard }
+                if showProcesses { processCard }
+                if showPower { powerCard }
             }
         }
         .scrollIndicators(.visible)

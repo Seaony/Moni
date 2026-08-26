@@ -46,6 +46,9 @@ enum MonitorSection: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var selection: MonitorSection = .summary
+    @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
+    @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
+    @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -59,6 +62,8 @@ struct ContentView: View {
                 SecondaryDetailView(section: selection, selection: $selection)
             } else if selection == .ai {
                 AIUsageView()
+            } else if selection == .settings {
+                SettingsView()
             } else {
                 ModulePlaceholder(section: selection) {
                     selection = .summary
@@ -68,6 +73,29 @@ struct ContentView: View {
         .padding(16)
         .frame(width: 900, height: 720)
         .background(Color(nsColor: .windowBackgroundColor))
+        .preferredColorScheme(preferredColorScheme)
+        .onAppear {
+            monitor.setSamplingInterval(samplingInterval)
+            applyDockIconPreference(showDockIcon)
+        }
+        .onChange(of: samplingInterval) { _, value in
+            monitor.setSamplingInterval(value)
+        }
+        .onChange(of: showDockIcon) { _, value in
+            applyDockIconPreference(value)
+        }
+    }
+
+    private var preferredColorScheme: ColorScheme? {
+        switch AppAppearance(rawValue: appearance) ?? .system {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+
+    private func applyDockIconPreference(_ isVisible: Bool) {
+        NSApp.setActivationPolicy(isVisible ? .regular : .accessory)
     }
 
     private var toolbar: some View {
