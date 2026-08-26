@@ -297,15 +297,18 @@ actor AIUsageScanner {
         if includeQuotas, quotas["Codex"]?.windows.isEmpty != false, let localQuota = codex.quota {
             quotas["Codex"] = localQuota
         }
-        let providers = [
+        let coreProviders = [
             provider("Claude", totals: claude, quota: quotas["Claude"]),
             provider("Codex", totals: codex.totals, quota: quotas["Codex"]),
+        ]
+        let detectedProviders = [
             provider("Qwen Code", totals: qwen, quota: nil),
             provider("OpenCode", totals: openCode, quota: nil),
             provider("Kimi Code", totals: kimi, quota: nil),
             provider("Gemini CLI", totals: gemini, quota: nil),
             provider("DeepSeek Harness", totals: deepSeek, quota: nil),
         ].filter { $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty }
+        let providers = coreProviders + detectedProviders
         let lastDay = calendar.date(byAdding: .day, value: -1, to: end) ?? start
         return AIUsageSummary(
             providers: providers,
