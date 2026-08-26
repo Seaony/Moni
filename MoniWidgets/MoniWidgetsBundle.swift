@@ -14,5 +14,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         DockerSmallWidget()
         GPUSmallWidget()
         UptimeSmallWidget()
+        NetworkMediumWidget()
     }
 }

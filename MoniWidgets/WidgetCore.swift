@@ -41,6 +41,7 @@ enum MoniWidgetKind: String {
     case dockerSmall = "com.seaony.Moni.widget.docker-small"
     case gpuSmall = "com.seaony.Moni.widget.gpu-small"
     case uptimeSmall = "com.seaony.Moni.widget.uptime-small"
+    case networkMedium = "com.seaony.Moni.widget.network-medium"
 }
 
 struct MoniWidgetView: View {
@@ -69,6 +70,8 @@ struct MoniWidgetView: View {
             GPUSmallWidgetView(snapshot: entry.system)
         case .uptimeSmall:
             UptimeSmallWidgetView(snapshot: entry.system)
+        case .networkMedium:
+            NetworkMediumWidgetView(snapshot: entry.system)
         }
     }
 }
