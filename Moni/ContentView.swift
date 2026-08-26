@@ -55,6 +55,8 @@ struct ContentView: View {
                 SummaryView(selection: $selection)
             } else if [.host, .cpu, .memory, .processes].contains(selection) {
                 PrimaryDetailView(section: selection, selection: $selection)
+            } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
+                SecondaryDetailView(section: selection, selection: $selection)
             } else {
                 ModulePlaceholder(section: selection) {
                     selection = .summary

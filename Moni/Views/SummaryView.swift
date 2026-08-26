@@ -81,12 +81,12 @@ struct SummaryView: View {
 
     private var gpuCard: some View {
         cardButton(.gpu) {
-            MetricCard(title: "GPU", symbol: "display", color: .green, trailing: "1 device") {
+            MetricCard(title: "GPU", symbol: "display", color: .green, trailing: "\(snapshot.gpuDevices.count) device\(snapshot.gpuDevices.count == 1 ? "" : "s")") {
                 Text("Utilization")
                     .foregroundStyle(.secondary)
                 Text("No Data")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
-                Text(snapshot.host.chip)
+                Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text("macOS does not expose GPU utilization through a public API")

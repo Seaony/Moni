@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import IOKit.ps
+import Metal
 
 final class SystemSampler {
     private struct CPUTicks {
@@ -28,7 +29,9 @@ final class SystemSampler {
             network: sampleNetwork(at: now),
             volumes: sampleVolumes(),
             processes: processes,
-            power: samplePower()
+            power: samplePower(),
+            gpuDevices: sampleGPUDevices(),
+            docker: sampleDockerStatus()
         )
     }
 
@@ -277,6 +280,43 @@ final class SystemSampler {
             batteryPercent: percent,
             isCharging: charging,
             timeRemainingMinutes: minutes.flatMap { $0 >= 0 ? $0 : nil }
+        )
+    }
+
+    private func sampleGPUDevices() -> [GPUDeviceInfo] {
+        MTLCopyAllDevices().map { device in
+            GPUDeviceInfo(
+                registryID: device.registryID,
+                name: device.name,
+                isLowPower: device.isLowPower,
+                isRemovable: device.isRemovable,
+                hasUnifiedMemory: device.hasUnifiedMemory,
+                recommendedMaxWorkingSetSize: device.recommendedMaxWorkingSetSize
+            )
+        }
+    }
+
+    private func sampleDockerStatus() -> DockerStatus {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let installations = [
+            "/Applications/Docker.app": "Docker Desktop",
+            "/Applications/OrbStack.app": "OrbStack",
+            "/usr/local/bin/docker": "Docker CLI",
+            "/opt/homebrew/bin/docker": "Docker CLI"
+        ]
+        let sockets = [
+            "\(home)/.docker/run/docker.sock",
+            "\(home)/.orbstack/run/docker.sock",
+            "\(home)/Library/Containers/com.docker.docker/Data/docker-api.sock",
+            "/var/run/docker.sock"
+        ]
+        let installation = installations.first { FileManager.default.fileExists(atPath: $0.key) }
+        let socket = sockets.first { FileManager.default.fileExists(atPath: $0) }
+        return DockerStatus(
+            isInstalled: installation != nil,
+            isRunning: socket != nil,
+            installation: installation?.value,
+            socketPath: socket
         )
     }
 

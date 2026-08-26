@@ -69,6 +69,24 @@ struct PowerUsage: Sendable {
     var timeRemainingMinutes: Int?
 }
 
+struct GPUDeviceInfo: Identifiable, Sendable {
+    let registryID: UInt64
+    let name: String
+    let isLowPower: Bool
+    let isRemovable: Bool
+    let hasUnifiedMemory: Bool
+    let recommendedMaxWorkingSetSize: UInt64
+
+    var id: UInt64 { registryID }
+}
+
+struct DockerStatus: Sendable {
+    var isInstalled = false
+    var isRunning = false
+    var installation: String?
+    var socketPath: String?
+}
+
 struct HostDetails: Sendable {
     var name = ProcessInfo.processInfo.hostName
     var model = "Mac"
@@ -89,5 +107,6 @@ struct SystemSnapshot: Sendable {
     var volumes: [VolumeUsage] = []
     var processes: [ProcessUsage] = []
     var power = PowerUsage()
+    var gpuDevices: [GPUDeviceInfo] = []
+    var docker = DockerStatus()
 }
-
