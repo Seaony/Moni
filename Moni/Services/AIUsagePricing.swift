@@ -165,6 +165,13 @@ enum AIUsagePricing {
         if let range = value.range(of: #"-\d{8}$"#, options: .regularExpression) {
             value.removeSubrange(range)
         }
+        if case .claude = provider {
+            value = value.replacingOccurrences(
+                of: #"^(claude-[a-z]+-\d+)\.(\d+)$"#,
+                with: "$1-$2",
+                options: .regularExpression
+            )
+        }
         if case .codex = provider, value == "gpt-5.6" { return "gpt-5.6-sol" }
         return value
     }

@@ -165,10 +165,11 @@ struct AIUsageView: View {
                 providerStat("Input", tokens(provider.inputTokens))
                 providerStat("Output", tokens(provider.outputTokens))
                 providerStat("Cache read", tokens(provider.cacheReadTokens))
+                if provider.cacheWriteTokens > 0 || provider.reasoningTokens == 0 {
+                    providerStat("Cache write", tokens(provider.cacheWriteTokens))
+                }
                 if provider.reasoningTokens > 0 {
                     providerStat("Reasoning", tokens(provider.reasoningTokens))
-                } else {
-                    providerStat("Cache write", tokens(provider.cacheWriteTokens))
                 }
             }
 

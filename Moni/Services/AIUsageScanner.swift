@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 actor AIUsageScanner {
     private struct TokenValues: Hashable {
@@ -168,6 +169,12 @@ actor AIUsageScanner {
         let usages: [UsageEvent]
     }
 
+    private struct OpenCodeRecord {
+        let id: String
+        let sessionID: String
+        let usage: UsageEvent
+    }
+
     private let fileManager = FileManager.default
     private let homeDirectory: URL
     private let calendar: Calendar
@@ -222,6 +229,7 @@ actor AIUsageScanner {
         let codex = scanCodex(start: start, end: end, daily: &daily)
         let claude = scanClaude(start: start, end: end, daily: &daily)
         let qwen = scanQwen(start: start, end: end, daily: &daily)
+        let openCode = scanOpenCode(start: start, end: end, daily: &daily)
         var quotas = includeQuotas ? await AIQuotaFetcher.fetchAll(homeDirectory: homeDirectory) : [:]
         if includeQuotas, quotas["Codex"]?.windows.isEmpty != false, let localQuota = codex.quota {
             quotas["Codex"] = localQuota
@@ -230,6 +238,7 @@ actor AIUsageScanner {
             provider("Claude", totals: claude, quota: quotas["Claude"]),
             provider("Codex", totals: codex.totals, quota: quotas["Codex"]),
             provider("Qwen Code", totals: qwen, quota: nil),
+            provider("OpenCode", totals: openCode, quota: nil),
         ].filter { $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty }
         let lastDay = calendar.date(byAdding: .day, value: -1, to: end) ?? start
         return AIUsageSummary(
@@ -611,6 +620,220 @@ actor AIUsageScanner {
         }
         guard trimmed.hasPrefix("/") else { return nil }
         return URL(fileURLWithPath: trimmed).standardizedFileURL
+    }
+
+    private func scanOpenCode(start: Date, end: Date, daily: inout [Date: DailyBucket]) -> Totals {
+        var records: [String: OpenCodeRecord] = [:]
+        if let databaseURL = openCodeDatabaseURL() {
+            for record in openCodeDatabaseRecords(databaseURL) {
+                records[record.id] = record
+            }
+        }
+
+        let databaseIDs = Set(records.keys)
+        for url in openCodeLegacyMessageFiles() {
+            let fileID = url.deletingPathExtension().lastPathComponent
+            if databaseIDs.contains(fileID) { continue }
+            guard let data = try? Data(contentsOf: url),
+                let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let record = openCodeRecord(
+                    message,
+                    fallbackID: fileID,
+                    fallbackSessionID: url.deletingLastPathComponent().lastPathComponent,
+                    fallbackCreatedMilliseconds: 0
+                ),
+                !databaseIDs.contains(record.id),
+                records[record.id] == nil
+            else { continue }
+            records[record.id] = record
+        }
+
+        var totals = Totals()
+        var sessions: Set<String> = []
+        for record in records.values where record.usage.date >= start && record.usage.date < end {
+            totals.add(record.usage)
+            addDaily(record.usage, to: &daily)
+            sessions.insert(record.sessionID)
+        }
+        totals.sessions = sessions.count
+        return totals
+    }
+
+    private func openCodeDatabaseURL() -> URL? {
+        let root = openCodeDataRoot()
+        let primary = root.appending(path: "opencode.db")
+        if fileManager.fileExists(atPath: primary.path) { return primary }
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        return files.filter {
+            $0.pathExtension == "db" && $0.lastPathComponent.hasPrefix("opencode-")
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }.first
+    }
+
+    private func openCodeDataRoot() -> URL {
+        for key in ["TOKEI_OPENCODE_DATA_DIR", "OPENCODE_DATA_DIR"] {
+            if let value = ProcessInfo.processInfo.environment[key], let url = qwenAbsoluteURL(value) {
+                return url
+            }
+        }
+        return homeDirectory.appending(path: ".local/share/opencode")
+    }
+
+    private func openCodeLegacyMessageFiles() -> [URL] {
+        let root: URL
+        if let configured = ProcessInfo.processInfo.environment["TOKEI_OPENCODE_DIR"],
+            let url = qwenAbsoluteURL(configured)
+        {
+            root = url
+        } else {
+            root = openCodeDataRoot().appending(path: "storage/message")
+        }
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var files: [URL] = []
+        for case let url as URL in enumerator
+        where url.pathExtension == "json" && url.lastPathComponent.hasPrefix("msg_") {
+            files.append(url)
+        }
+        return files.sorted { $0.path < $1.path }
+    }
+
+    private func openCodeDatabaseRecords(_ url: URL) -> [OpenCodeRecord] {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+            let database
+        else {
+            if let database { sqlite3_close_v2(database) }
+            return []
+        }
+        defer { sqlite3_close_v2(database) }
+        sqlite3_busy_timeout(database, 1_000)
+
+        var statement: OpaquePointer?
+        let query = "SELECT id, session_id, time_created, data FROM message"
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK,
+            let statement
+        else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        var records: [OpenCodeRecord] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let rawData = sqliteText(statement, column: 3),
+                let data = rawData.data(using: .utf8),
+                let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let record = openCodeRecord(
+                    message,
+                    fallbackID: sqliteText(statement, column: 0) ?? "",
+                    fallbackSessionID: sqliteText(statement, column: 1) ?? "",
+                    fallbackCreatedMilliseconds: sqlite3_column_int64(statement, 2)
+                )
+            else { continue }
+            records.append(record)
+        }
+        return records
+    }
+
+    private func sqliteText(_ statement: OpaquePointer, column: Int32) -> String? {
+        guard sqlite3_column_type(statement, column) != SQLITE_NULL,
+            let text = sqlite3_column_text(statement, column)
+        else { return nil }
+        return String(cString: text)
+    }
+
+    private func openCodeRecord(
+        _ message: [String: Any],
+        fallbackID: String,
+        fallbackSessionID: String,
+        fallbackCreatedMilliseconds: Int64
+    ) -> OpenCodeRecord? {
+        guard string(message["role"]) == "assistant" else { return nil }
+        let time = message["time"] as? [String: Any]
+        let createdMilliseconds = Int64(uint(time?["created"])) > 0
+            ? Int64(uint(time?["created"]))
+            : fallbackCreatedMilliseconds
+        guard createdMilliseconds > 0 else { return nil }
+
+        let id = string(message["id"]) ?? fallbackID
+        let sessionID = string(message["sessionID"]) ?? fallbackSessionID
+        guard !id.isEmpty, !sessionID.isEmpty else { return nil }
+        let tokens = message["tokens"] as? [String: Any] ?? [:]
+        let cache = tokens["cache"] as? [String: Any] ?? [:]
+        let input = uint(tokens["input"])
+        let output = uint(tokens["output"])
+        let reasoning = uint(tokens["reasoning"])
+        let cacheRead = uint(cache["read"])
+        let cacheWrite = uint(cache["write"])
+        guard input + output + reasoning + cacheRead + cacheWrite > 0 else { return nil }
+
+        let date = Date(timeIntervalSince1970: Double(createdMilliseconds) / 1_000)
+        let model = string(message["modelID"]) ?? "unknown"
+        let recordedCost = (message["cost"] as? NSNumber)?.doubleValue
+        let cost = recordedCost.flatMap { $0 > 0 && $0.isFinite ? $0 : nil }
+            ?? openCodeEstimatedCost(
+                model: model,
+                date: date,
+                input: input,
+                output: output,
+                reasoning: reasoning,
+                cacheRead: cacheRead,
+                cacheWrite: cacheWrite
+            )
+        return OpenCodeRecord(
+            id: id,
+            sessionID: sessionID,
+            usage: UsageEvent(
+                date: date,
+                model: model,
+                tokens: TokenValues(
+                    input: input,
+                    cacheRead: cacheRead,
+                    cacheWrite: cacheWrite,
+                    output: output,
+                    reasoning: reasoning
+                ),
+                cacheWrite1h: 0,
+                costUSD: cost,
+                reasoningCountsSeparately: true
+            )
+        )
+    }
+
+    private func openCodeEstimatedCost(
+        model: String,
+        date: Date,
+        input: UInt64,
+        output: UInt64,
+        reasoning: UInt64,
+        cacheRead: UInt64,
+        cacheWrite: UInt64
+    ) -> Double? {
+        let normalized = model.lowercased()
+        let provider: AIUsageProvider?
+        if normalized.contains("claude") || normalized.hasPrefix("anthropic/") {
+            provider = .claude
+        } else if normalized.hasPrefix("gpt-") || normalized.hasPrefix("openai/") {
+            provider = .codex
+        } else if normalized.contains("qwen") {
+            provider = .qwen
+        } else {
+            provider = nil
+        }
+        guard let provider else { return nil }
+        return AIUsagePricing.estimatedCostUSD(
+            provider: provider,
+            model: model,
+            date: date,
+            inputTokens: input,
+            cacheReadTokens: cacheRead,
+            cacheWriteTokens: cacheWrite,
+            outputTokens: output + reasoning
+        )
     }
 
     private func parseClaudeFile(_ url: URL) -> [ClaudeEvent] {
