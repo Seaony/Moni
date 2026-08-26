@@ -2,7 +2,7 @@ import SwiftUI
 
 private enum DashboardSizing {
     static let designWidth: CGFloat = 900
-    static let designHeight: CGFloat = 720
+    static let designHeight: CGFloat = 850
     static let interfaceScale: CGFloat = 1.0
     static let renderedWidth = designWidth * interfaceScale
     static let renderedHeight = designHeight * interfaceScale
@@ -76,33 +76,39 @@ struct ContentView: View {
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
 
     var body: some View {
-        VStack(spacing: 12) {
-            toolbar
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                toolbar
 
-            ZStack(alignment: .topLeading) {
-                Group {
-                    if selection == .summary {
-                        SummaryView(selection: animatedSelection)
-                    } else if [.host, .cpu, .memory, .processes].contains(selection) {
-                        PrimaryDetailView(section: selection, selection: animatedSelection)
-                    } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
-                        SecondaryDetailView(section: selection, selection: animatedSelection)
-                    } else if selection == .ai {
-                        AIUsageView()
-                    } else if selection == .settings {
-                        SettingsView()
-                    } else {
-                        ModulePlaceholder(section: selection) {
-                            select(.summary)
+                ZStack(alignment: .topLeading) {
+                    Group {
+                        if selection == .summary {
+                            SummaryView(selection: animatedSelection)
+                        } else if [.host, .cpu, .memory, .processes].contains(selection) {
+                            PrimaryDetailView(section: selection, selection: animatedSelection)
+                        } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
+                            SecondaryDetailView(section: selection, selection: animatedSelection)
+                        } else if selection == .ai {
+                            AIUsageView()
+                        } else if selection == .settings {
+                            SettingsView()
+                        } else {
+                            ModulePlaceholder(section: selection) {
+                                select(.summary)
+                            }
                         }
                     }
+                    .id(selection)
+                    .transition(reduceMotion ? .identity : MoniMotion.pageTransition)
                 }
-                .id(selection)
-                .transition(reduceMotion ? .identity : MoniMotion.pageTransition)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 18)
+
+            statusBar
         }
-        .padding(16)
         .frame(
             width: DashboardSizing.designWidth,
             height: DashboardSizing.designHeight,
@@ -153,7 +159,7 @@ struct ContentView: View {
     private var toolbar: some View {
         HStack(spacing: 10) {
             HStack(spacing: 2) {
-                ForEach(MonitorSection.allCases.filter { $0 != .disks && $0 != .settings }) { section in
+                ForEach(MonitorSection.allCases.filter { $0 != .settings }) { section in
                     Button {
                         select(section)
                     } label: {
@@ -213,6 +219,7 @@ struct ContentView: View {
             }
             .buttonStyle(MoniPressButtonStyle())
             .help("Refresh")
+            .keyboardShortcut("r", modifiers: .command)
 
             Button {
                 select(.settings)
@@ -228,7 +235,53 @@ struct ContentView: View {
             }
             .buttonStyle(MoniPressButtonStyle())
             .help("Settings")
+            .keyboardShortcut(",", modifiers: .command)
         }
+    }
+
+    private var statusBar: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(MoniPalette.green)
+                .frame(width: 7, height: 7)
+
+            Text(statusText)
+                .monospacedDigit()
+
+            Spacer()
+
+            Text("⌘R refresh")
+            Text("⌘, settings")
+            Text("⌘Q quit")
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(MoniPalette.foregroundTertiary)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 11)
+        .background(MoniPalette.inset)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(MoniPalette.footerLine)
+                .frame(height: 1)
+        }
+    }
+
+    private var statusText: String {
+        var parts = [
+            "Sampling every \(formattedSamplingInterval)",
+            "\(Int(monitor.snapshot.cpu.total.rounded()))% CPU",
+            "\(Int(monitor.snapshot.memory.usedPercent.rounded()))% MEM"
+        ]
+        if let temperature = monitor.snapshot.power.cpuTemperatureCelsius {
+            parts.append("\(Int(temperature.rounded()))°C")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var formattedSamplingInterval: String {
+        samplingInterval.rounded() == samplingInterval
+            ? "\(Int(samplingInterval))s"
+            : String(format: "%.1fs", samplingInterval)
     }
 }
 

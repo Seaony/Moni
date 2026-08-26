@@ -37,6 +37,10 @@ enum MoniPalette {
         light: rgb(0x000000, alpha: 0.09),
         dark: rgb(0xFFFFFF, alpha: 0.09)
     )
+    static let footerLine = adaptive(
+        light: rgb(0x000000, alpha: 0.09),
+        dark: rgb(0xFFFFFF, alpha: 0.07)
+    )
 
     static let blue = Color(nsColor: rgb(0x0A84FF))
     static let pink = Color(nsColor: rgb(0xFF375F))
