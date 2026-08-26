@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum DashboardCardID: String, CaseIterable, Codable, Hashable, Identifiable {
-    case host, cpu, memory, gpu, network, storage, processes, power, docker, aiUsage
+    case host, cpu, memory, gpu, network, storage, processes, docker, power, aiUsage
 
     var id: String { rawValue }
 
