@@ -580,7 +580,7 @@ private struct DockerDetailView: View {
                     .font(.system(size: 12.5)).foregroundStyle(.tertiary)
             }
             VStack(spacing: 10) {
-                Image(systemName: "shippingbox")
+                Image(systemName: MonitorSection.docker.symbol)
                     .font(.system(size: 52, weight: .light))
                     .foregroundStyle(docker.isRunning ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
                 Text(docker.statusTitle)
