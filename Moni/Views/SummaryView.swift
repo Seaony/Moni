@@ -111,9 +111,12 @@ struct SummaryView: View {
                     Sparkline(values: monitor.cpuHistory, color: MoniPalette.pink)
                         .frame(height: cardSize(.cpu).rows == 2 ? 245 : 66)
                 }
-                MetricRow(label: "User", value: percent(snapshot.cpu.user), color: MoniPalette.pink)
-                MetricRow(label: "System", value: percent(snapshot.cpu.system), color: MoniPalette.orange)
-                MetricRow(label: "Idle", value: percent(snapshot.cpu.idle), color: MoniPalette.green)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    compactCardStat("User", percent(snapshot.cpu.user), color: MoniPalette.pink)
+                    compactCardStat("System", percent(snapshot.cpu.system), color: MoniPalette.orange)
+                    compactCardStat("Nice", percent(snapshot.cpu.nice), color: MoniPalette.yellow)
+                    compactCardStat("Idle", percent(snapshot.cpu.idle), color: MoniPalette.green)
+                }
             }
         }
     }
@@ -134,11 +137,31 @@ struct SummaryView: View {
                     Sparkline(values: monitor.memoryHistory, color: MoniPalette.blue)
                         .frame(height: cardSize(.memory).rows == 2 ? 245 : 66)
                 }
-                MetricRow(label: "Free", value: bytes(snapshot.memory.freeBytes), color: MoniPalette.green)
-                MetricRow(label: "Cached", value: bytes(snapshot.memory.cachedBytes), color: MoniPalette.cyan)
-                MetricRow(label: "Wired", value: bytes(snapshot.memory.wiredBytes), color: MoniPalette.orange)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    compactCardStat("Used", bytes(snapshot.memory.usedBytes), color: MoniPalette.blue)
+                    compactCardStat("Free", bytes(snapshot.memory.freeBytes), color: MoniPalette.green)
+                    compactCardStat("Cached", bytes(snapshot.memory.cachedBytes), color: MoniPalette.cyan)
+                    compactCardStat("Wired", bytes(snapshot.memory.wiredBytes), color: MoniPalette.orange)
+                }
             }
         }
+    }
+
+    private func compactCardStat(_ label: String, _ value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 6, height: 6)
+                Text(label)
+                    .foregroundStyle(.secondary)
+            }
+            Text(value)
+                .fontWeight(.bold)
+                .monospacedDigit()
+        }
+        .font(.system(size: 11.5))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var gpuCard: some View {
