@@ -46,7 +46,7 @@ private struct GPUDetailView: View {
                         Text(monitor.snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
                             .font(.system(size: 30, weight: .bold, design: .rounded))
                     }
-                    Sparkline(values: Array(monitor.gpuHistory.suffix(secondarySampleCount(historyRange))), color: MoniPalette.green)
+                    Sparkline(values: monitor.history(.gpu, duration: secondaryHistoryDuration(historyRange)), color: MoniPalette.green)
                         .frame(height: 160)
                     rangeFooter(historyRange)
                 }
@@ -180,8 +180,8 @@ private struct NetworkDetailView: View {
                     .font(.system(size: 20, weight: .bold))
                     .monospacedDigit()
                     ZStack {
-                        Sparkline(values: Array(monitor.downloadHistory.suffix(secondarySampleCount(historyRange))), color: MoniPalette.cyan)
-                        Sparkline(values: Array(monitor.uploadHistory.suffix(secondarySampleCount(historyRange))), color: MoniPalette.orange)
+                        Sparkline(values: monitor.history(.download, duration: secondaryHistoryDuration(historyRange)), color: MoniPalette.cyan)
+                        Sparkline(values: monitor.history(.upload, duration: secondaryHistoryDuration(historyRange)), color: MoniPalette.orange)
                     }
                     .frame(height: 160)
                     rangeFooter(historyRange)
@@ -881,7 +881,7 @@ private func rangeFooter(_ range: String) -> some View {
     .foregroundStyle(.quaternary)
 }
 
-private func secondarySampleCount(_ range: String) -> Int {
+private func secondaryHistoryDuration(_ range: String) -> TimeInterval {
     switch range {
     case "1h": 3_600
     case "24h": 86_400

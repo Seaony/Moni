@@ -1,18 +1,18 @@
 import Combine
 import Foundation
 
+enum SystemHistoryMetric {
+    case cpu
+    case memory
+    case loadAverage
+    case download
+    case upload
+    case gpu
+}
+
 @MainActor
 final class SystemMonitor: ObservableObject {
     @Published private(set) var snapshot = SystemSnapshot()
-    @Published private(set) var cpuHistory: [Double] = []
-    @Published private(set) var memoryHistory: [Double] = []
-    @Published private(set) var downloadHistory: [Double] = []
-    @Published private(set) var uploadHistory: [Double] = []
-    @Published private(set) var gpuHistory: [Double] = []
-    @Published private(set) var diskReadHistory: [Double] = []
-    @Published private(set) var diskWriteHistory: [Double] = []
-    @Published private(set) var cpuTemperatureHistory: [Double] = []
-    @Published private(set) var gpuTemperatureHistory: [Double] = []
     @Published private(set) var largestFolders: [StorageFolderUsage] = []
     @Published private(set) var isScanningStorage = false
     @Published private(set) var publicIPAddress: String?
@@ -28,6 +28,22 @@ final class SystemMonitor: ObservableObject {
     private var didCompleteStorageScan = false
     private var lastNetworkExternalLoad: Date?
     private var samplingInterval: TimeInterval
+    private var recentHistory: [HistorySample] = []
+    private var minuteHistory: [HistorySample] = []
+
+    private struct HistorySample {
+        let date: Date
+        let cpu: Double
+        let memory: Double
+        let loadAverage: Double
+        let download: Double
+        let upload: Double
+        let gpu: Double?
+        let diskRead: Double
+        let diskWrite: Double
+        let cpuTemperature: Double?
+        let gpuTemperature: Double?
+    }
 
     init(samplingInterval: TimeInterval = 0.7) {
         self.samplingInterval = samplingInterval
@@ -136,30 +152,66 @@ final class SystemMonitor: ObservableObject {
         }
     }
 
-    private func apply(_ snapshot: SystemSnapshot) {
-        self.snapshot = snapshot
-        alertMonitor.evaluate(snapshot)
-        append(snapshot.cpu.total, to: &cpuHistory)
-        append(snapshot.memory.usedPercent, to: &memoryHistory)
-        append(snapshot.network.downloadBytesPerSecond, to: &downloadHistory)
-        append(snapshot.network.uploadBytesPerSecond, to: &uploadHistory)
-        append(snapshot.diskActivity.readBytesPerSecond, to: &diskReadHistory)
-        append(snapshot.diskActivity.writeBytesPerSecond, to: &diskWriteHistory)
-        if let gpu = snapshot.gpu.utilizationPercent {
-            append(gpu, to: &gpuHistory)
-        }
-        if let temperature = snapshot.power.cpuTemperatureCelsius {
-            append(temperature, to: &cpuTemperatureHistory)
-        }
-        if let temperature = snapshot.power.gpuTemperatureCelsius {
-            append(temperature, to: &gpuTemperatureHistory)
-        }
+    var cpuHistory: [Double] { recentHistory.map(\.cpu) }
+    var memoryHistory: [Double] { recentHistory.map(\.memory) }
+    var downloadHistory: [Double] { recentHistory.map(\.download) }
+    var uploadHistory: [Double] { recentHistory.map(\.upload) }
+    var gpuHistory: [Double] { recentHistory.compactMap(\.gpu) }
+    var diskReadHistory: [Double] { recentHistory.map(\.diskRead) }
+    var diskWriteHistory: [Double] { recentHistory.map(\.diskWrite) }
+    var cpuTemperatureHistory: [Double] { recentHistory.compactMap(\.cpuTemperature) }
+    var gpuTemperatureHistory: [Double] { recentHistory.compactMap(\.gpuTemperature) }
+
+    func history(_ metric: SystemHistoryMetric, duration: TimeInterval) -> [Double] {
+        let source = duration <= 60 ? recentHistory : minuteHistory
+        let referenceDate = source.last?.date ?? snapshot.date
+        let cutoff = referenceDate.addingTimeInterval(-duration)
+        return source.lazy
+            .filter { $0.date >= cutoff }
+            .compactMap { sample in
+                switch metric {
+                case .cpu: sample.cpu
+                case .memory: sample.memory
+                case .loadAverage: sample.loadAverage
+                case .download: sample.download
+                case .upload: sample.upload
+                case .gpu: sample.gpu
+                }
+            }
     }
 
-    private func append(_ value: Double, to history: inout [Double]) {
-        history.append(value)
-        if history.count > 60 {
-            history.removeFirst(history.count - 60)
+    private func apply(_ snapshot: SystemSnapshot) {
+        appendHistory(snapshot)
+        self.snapshot = snapshot
+        alertMonitor.evaluate(snapshot)
+    }
+
+    private func appendHistory(_ snapshot: SystemSnapshot) {
+        let sample = HistorySample(
+            date: snapshot.date,
+            cpu: snapshot.cpu.total,
+            memory: snapshot.memory.usedPercent,
+            loadAverage: snapshot.host.loadAverages.first ?? 0,
+            download: snapshot.network.downloadBytesPerSecond,
+            upload: snapshot.network.uploadBytesPerSecond,
+            gpu: snapshot.gpu.utilizationPercent,
+            diskRead: snapshot.diskActivity.readBytesPerSecond,
+            diskWrite: snapshot.diskActivity.writeBytesPerSecond,
+            cpuTemperature: snapshot.power.cpuTemperatureCelsius,
+            gpuTemperature: snapshot.power.gpuTemperatureCelsius
+        )
+        recentHistory.append(sample)
+        let recentCutoff = snapshot.date.addingTimeInterval(-60)
+        recentHistory.removeAll { $0.date < recentCutoff }
+
+        let minute = floor(snapshot.date.timeIntervalSince1970 / 60)
+        if let last = minuteHistory.last,
+           floor(last.date.timeIntervalSince1970 / 60) == minute {
+            minuteHistory[minuteHistory.count - 1] = sample
+        } else {
+            minuteHistory.append(sample)
+            let dayCutoff = snapshot.date.addingTimeInterval(-86_400)
+            minuteHistory.removeAll { $0.date < dayCutoff }
         }
     }
 

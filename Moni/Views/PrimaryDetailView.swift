@@ -116,7 +116,7 @@ private struct HostDetailView: View {
                         }
                     }
                     Sparkline(
-                        values: Array(monitor.cpuHistory.suffix(historySampleCount(historyRange))),
+                        values: monitor.history(.loadAverage, duration: historyDuration(historyRange)),
                         color: .secondary,
                         showsFill: false,
                         lineWidth: 1.8
@@ -169,7 +169,7 @@ private struct CPUDetailView: View {
                             .moniNumericTransition(snapshot.cpu.total)
                     }
                     Sparkline(
-                        values: Array(monitor.cpuHistory.suffix(historySampleCount(historyRange))),
+                        values: monitor.history(.cpu, duration: historyDuration(historyRange)),
                         color: MoniPalette.pink
                     )
                     .frame(height: 160)
@@ -260,7 +260,7 @@ private struct MemoryDetailView: View {
                             .moniNumericTransition(snapshot.memory.usedPercent)
                     }
                     Sparkline(
-                        values: Array(monitor.memoryHistory.suffix(historySampleCount(historyRange))),
+                        values: monitor.history(.memory, duration: historyDuration(historyRange)),
                         color: MoniPalette.blue
                     )
                     .frame(height: 160)
@@ -542,7 +542,7 @@ private func detailStat(_ key: String, _ value: String) -> some View {
     .frame(maxWidth: .infinity, alignment: .leading)
 }
 
-private func historySampleCount(_ range: String) -> Int {
+private func historyDuration(_ range: String) -> TimeInterval {
     switch range {
     case "1h": 3_600
     case "24h": 86_400
