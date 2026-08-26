@@ -53,6 +53,8 @@ struct ContentView: View {
 
             if selection == .summary {
                 SummaryView(selection: $selection)
+            } else if [.host, .cpu, .memory, .processes].contains(selection) {
+                PrimaryDetailView(section: selection, selection: $selection)
             } else {
                 ModulePlaceholder(section: selection) {
                     selection = .summary
