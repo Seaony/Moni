@@ -70,6 +70,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: MonitorSection = .summary
     @State private var hoveredSection: MonitorSection?
+    @State private var settingsSection: SettingsSection = .general
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
 
@@ -87,9 +88,12 @@ struct ContentView: View {
                         } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
                             SecondaryDetailView(section: selection, selection: animatedSelection)
                         } else if selection == .ai {
-                            AIUsageView()
+                            AIUsageView {
+                                settingsSection = .aiUsage
+                                select(.settings)
+                            }
                         } else if selection == .settings {
-                            SettingsView()
+                            SettingsView(section: $settingsSection)
                         } else {
                             ModulePlaceholder(section: selection) {
                                 select(.summary)
@@ -194,6 +198,7 @@ struct ContentView: View {
             Spacer()
 
             Button {
+                settingsSection = .general
                 select(.settings)
             } label: {
                 Image(systemName: "gearshape")

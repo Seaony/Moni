@@ -3,7 +3,7 @@ import ServiceManagement
 import SwiftUI
 import UserNotifications
 
-private enum SettingsSection: String, CaseIterable, Identifiable {
+enum SettingsSection: String, CaseIterable, Identifiable {
     case general, menuBar, alerts, aiUsage, modules, about
 
     var id: String { rawValue }
@@ -13,7 +13,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "General"
         case .menuBar: "Menu Bar"
         case .alerts: "Alerts"
-        case .aiUsage: "AI Usage"
+        case .aiUsage: "AI Providers"
         case .modules: "Modules"
         case .about: "About"
         }
@@ -33,7 +33,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var section: SettingsSection = .general
+    @Binding var section: SettingsSection
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
 
     var body: some View {

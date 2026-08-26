@@ -3,6 +3,7 @@ import SwiftUI
 struct AIUsageView: View {
     @EnvironmentObject private var store: AIUsageStore
     @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.month.rawValue
+    let onAddSource: () -> Void
 
     private var range: AIUsageRange {
         AIUsageRange(rawValue: rangeValue) ?? .month
@@ -40,9 +41,11 @@ struct AIUsageView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 8)
-                        Text("Add source…")
+                        Button("Add source…", action: onAddSource)
                             .font(.system(size: 12))
                             .foregroundStyle(MoniPalette.blue)
+                            .buttonStyle(.plain)
+                            .moniPointingHand()
                     }
                 }
             }
