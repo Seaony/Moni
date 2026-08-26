@@ -67,11 +67,9 @@ enum MonitorSection: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var monitor: SystemMonitor
-    @EnvironmentObject private var aiUsage: AIUsageStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: MonitorSection = .summary
     @State private var hoveredSection: MonitorSection?
-    @State private var refreshRotation = 0.0
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
 
@@ -194,32 +192,6 @@ struct ContentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             Spacer()
-
-            Button {
-                monitor.refresh(forceSlowMetrics: true)
-                if selection == .ai {
-                    aiUsage.refreshCurrent(includeQuotas: true)
-                }
-                if selection == .network {
-                    monitor.loadNetworkExternalDetailsIfNeeded(force: true)
-                }
-                if !reduceMotion {
-                    withAnimation(.easeInOut(duration: 0.45)) {
-                        refreshRotation += 360
-                    }
-                }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 18, height: 18)
-                    .frame(width: 34, height: 34)
-                    .rotationEffect(.degrees(refreshRotation))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(MoniPressButtonStyle())
-            .help("Refresh")
-            .keyboardShortcut("r", modifiers: .command)
 
             Button {
                 select(.settings)

@@ -47,6 +47,14 @@ struct MoniApp: App {
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesCommand(updateController: updates)
             }
+            CommandGroup(after: .newItem) {
+                Button("Refresh") {
+                    monitor.refresh(forceSlowMetrics: true)
+                    monitor.loadNetworkExternalDetailsIfNeeded(force: true)
+                    aiUsage.refreshCurrent(includeQuotas: true)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+            }
         }
     }
 
