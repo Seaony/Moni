@@ -363,3 +363,53 @@ struct AISpendSmallWidgetView: View {
         value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
     }
 }
+
+struct DockerSmallWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .dockerSmall,
+            displayName: "Docker",
+            description: "查看本机 Docker 引擎的可用状态。",
+            family: .systemSmall
+        )
+    }
+}
+
+struct DockerSmallWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private var status: String {
+        if snapshot.docker.isRunning { return "Running" }
+        if snapshot.docker.isInstalled { return "Stopped" }
+        return "Not Found"
+    }
+
+    private var statusColor: Color {
+        snapshot.docker.isRunning ? WidgetTheme.green : WidgetTheme.orange
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Docker", symbol: "shippingbox", color: WidgetTheme.blue, trailing: snapshot.docker.installation)
+            Text(status)
+                .font(.system(size: 31, weight: .heavy, design: .rounded))
+                .minimumScaleFactor(0.65)
+                .lineLimit(1)
+                .padding(.top, 10)
+            Text(snapshot.docker.isRunning ? "engine available" : "engine unavailable")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(WidgetTheme.secondary)
+            Spacer(minLength: 8)
+            HStack(spacing: 7) {
+                Circle().fill(statusColor).frame(width: 7, height: 7)
+                Text(snapshot.docker.installation ?? "Docker")
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 2)
+                Image(systemName: snapshot.docker.isRunning ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .foregroundStyle(statusColor)
+            }
+        }
+        .padding(16)
+    }
+}

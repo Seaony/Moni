@@ -11,5 +11,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         WiFiSmallWidget()
         ProcessesSmallWidget()
         AISpendSmallWidget()
+        DockerSmallWidget()
     }
 }

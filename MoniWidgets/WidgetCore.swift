@@ -38,6 +38,7 @@ enum MoniWidgetKind: String {
     case wifiSmall = "com.seaony.Moni.widget.wifi-small"
     case processesSmall = "com.seaony.Moni.widget.processes-small"
     case aiSpendSmall = "com.seaony.Moni.widget.ai-spend-small"
+    case dockerSmall = "com.seaony.Moni.widget.docker-small"
 }
 
 struct MoniWidgetView: View {
@@ -60,6 +61,8 @@ struct MoniWidgetView: View {
             ProcessesSmallWidgetView(snapshot: entry.system)
         case .aiSpendSmall:
             AISpendSmallWidgetView(snapshot: entry.ai)
+        case .dockerSmall:
+            DockerSmallWidgetView(snapshot: entry.system)
         }
     }
 }
