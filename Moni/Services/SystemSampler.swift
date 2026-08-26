@@ -96,7 +96,9 @@ actor SystemSampler {
         }
         if forceSlowMetrics || shouldRefresh(lastPeripheralSample, at: now, interval: peripheralInterval) {
             cachedVolumes = sampleVolumes()
-            cachedDriveHealth = sampleDriveHealth()
+            if cachedDriveHealth.smartStatus == nil {
+                cachedDriveHealth = sampleDriveHealth()
+            }
             cachedPower = samplePower()
             cachedDocker = sampleDockerStatus()
             cachedNetworkMetadata = Self.loadNetworkMetadata()
