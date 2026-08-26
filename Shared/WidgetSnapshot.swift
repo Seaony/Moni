@@ -105,7 +105,11 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
     let volume: Volume?
     let diskReadBytesPerSecond: Double
     let diskWriteBytesPerSecond: Double
+    let diskReadOperationsPerSecond: Double
+    let diskWriteOperationsPerSecond: Double
     let driveModel: String?
+    let driveSmartStatus: String?
+    let driveTemperatureCelsius: Double?
     let network: Network
     let processCount: Int
     let threadCount: Int
@@ -126,7 +130,11 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
         volume: Volume(name: "Macintosh HD", totalBytes: 926_400_000_000, availableBytes: 74_900_000_000),
         diskReadBytesPerSecond: 629_000,
         diskWriteBytesPerSecond: 0,
+        diskReadOperationsPerSecond: 84,
+        diskWriteOperationsPerSecond: 12,
         driveModel: "APPLE SSD",
+        driveSmartStatus: "Verified",
+        driveTemperatureCelsius: 36,
         network: Network(downloadBytesPerSecond: 45_000, uploadBytesPerSecond: 8_000, interfaceName: "en0", networkName: "Studio 5G", physicalMode: "Wi-Fi 6", signalStrengthDBm: -46, channel: "149", transmitRateBitsPerSecond: 1_200_000_000),
         processCount: 1_084,
         threadCount: 5_912,

@@ -37,7 +37,11 @@ extension WidgetSystemSnapshot {
             volume: root.map { Volume(name: $0.name, totalBytes: $0.totalBytes, availableBytes: $0.availableBytes) },
             diskReadBytesPerSecond: snapshot.diskActivity.readBytesPerSecond,
             diskWriteBytesPerSecond: snapshot.diskActivity.writeBytesPerSecond,
+            diskReadOperationsPerSecond: snapshot.diskActivity.readOperationsPerSecond,
+            diskWriteOperationsPerSecond: snapshot.diskActivity.writeOperationsPerSecond,
             driveModel: snapshot.driveHealth.model,
+            driveSmartStatus: snapshot.driveHealth.smartStatus,
+            driveTemperatureCelsius: snapshot.driveHealth.temperatureCelsius,
             network: Network(
                 downloadBytesPerSecond: snapshot.network.downloadBytesPerSecond,
                 uploadBytesPerSecond: snapshot.network.uploadBytesPerSecond,

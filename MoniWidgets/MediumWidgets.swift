@@ -335,3 +335,63 @@ struct MemoryMediumWidgetView: View {
         ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
     }
 }
+
+struct DiskActivityMediumWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .diskActivityMedium,
+            displayName: "Disk Activity",
+            description: "查看磁盘读写速率、IOPS 与健康状态。",
+            family: .systemMedium
+        )
+    }
+}
+
+struct DiskActivityMediumWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Disk Activity", symbol: "internaldrive", color: WidgetTheme.orange, trailing: snapshot.driveModel)
+            HStack(alignment: .top, spacing: 18) {
+                metric("Read", snapshot.diskReadBytesPerSecond, color: WidgetTheme.cyan)
+                metric("Write", snapshot.diskWriteBytesPerSecond, color: WidgetTheme.orange)
+                Spacer(minLength: 0)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("IOPS").foregroundStyle(WidgetTheme.tertiary)
+                    Text("\(Int((snapshot.diskReadOperationsPerSecond + snapshot.diskWriteOperationsPerSecond).rounded()))")
+                        .font(.system(size: 21, weight: .heavy, design: .rounded))
+                        .monospacedDigit()
+                }
+                .font(.system(size: 10.5))
+            }
+            .padding(.top, 8)
+            ZStack {
+                WidgetLineChart(values: snapshot.histories.diskRead, color: WidgetTheme.cyan)
+                WidgetLineChart(values: snapshot.histories.diskWrite, color: WidgetTheme.orange, showsFill: false)
+            }
+            .frame(height: 43)
+            .padding(.top, 5)
+            Spacer(minLength: 2)
+            HStack(spacing: 14) {
+                Text(snapshot.driveTemperatureCelsius.map { "SSD \(Int($0.rounded()))°" } ?? "SSD —")
+                if let status = snapshot.driveSmartStatus {
+                    Text("S.M.A.R.T. \(status)").foregroundStyle(WidgetTheme.green)
+                }
+            }
+            .font(.system(size: 9.5, weight: .semibold))
+            .foregroundStyle(WidgetTheme.secondary)
+        }
+        .padding(16)
+    }
+
+    private func metric(_ label: String, _ value: Double, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).foregroundStyle(color).fontWeight(.bold)
+            Text(ByteCountFormatter.string(fromByteCount: Int64(max(0, value)), countStyle: .decimal) + "/s")
+                .font(.system(size: 20, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+        }
+        .font(.system(size: 10.5))
+    }
+}
