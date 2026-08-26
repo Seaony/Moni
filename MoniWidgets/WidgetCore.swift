@@ -45,6 +45,7 @@ enum MoniWidgetKind: String {
     case aiUsageMedium = "com.seaony.Moni.widget.ai-usage-medium"
     case topProcessesMedium = "com.seaony.Moni.widget.top-processes-medium"
     case sensorsMedium = "com.seaony.Moni.widget.sensors-medium"
+    case memoryMedium = "com.seaony.Moni.widget.memory-medium"
 }
 
 struct MoniWidgetView: View {
@@ -81,6 +82,8 @@ struct MoniWidgetView: View {
             TopProcessesMediumWidgetView(snapshot: entry.system)
         case .sensorsMedium:
             SensorsMediumWidgetView(snapshot: entry.system)
+        case .memoryMedium:
+            MemoryMediumWidgetView(snapshot: entry.system)
         }
     }
 }

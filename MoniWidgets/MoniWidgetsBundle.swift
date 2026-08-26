@@ -18,5 +18,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         AIUsageMediumWidget()
         TopProcessesMediumWidget()
         SensorsMediumWidget()
+        MemoryMediumWidget()
     }
 }

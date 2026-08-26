@@ -33,7 +33,7 @@ extension WidgetSystemSnapshot {
             uptime: snapshot.host.uptime,
             loadAverages: snapshot.host.loadAverages,
             cpu: CPU(total: snapshot.cpu.total, user: snapshot.cpu.user, system: snapshot.cpu.system, perCore: snapshot.cpu.perCore),
-            memory: Memory(totalBytes: snapshot.memory.totalBytes, usedBytes: snapshot.memory.usedBytes, freeBytes: snapshot.memory.freeBytes, wiredBytes: snapshot.memory.wiredBytes, compressedBytes: snapshot.memory.compressedBytes),
+            memory: Memory(totalBytes: snapshot.memory.totalBytes, usedBytes: snapshot.memory.usedBytes, freeBytes: snapshot.memory.freeBytes, wiredBytes: snapshot.memory.wiredBytes, compressedBytes: snapshot.memory.compressedBytes, swapUsedBytes: snapshot.memory.swapUsedBytes, pageIns: snapshot.memory.pageIns),
             volume: root.map { Volume(name: $0.name, totalBytes: $0.totalBytes, availableBytes: $0.availableBytes) },
             diskReadBytesPerSecond: snapshot.diskActivity.readBytesPerSecond,
             diskWriteBytesPerSecond: snapshot.diskActivity.writeBytesPerSecond,

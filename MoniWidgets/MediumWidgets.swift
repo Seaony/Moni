@@ -250,3 +250,88 @@ struct SensorsMediumWidgetView: View {
         value >= 90 ? WidgetTheme.red : value >= 75 ? WidgetTheme.orange : WidgetTheme.foreground
     }
 }
+
+struct MemoryMediumWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .memoryMedium,
+            displayName: "Memory Details",
+            description: "查看活跃、联动、压缩与空闲内存的分布。",
+            family: .systemMedium
+        )
+    }
+}
+
+struct MemoryMediumWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private var activeBytes: UInt64 {
+        snapshot.memory.usedBytes > snapshot.memory.wiredBytes + snapshot.memory.compressedBytes
+            ? snapshot.memory.usedBytes - snapshot.memory.wiredBytes - snapshot.memory.compressedBytes
+            : 0
+    }
+
+    private var segments: [(String, UInt64, Color)] {
+        [
+            ("Active", activeBytes, WidgetTheme.blue),
+            ("Wired", snapshot.memory.wiredBytes, WidgetTheme.purple),
+            ("Compressed", snapshot.memory.compressedBytes, WidgetTheme.orange),
+            ("Free", snapshot.memory.freeBytes, WidgetTheme.green)
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Memory", symbol: "memorychip", color: WidgetTheme.blue, trailing: bytes(snapshot.memory.totalBytes) + " unified")
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(bytes(snapshot.memory.usedBytes))
+                    .font(.system(size: 27, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                Text("used · pressure \(pressure)")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(WidgetTheme.secondary)
+            }
+            .padding(.top, 8)
+            GeometryReader { geometry in
+                HStack(spacing: 2) {
+                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(segment.2)
+                            .frame(width: geometry.size.width * fraction(segment.1))
+                    }
+                }
+            }
+            .frame(height: 9)
+            .padding(.top, 8)
+            HStack(spacing: 12) {
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                    HStack(spacing: 4) {
+                        Circle().fill(segment.2).frame(width: 6, height: 6)
+                        Text(segment.0).foregroundStyle(WidgetTheme.secondary)
+                        Text(bytes(segment.1)).fontWeight(.bold)
+                    }
+                    .font(.system(size: 9))
+                }
+            }
+            .padding(.top, 8)
+            Spacer(minLength: 4)
+            Text("Swap \(bytes(snapshot.memory.swapUsedBytes))   Page ins \(snapshot.memory.pageIns.formatted())")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(WidgetTheme.secondary)
+        }
+        .padding(16)
+    }
+
+    private var pressure: String {
+        snapshot.memory.usedPercent >= 90 ? "Critical" : snapshot.memory.usedPercent >= 80 ? "High" : "Normal"
+    }
+
+    private func fraction(_ value: UInt64) -> CGFloat {
+        guard snapshot.memory.totalBytes > 0 else { return 0 }
+        return CGFloat(Double(value) / Double(snapshot.memory.totalBytes))
+    }
+
+    private func bytes(_ value: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
+    }
+}

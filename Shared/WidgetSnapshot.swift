@@ -14,6 +14,8 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
         let freeBytes: UInt64
         let wiredBytes: UInt64
         let compressedBytes: UInt64
+        let swapUsedBytes: UInt64
+        let pageIns: UInt64
 
         var usedPercent: Double {
             guard totalBytes > 0 else { return 0 }
@@ -120,7 +122,7 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
         uptime: 2 * 86_400 + 6 * 3_600,
         loadAverages: [5.98, 5.56, 4.66],
         cpu: CPU(total: 68, user: 52, system: 16, perCore: [24, 73, 58, 81, 65, 77, 45, 69, 31, 54]),
-        memory: Memory(totalBytes: 16_000_000_000, usedBytes: 12_300_000_000, freeBytes: 3_700_000_000, wiredBytes: 2_100_000_000, compressedBytes: 1_400_000_000),
+        memory: Memory(totalBytes: 16_000_000_000, usedBytes: 12_300_000_000, freeBytes: 3_700_000_000, wiredBytes: 2_100_000_000, compressedBytes: 1_400_000_000, swapUsedBytes: 512_000_000, pageIns: 18_429),
         volume: Volume(name: "Macintosh HD", totalBytes: 926_400_000_000, availableBytes: 74_900_000_000),
         diskReadBytesPerSecond: 629_000,
         diskWriteBytesPerSecond: 0,
