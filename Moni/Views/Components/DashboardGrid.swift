@@ -69,17 +69,21 @@ struct DashboardCardLayout: Codable {
         normalizedOrder.filter { visible.contains($0) }
     }
 
+    @discardableResult
     mutating func move(
         _ source: DashboardCardID,
         relativeTo target: DashboardCardID,
         placeAfter: Bool
-    ) {
-        guard source != target else { return }
+    ) -> Bool {
+        guard source != target else { return false }
         var cards = normalizedOrder
+        let original = cards
         cards.removeAll { $0 == source }
-        guard let targetIndex = cards.firstIndex(of: target) else { return }
+        guard let targetIndex = cards.firstIndex(of: target) else { return false }
         cards.insert(source, at: targetIndex + (placeAfter ? 1 : 0))
+        guard cards != original else { return false }
         order = cards.map(\.rawValue)
+        return true
     }
 
     static func decode(_ data: Data) -> DashboardCardLayout {
@@ -108,6 +112,33 @@ nonisolated private struct DashboardCardSpan: Equatable {
 
 nonisolated private struct DashboardCardSpanKey: LayoutValueKey {
     static let defaultValue = DashboardCardSpan(columns: 1, rows: 1, renderedSize: nil)
+}
+
+nonisolated enum DashboardGridCoordinateSpace {
+    static let name = "dashboard-grid"
+}
+
+nonisolated struct DashboardCardFrameKey: SwiftUI.PreferenceKey {
+    static let defaultValue: [DashboardCardID: CGRect] = [:]
+
+    static func reduce(
+        value: inout [DashboardCardID: CGRect],
+        nextValue: () -> [DashboardCardID: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
+}
+
+@MainActor
+final class DashboardCardDragContext {
+    var frames: [DashboardCardID: CGRect] = [:]
+}
+
+nonisolated struct DashboardCardDragPreview: Equatable {
+    let card: DashboardCardID
+    let size: CGSize
+    let pointerOffset: CGSize
+    var location: CGPoint
 }
 
 struct DashboardGridLayout: Layout {
@@ -236,7 +267,10 @@ struct ResizableDashboardCard<Content: View>: View {
     let limits: DashboardCardLimits
     let onResizeChanged: (DashboardCardSize) -> Void
     let onResizeEnded: (DashboardCardSize) -> Void
-    let onMove: (DashboardCardID, DashboardCardID, Bool) -> Void
+    let onMoveStarted: (DashboardCardID, CGRect, CGPoint) -> Void
+    let onMoveChanged: (DashboardCardID, CGPoint) -> Void
+    let onMoveEnded: (DashboardCardID) -> Void
+    @Binding var draggingCard: DashboardCardID?
     @ViewBuilder let content: Content
 
     @State private var dragOrigin: DashboardCardSize?
@@ -248,7 +282,7 @@ struct ResizableDashboardCard<Content: View>: View {
     @State private var isRightHandleHovered = false
     @State private var isBottomHandleHovered = false
     @State private var isResizingRows = false
-    @State private var isDropTargeted = false
+    @State private var isReordering = false
 
     init(
         card: DashboardCardID,
@@ -256,7 +290,10 @@ struct ResizableDashboardCard<Content: View>: View {
         limits: DashboardCardLimits,
         onResizeChanged: @escaping (DashboardCardSize) -> Void,
         onResizeEnded: @escaping (DashboardCardSize) -> Void,
-        onMove: @escaping (DashboardCardID, DashboardCardID, Bool) -> Void,
+        onMoveStarted: @escaping (DashboardCardID, CGRect, CGPoint) -> Void,
+        onMoveChanged: @escaping (DashboardCardID, CGPoint) -> Void,
+        onMoveEnded: @escaping (DashboardCardID) -> Void,
+        draggingCard: Binding<DashboardCardID?>,
         @ViewBuilder content: () -> Content
     ) {
         self.card = card
@@ -264,7 +301,10 @@ struct ResizableDashboardCard<Content: View>: View {
         self.limits = limits
         self.onResizeChanged = onResizeChanged
         self.onResizeEnded = onResizeEnded
-        self.onMove = onMove
+        self.onMoveStarted = onMoveStarted
+        self.onMoveChanged = onMoveChanged
+        self.onMoveEnded = onMoveEnded
+        self._draggingCard = draggingCard
         self.content = content()
     }
 
@@ -314,26 +354,16 @@ struct ResizableDashboardCard<Content: View>: View {
                     .help("Drag to change card height")
                     .moniAnimation(MoniMotion.press, value: isBottomHandleHovered)
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(MoniPalette.blue, lineWidth: isDropTargeted ? 2 : 0)
-                    .padding(1)
-                    .allowsHitTesting(false)
-            }
-            .scaleEffect(isDropTargeted ? 0.99 : 1)
-            .moniAnimation(value: isDropTargeted)
-            .draggable(card.rawValue)
-            .dropDestination(for: String.self) { items, location in
-                guard
-                    let rawValue = items.first,
-                    let source = DashboardCardID(rawValue: rawValue),
-                    source != card
-                else { return false }
-                onMove(source, card, location.x >= geometry.size.width / 2)
-                return true
-            } isTargeted: { isTargeted in
-                isDropTargeted = isTargeted
-            }
+            .preference(
+                key: DashboardCardFrameKey.self,
+                value: [
+                    card: geometry.frame(
+                        in: .named(DashboardGridCoordinateSpace.name)
+                    )
+                ]
+            )
+            .opacity(draggingCard == card ? 0 : 1)
+            .highPriorityGesture(reorderGesture(in: geometry))
             .onDisappear {
                 if isRightHandleHovered {
                     NSCursor.pop()
@@ -354,6 +384,29 @@ struct ResizableDashboardCard<Content: View>: View {
             )
         )
         .zIndex(dragOrigin == nil ? 0 : 1)
+    }
+
+    private func reorderGesture(in geometry: GeometryProxy) -> some Gesture {
+        DragGesture(
+            minimumDistance: 8,
+            coordinateSpace: .named(DashboardGridCoordinateSpace.name)
+        )
+        .onChanged { value in
+            guard !isRightHandleHovered, !isBottomHandleHovered else { return }
+            let frame = geometry.frame(in: .named(DashboardGridCoordinateSpace.name))
+            if !isReordering {
+                isReordering = true
+                draggingCard = card
+                onMoveStarted(card, frame, value.startLocation)
+            }
+            guard draggingCard == card else { return }
+            onMoveChanged(card, value.location)
+        }
+        .onEnded { _ in
+            guard isReordering else { return }
+            isReordering = false
+            onMoveEnded(card)
+        }
     }
 
     private func resizeGesture(in renderedSize: CGSize, axis: ResizeAxis) -> some Gesture {

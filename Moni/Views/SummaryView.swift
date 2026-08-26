@@ -17,6 +17,9 @@ struct SummaryView: View {
     @AppStorage(PreferenceKey.showPower) private var showPower = true
     @AppStorage(PreferenceKey.showDocker) private var showDocker = true
     @State private var liveCardSizes: [DashboardCardID: DashboardCardSize] = [:]
+    @State private var draggingCard: DashboardCardID?
+    @State private var cardDragContext = DashboardCardDragContext()
+    @State private var cardDragPreview: DashboardCardDragPreview?
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
 
@@ -30,7 +33,10 @@ struct SummaryView: View {
                         limits: card.limits,
                         onResizeChanged: { previewCardResize($0, for: card) },
                         onResizeEnded: { finishCardResize($0, for: card) },
-                        onMove: moveCard
+                        onMoveStarted: beginCardMove,
+                        onMoveChanged: previewCardMove,
+                        onMoveEnded: finishCardMove,
+                        draggingCard: $draggingCard
                     ) {
                         cardView(card)
                     }
@@ -38,8 +44,24 @@ struct SummaryView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
+            .coordinateSpace(name: DashboardGridCoordinateSpace.name)
+            .onPreferenceChange(DashboardCardFrameKey.self) { frames in
+                cardDragContext.frames = frames
+            }
             .moniAnimation(MoniMotion.dashboardReflow, value: cardLayoutData)
             .moniAnimation(MoniMotion.dashboardReflow, value: orderedCards.map(\.rawValue))
+            .overlay(alignment: .topLeading) {
+                if let preview = cardDragPreview {
+                    cardView(preview.card)
+                        .frame(width: preview.size.width, height: preview.size.height)
+                        .offset(
+                            x: preview.location.x - preview.pointerOffset.width,
+                            y: preview.location.y - preview.pointerOffset.height
+                        )
+                        .allowsHitTesting(false)
+                        .zIndex(2)
+                }
+            }
         }
         .task {
             aiUsage.loadIfNeeded(
@@ -751,8 +773,72 @@ struct SummaryView: View {
         _ placeAfter: Bool
     ) {
         var layout = DashboardCardLayout.decode(cardLayoutData)
-        layout.move(source, relativeTo: target, placeAfter: placeAfter)
-        cardLayoutData = layout.encoded()
+        guard layout.move(source, relativeTo: target, placeAfter: placeAfter) else { return }
+        let move = { cardLayoutData = layout.encoded() }
+        if reduceMotion {
+            move()
+        } else {
+            withAnimation(MoniMotion.dashboardReflow) {
+                move()
+            }
+        }
+    }
+
+    private func beginCardMove(
+        _ card: DashboardCardID,
+        _ frame: CGRect,
+        _ startLocation: CGPoint
+    ) {
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            cardDragPreview = DashboardCardDragPreview(
+                card: card,
+                size: frame.size,
+                pointerOffset: CGSize(
+                    width: startLocation.x - frame.minX,
+                    height: startLocation.y - frame.minY
+                ),
+                location: startLocation
+            )
+        }
+    }
+
+    private func previewCardMove(_ source: DashboardCardID, _ location: CGPoint) {
+        if var preview = cardDragPreview, preview.card == source {
+            var transaction = Transaction()
+            transaction.animation = nil
+            preview.location = location
+            withTransaction(transaction) {
+                cardDragPreview = preview
+            }
+        }
+        let target = cardDragContext.frames
+            .filter { card, frame in
+                card != source && frame.insetBy(dx: -6, dy: -6).contains(location)
+            }
+            .min { lhs, rhs in
+                distanceSquared(from: location, to: lhs.value)
+                    < distanceSquared(from: location, to: rhs.value)
+            }
+        guard let (card, frame) = target else { return }
+        moveCard(source, card, location.x >= frame.midX)
+    }
+
+    private func finishCardMove(_ card: DashboardCardID) {
+        guard draggingCard == card else { return }
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            cardDragPreview = nil
+            draggingCard = nil
+        }
+    }
+
+    private func distanceSquared(from point: CGPoint, to rect: CGRect) -> CGFloat {
+        let dx = point.x - rect.midX
+        let dy = point.y - rect.midY
+        return dx * dx + dy * dy
     }
 
     private func chartHeight(for size: DashboardCardSize, compact: CGFloat) -> CGFloat {
