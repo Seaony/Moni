@@ -174,3 +174,90 @@ struct AIUsageLargeWidgetView: View {
         [WidgetTheme.orange, WidgetTheme.cyan, WidgetTheme.blue, WidgetTheme.purple][index % 4]
     }
 }
+
+struct GPUThermalsLargeWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .gpuThermalsLarge,
+            displayName: "GPU & Thermals",
+            description: "查看 GPU 引擎负载、趋势、功耗与温度。",
+            family: .systemLarge
+        )
+    }
+}
+
+struct GPUThermalsLargeWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private var engines: [(String, Double?)] {
+        [
+            ("Overall", snapshot.gpu.utilizationPercent),
+            ("Renderer", snapshot.gpu.rendererPercent),
+            ("Tiler", snapshot.gpu.tilerPercent),
+            ("Memory", memoryPercent)
+        ]
+    }
+
+    private var memoryPercent: Double? {
+        guard let used = snapshot.gpu.allocatedMemoryBytes, snapshot.memory.totalBytes > 0 else { return nil }
+        return Double(used) / Double(snapshot.memory.totalBytes) * 100
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "GPU & Thermals", symbol: "display", color: WidgetTheme.green, trailing: snapshot.gpu.name)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(snapshot.gpu.utilizationPercent.map { "\(Int($0.rounded()))%" } ?? "—")
+                    .font(.system(size: 34, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                Text(snapshot.gpu.powerWatts.map { String(format: "utilization · %.1f W", $0) } ?? "utilization")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(WidgetTheme.secondary)
+            }
+            .padding(.top, 10)
+            WidgetLineChart(values: snapshot.histories.gpu, color: WidgetTheme.green)
+                .frame(height: 70)
+                .padding(.top, 7)
+            VStack(spacing: 7) {
+                ForEach(Array(engines.enumerated()), id: \.offset) { _, engine in
+                    HStack(spacing: 8) {
+                        Text(engine.0).foregroundStyle(WidgetTheme.secondary).frame(width: 62, alignment: .leading)
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(WidgetTheme.track)
+                                Capsule().fill(WidgetTheme.green).frame(width: geometry.size.width * min(1, max(0, (engine.1 ?? 0) / 100)))
+                            }
+                        }
+                        .frame(height: 4)
+                        Text(engine.1.map { "\(Int($0.rounded()))%" } ?? "—")
+                            .fontWeight(.bold)
+                            .monospacedDigit()
+                            .frame(width: 34, alignment: .trailing)
+                    }
+                    .font(.system(size: 10))
+                }
+            }
+            .padding(.top, 10)
+            Spacer(minLength: 8)
+            HStack(spacing: 8) {
+                thermalTile("CPU", snapshot.power.cpuTemperatureCelsius)
+                thermalTile("GPU", snapshot.power.gpuTemperatureCelsius)
+                thermalTile("Battery", snapshot.power.batteryTemperatureCelsius)
+            }
+        }
+        .padding(18)
+    }
+
+    private func thermalTile(_ label: String, _ value: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(value.map { "\(Int($0.rounded()))°" } ?? "—")
+                .font(.system(size: 17, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+        }
+        .font(.system(size: 9.5))
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(WidgetTheme.inset, in: RoundedRectangle(cornerRadius: 11))
+    }
+}

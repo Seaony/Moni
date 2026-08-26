@@ -25,5 +25,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         BatteryHistoryMediumWidget()
         SystemOverviewLargeWidget()
         AIUsageLargeWidget()
+        GPUThermalsLargeWidget()
     }
 }
