@@ -23,5 +23,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         ContainersMediumWidget()
         AlertsMediumWidget()
         BatteryHistoryMediumWidget()
+        SystemOverviewLargeWidget()
     }
 }

@@ -50,6 +50,7 @@ enum MoniWidgetKind: String {
     case containersMedium = "com.seaony.Moni.widget.containers-medium"
     case alertsMedium = "com.seaony.Moni.widget.alerts-medium"
     case batteryHistoryMedium = "com.seaony.Moni.widget.battery-history-medium"
+    case systemOverviewLarge = "com.seaony.Moni.widget.system-overview-large"
 }
 
 struct MoniWidgetView: View {
@@ -96,6 +97,8 @@ struct MoniWidgetView: View {
             AlertsMediumWidgetView(snapshot: entry.system)
         case .batteryHistoryMedium:
             BatteryHistoryMediumWidgetView(snapshot: entry.system)
+        case .systemOverviewLarge:
+            SystemOverviewLargeWidgetView(snapshot: entry.system)
         }
     }
 }
