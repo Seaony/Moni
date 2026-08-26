@@ -137,3 +137,60 @@ struct AIUsageMediumWidgetView: View {
         [WidgetTheme.orange, WidgetTheme.cyan, WidgetTheme.blue][index % 3]
     }
 }
+
+struct TopProcessesMediumWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .topProcessesMedium,
+            displayName: "Top Processes",
+            description: "查看 CPU 使用率最高的进程。",
+            family: .systemMedium
+        )
+    }
+}
+
+struct TopProcessesMediumWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private var topProcesses: [WidgetSystemSnapshot.Process] {
+        Array(snapshot.processes.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(4))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Top Processes", symbol: "list.bullet.rectangle", color: WidgetTheme.purple, trailing: snapshot.processCount.formatted())
+            VStack(spacing: 7) {
+                ForEach(Array(topProcesses.enumerated()), id: \.offset) { _, process in
+                    HStack(spacing: 8) {
+                        Text(process.name)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                            .frame(width: 92, alignment: .leading)
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(WidgetTheme.track)
+                                Capsule().fill(WidgetTheme.pink).frame(width: geometry.size.width * min(1, process.cpuPercent / 100))
+                            }
+                        }
+                        .frame(height: 5)
+                        Text("\(Int(process.cpuPercent.rounded()))%")
+                            .fontWeight(.bold)
+                            .monospacedDigit()
+                            .frame(width: 34, alignment: .trailing)
+                        Text(bytes(process.memoryBytes))
+                            .foregroundStyle(WidgetTheme.tertiary)
+                            .monospacedDigit()
+                            .frame(width: 50, alignment: .trailing)
+                    }
+                    .font(.system(size: 10.5))
+                }
+            }
+            .padding(.top, 12)
+        }
+        .padding(16)
+    }
+
+    private func bytes(_ value: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
+    }
+}

@@ -16,5 +16,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         UptimeSmallWidget()
         NetworkMediumWidget()
         AIUsageMediumWidget()
+        TopProcessesMediumWidget()
     }
 }
