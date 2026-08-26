@@ -83,6 +83,7 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
         let isInstalled: Bool
         let isRunning: Bool
         let installation: String?
+        let socketPath: String?
     }
 
     struct Histories: Codable, Sendable {
@@ -142,7 +143,7 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
         sensors: [Sensor(name: "CPU die", celsius: 44), Sensor(name: "GPU die", celsius: 42), Sensor(name: "SSD", celsius: 36), Sensor(name: "Battery", celsius: 32)],
         power: Power(batteryPercent: 82, isCharging: true, batteryTemperatureCelsius: 32, cycleCount: 312, batteryHealth: "Normal", systemPowerWatts: 18.6, cpuTemperatureCelsius: 44, gpuTemperatureCelsius: 42, fanRPM: 2_359),
         gpu: GPU(name: "Apple GPU", coreCount: 16, utilizationPercent: 19, rendererPercent: 17, tilerPercent: 11, allocatedMemoryBytes: 1_700_000_000, powerWatts: 5.2),
-        docker: Docker(isInstalled: true, isRunning: true, installation: "Docker"),
+        docker: Docker(isInstalled: true, isRunning: true, installation: "Docker", socketPath: "/var/run/docker.sock"),
         histories: Histories(cpu: [28, 35, 52, 46, 68], memory: [73, 74, 75, 76, 77], download: [22, 55, 61, 42, 45], upload: [9, 14, 12, 7, 8], gpu: [8, 12, 16, 14, 19], diskRead: [12, 34, 28, 51, 42], diskWrite: [8, 11, 26, 18, 21], battery: [96, 93, 90, 86, 82])
     )
 }

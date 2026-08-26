@@ -395,3 +395,56 @@ struct DiskActivityMediumWidgetView: View {
         .font(.system(size: 10.5))
     }
 }
+
+struct ContainersMediumWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .containersMedium,
+            displayName: "Containers",
+            description: "查看本机容器引擎及连接状态。",
+            family: .systemMedium
+        )
+    }
+}
+
+struct ContainersMediumWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Containers", symbol: "shippingbox", color: WidgetTheme.blue, trailing: snapshot.docker.installation)
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(snapshot.docker.isRunning ? "Running" : snapshot.docker.isInstalled ? "Stopped" : "Not Found")
+                        .font(.system(size: 28, weight: .heavy, design: .rounded))
+                    Text(snapshot.docker.isRunning ? "engine connected" : "engine unavailable")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(WidgetTheme.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: snapshot.docker.isRunning ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(snapshot.docker.isRunning ? WidgetTheme.green : WidgetTheme.orange)
+            }
+            .padding(.top, 12)
+            Spacer(minLength: 8)
+            HStack(spacing: 10) {
+                statusTile("Provider", snapshot.docker.installation ?? "—")
+                statusTile("Socket", snapshot.docker.socketPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "—")
+            }
+        }
+        .padding(16)
+    }
+
+    private func statusTile(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(value).fontWeight(.bold).lineLimit(1)
+        }
+        .font(.system(size: 10.5))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(WidgetTheme.inset, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
