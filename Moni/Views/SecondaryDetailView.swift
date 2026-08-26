@@ -15,7 +15,7 @@ struct SecondaryDetailView: View {
         case .sensors:
             PowerDetailView()
         case .docker:
-            DockerDetailView()
+            DockerDetailView(selection: $selection)
         case .disks:
             DiskBrowserView()
         default:
@@ -26,107 +26,145 @@ struct SecondaryDetailView: View {
 
 private struct GPUDetailView: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @State private var historyRange = "1m"
+
+    private var device: GPUDeviceInfo? { monitor.snapshot.gpuDevices.first }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
-                DetailPanel("GPU") {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(monitor.snapshot.gpuDevices.first?.name ?? "No Metal GPU")
-                                .font(.title2.bold())
-                                .foregroundStyle(.green)
-                            Text("Utilization")
-                                .foregroundStyle(.secondary)
-                            Text("No Data")
-                                .font(.system(size: 36, weight: .bold, design: .rounded))
-                        }
-                        Spacer()
-                        Image(systemName: "display")
-                            .font(.system(size: 56))
-                            .foregroundStyle(.green.opacity(0.6))
+                DetailPanel {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("GPU")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(MoniPalette.green)
+                        Text(device?.name ?? "No Metal GPU")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.tertiary)
+                        Spacer(minLength: 12)
+                        SecondaryRangePicker(selection: $historyRange)
+                        Text(monitor.snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
                     }
-                    Text("macOS does not provide GPU utilization through a public API. Device capabilities below come from Metal.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Sparkline(values: Array(monitor.gpuHistory.suffix(secondarySampleCount(historyRange))), color: MoniPalette.green)
+                        .frame(height: 160)
+                    rangeFooter(historyRange)
                 }
 
-                ForEach(monitor.snapshot.gpuDevices) { device in
-                    DetailPanel(device.name) {
-                        value("Registry ID", String(device.registryID))
-                        value("Unified memory", device.hasUnifiedMemory ? "Yes" : "No")
-                        value("Low power", device.isLowPower ? "Yes" : "No")
-                        value("Removable", device.isRemovable ? "Yes" : "No")
-                        value("Recommended working set", bytes(device.recommendedMaxWorkingSetSize))
+                HStack(alignment: .top, spacing: 12) {
+                    DetailPanel("Device") {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            secondaryStat("Name", device?.name ?? "—")
+                            secondaryStat("Registry ID", device.map { String($0.registryID) } ?? "—")
+                            secondaryStat("Unified memory", device.map { $0.hasUnifiedMemory ? "Yes" : "No" } ?? "—")
+                            secondaryStat("Low power", device.map { $0.isLowPower ? "Yes" : "No" } ?? "—")
+                            secondaryStat("Removable", device.map { $0.isRemovable ? "Yes" : "No" } ?? "—")
+                            secondaryStat("Working set", device.map { bytes($0.recommendedMaxWorkingSetSize) } ?? "—")
+                        }
                     }
-                    .transition(MoniMotion.itemTransition)
+                    DetailPanel("Engine activity") {
+                        ForEach(engineActivity, id: \.0) { engine, value in
+                            HStack(spacing: 12) {
+                                Text(engine).foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
+                                ProgressView(value: value ?? 0, total: 100).tint(MoniPalette.green)
+                                Text(value.map(percent) ?? "—").fontWeight(.bold).frame(width: 40, alignment: .trailing)
+                            }
+                            .font(.system(size: 12.5))
+                        }
+                        if let memory = monitor.snapshot.gpu.allocatedMemoryBytes {
+                            secondaryStat("Allocated memory", bytes(memory))
+                        }
+                    }
+                }
+
+                DetailPanel("GPU clients") {
+                    unavailableRow("The driver exposes cumulative client GPU time, but not a stable per-process utilization percentage.")
                 }
             }
-            .moniAnimation(value: monitor.snapshot.gpuDevices.map(\.id))
         }
+    }
+
+    private var engineActivity: [(String, Double?)] {
+        [
+            ("Renderer", monitor.snapshot.gpu.rendererPercent),
+            ("Tiler", monitor.snapshot.gpu.tilerPercent),
+        ]
     }
 }
 
 private struct NetworkDetailView: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @State private var historyRange = "1m"
 
     private var network: NetworkUsage { monitor.snapshot.network }
+    private var activeInterface: NetworkInterfaceUsage? { network.interfaces.first(where: \.isActive) }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
-                DetailPanel("Network") {
-                    HStack(alignment: .bottom, spacing: 28) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("↓ Download")
-                                .foregroundStyle(.cyan)
-                            Text(rate(network.downloadBytesPerSecond))
-                                .font(.system(size: 29, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .moniNumericTransition(network.downloadBytesPerSecond)
-                            Text("↑ Upload")
-                                .foregroundStyle(.orange)
-                            Text(rate(network.uploadBytesPerSecond))
-                                .font(.system(size: 29, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .moniNumericTransition(network.uploadBytesPerSecond)
-                        }
-                        VStack(spacing: 3) {
-                            Sparkline(values: monitor.downloadHistory, color: .cyan)
-                            Sparkline(values: monitor.uploadHistory, color: .orange)
-                        }
-                        .frame(height: 160)
+                DetailPanel {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("Network")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(MoniPalette.cyan)
+                        Text(activeInterface.map { "\($0.name) · active" } ?? "No active interface")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.tertiary)
+                        Spacer(minLength: 12)
+                        SecondaryRangePicker(selection: $historyRange)
+                        Text("↓ " + rate(network.downloadBytesPerSecond))
+                            .foregroundStyle(MoniPalette.cyan)
+                        Text("↑ " + rate(network.uploadBytesPerSecond))
+                            .foregroundStyle(MoniPalette.orange)
                     }
-                    HStack {
-                        MetricRow(label: "Received", value: bytes(network.totalReceivedBytes), color: .cyan)
-                        MetricRow(label: "Sent", value: bytes(network.totalSentBytes), color: .orange)
+                    .font(.system(size: 20, weight: .bold))
+                    .monospacedDigit()
+                    ZStack {
+                        Sparkline(values: Array(monitor.downloadHistory.suffix(secondarySampleCount(historyRange))), color: MoniPalette.cyan)
+                        Sparkline(values: Array(monitor.uploadHistory.suffix(secondarySampleCount(historyRange))), color: MoniPalette.orange)
+                    }
+                    .frame(height: 160)
+                    rangeFooter(historyRange)
+                }
+
+                HStack(alignment: .top, spacing: 12) {
+                    DetailPanel("Interfaces") {
+                        ForEach(network.interfaces) { interface in
+                            HStack(spacing: 10) {
+                                Text(interface.name).fontWeight(.semibold).frame(width: 62, alignment: .leading)
+                                Text("↓ \(bytes(interface.receivedBytes)) · ↑ \(bytes(interface.sentBytes))")
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(interface.isActive ? "Active" : "Inactive")
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(interface.isActive ? MoniPalette.green : MoniPalette.foregroundSecondary)
+                            }
+                            .font(.system(size: 12.5))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 8)
+                        }
+                    }
+                    DetailPanel("Link & totals") {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            secondaryStat("Download", rate(network.downloadBytesPerSecond))
+                            secondaryStat("Upload", rate(network.uploadBytesPerSecond))
+                            secondaryStat("Received", bytes(network.totalReceivedBytes))
+                            secondaryStat("Sent", bytes(network.totalSentBytes))
+                            secondaryStat("Interfaces", network.interfaces.count.formatted())
+                            secondaryStat("Active", network.interfaces.filter(\.isActive).count.formatted())
+                            secondaryStat(
+                                "Link speed",
+                                activeInterface.flatMap { $0.linkSpeedBitsPerSecond > 0 ? bitRate($0.linkSpeedBitsPerSecond) : nil } ?? "Unknown"
+                            )
+                            secondaryStat("Public IP", "Not queried")
+                        }
                     }
                 }
 
-                DetailPanel("Interfaces") {
-                    ForEach(network.interfaces) { interface in
-                        HStack(spacing: 10) {
-                            Circle()
-                                .fill(interface.isActive ? Color.green : Color.secondary.opacity(0.35))
-                                .frame(width: 8, height: 8)
-                            Text(interface.name)
-                                .fontWeight(.semibold)
-                                .frame(width: 90, alignment: .leading)
-                            Text(interface.isActive ? "Active" : "Inactive")
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("↓ \(bytes(interface.receivedBytes))")
-                                .foregroundStyle(.cyan)
-                            Text("↑ \(bytes(interface.sentBytes))")
-                                .foregroundStyle(.orange)
-                        }
-                        .font(.system(size: 12))
-                        .monospacedDigit()
-                        .padding(.vertical, 4)
-                        .transition(MoniMotion.itemTransition)
-                    }
+                DetailPanel("Active connections") {
+                    unavailableRow("Connection ownership is not collected by Moni.")
                 }
-                .moniAnimation(value: network.interfaces.map(\.id))
             }
         }
     }
@@ -139,44 +177,87 @@ private struct StorageDetailView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
-                ForEach(monitor.snapshot.volumes) { volume in
-                    DetailPanel(volume.name) {
-                        HStack {
-                            Text(volume.mountPath)
-                                .fontWeight(.semibold)
-                            Spacer()
-                            Text(percent(volume.usedPercent))
-                                .font(.title3.bold())
-                                .foregroundStyle(volume.usedPercent >= 90 ? .red : .orange)
-                                .moniNumericTransition(volume.usedPercent)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    ForEach(monitor.snapshot.volumes) { volume in
+                        DetailPanel {
+                            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                Text(volume.name)
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundStyle(MoniPalette.orange)
+                                Text(volume.mountPath)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(percent(volume.usedPercent))
+                                    .font(.system(size: 22, weight: .bold))
+                                    .foregroundStyle(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
+                            }
+                            ProgressView(value: volume.usedPercent, total: 100)
+                                .tint(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
+                            Text("\(bytes(UInt64(volume.usedBytes))) of \(bytes(UInt64(volume.totalBytes))) used")
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 14) {
+                                secondaryStat("Format", volume.format ?? "Unknown")
+                                secondaryStat("Free", bytes(UInt64(max(0, volume.availableBytes))))
+                            }
                         }
-                        ProgressView(value: volume.usedPercent, total: 100)
-                            .tint(volume.usedPercent >= 90 ? .red : .orange)
-                            .moniAnimation(MoniMotion.data, value: volume.usedPercent)
-                        HStack {
-                            Text("Used \(bytes(UInt64(volume.usedBytes)))")
-                            Spacer()
-                            Text("Available \(bytes(UInt64(max(0, volume.availableBytes))))")
-                            Spacer()
-                            Text("Total \(bytes(UInt64(volume.totalBytes)))")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     }
-                    .transition(MoniMotion.itemTransition)
                 }
 
-                Button {
-                    selection = .disks
-                } label: {
-                    Label("Browse mounted volumes", systemImage: "folder")
-                        .frame(maxWidth: .infinity)
-                        .padding(10)
+                DetailPanel {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("DISK ACTIVITY")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .tracking(0.7)
+                        Spacer()
+                        Text("Read \(rate(monitor.snapshot.diskActivity.readBytesPerSecond))")
+                            .foregroundStyle(MoniPalette.cyan)
+                        Text("Write \(rate(monitor.snapshot.diskActivity.writeBytesPerSecond))")
+                            .foregroundStyle(MoniPalette.orange)
+                    }
+                    .font(.system(size: 15, weight: .bold))
+                    Sparkline(values: monitor.diskReadHistory, color: MoniPalette.cyan)
+                        .frame(height: 120)
                 }
-                .buttonStyle(.borderedProminent)
+
+                HStack(alignment: .top, spacing: 12) {
+                    DetailPanel("Largest folders") {
+                        unavailableRow("Open the disk browser to inspect folders.")
+                    }
+                    DetailPanel("Drive health") {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            secondaryStat("Volumes", monitor.snapshot.volumes.count.formatted())
+                            secondaryStat("Capacity", totalCapacity)
+                            secondaryStat("Available", totalAvailable)
+                            secondaryStat("SMART status", "—")
+                        }
+                        Button {
+                            selection = .disks
+                        } label: {
+                            Text("Browse files ›")
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 9)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(MoniPressButtonStyle())
+                        .foregroundStyle(MoniPalette.blue)
+                        .background(MoniPalette.control)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
             }
-            .moniAnimation(value: monitor.snapshot.volumes.map(\.id))
         }
+    }
+
+    private var totalCapacity: String {
+        bytes(UInt64(max(0, monitor.snapshot.volumes.reduce(Int64(0)) { $0 + $1.totalBytes })))
+    }
+
+    private var totalAvailable: String {
+        bytes(UInt64(max(0, monitor.snapshot.volumes.reduce(Int64(0)) { $0 + $1.availableBytes })))
     }
 }
 
@@ -188,43 +269,62 @@ private struct PowerDetailView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
-                DetailPanel("Battery") {
-                    HStack(alignment: .center, spacing: 24) {
-                        Image(systemName: power.isCharging ? "battery.100percent.bolt" : "battery.75percent")
-                            .font(.system(size: 54))
-                            .foregroundStyle(power.isCharging ? .green : .yellow)
-                            .id(power.isCharging)
-                            .transition(MoniMotion.itemTransition)
-                        VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 12) {
+                    DetailPanel {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text("Battery").font(.system(size: 15, weight: .bold)).foregroundStyle(MoniPalette.yellow)
+                            Text(power.isCharging ? "Charging" : "On battery")
+                                .font(.system(size: 12.5)).foregroundStyle(.tertiary)
+                        }
+                        if let batteryPercent = power.batteryPercent {
                             Text(power.batteryPercent.map(percent) ?? "No Battery")
-                                .font(.system(size: 38, weight: .bold, design: .rounded))
+                                .font(.system(size: 44, weight: .bold, design: .rounded))
                                 .moniNumericTransition(power.batteryPercent)
-                            Text(power.isCharging ? "Charging on AC power" : remainingTime)
-                                .foregroundStyle(.secondary)
+                            ProgressView(value: batteryPercent, total: 100).tint(MoniPalette.green)
+                        } else {
+                            Text("No Battery").font(.system(size: 30, weight: .bold, design: .rounded))
+                        }
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            secondaryStat("Status", power.isCharging ? "Charging" : "Discharging")
+                            secondaryStat("Remaining", remainingTime)
+                            secondaryStat("Voltage", power.voltageVolts.map { String(format: "%.2f V", $0) } ?? "—")
+                            secondaryStat("Cycle count", power.cycleCount.map(String.init) ?? "—")
+                            secondaryStat("Current", power.currentAmps.map { String(format: "%.2f A", $0) } ?? "—")
+                            secondaryStat("Temperature", power.batteryTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "—")
                         }
                     }
-                    .moniAnimation(value: power.isCharging)
+                    DetailPanel {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text("Thermals").font(.system(size: 15, weight: .bold)).foregroundStyle(MoniPalette.orange)
+                            Text(power.batteryTemperatureCelsius == nil ? "Not available" : "Battery sensor")
+                                .font(.system(size: 12.5)).foregroundStyle(.tertiary)
+                            Spacer()
+                            Text(power.batteryTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "—")
+                                .font(.system(size: 22, weight: .bold))
+                        }
+                        unavailableChart("CPU/GPU die and fan telemetry require an undocumented HID/SMC backend.")
+                            .frame(height: 108)
+                        HStack(spacing: 14) {
+                            secondaryStat("Fan 1", "—")
+                            secondaryStat("Fan 2", "—")
+                        }
+                    }
                 }
 
-                DetailPanel("Sensors") {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("CPU die")
-                                .foregroundStyle(.secondary)
-                            Text("No Data")
-                                .font(.title.bold())
-                        }
-                        Spacer()
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Fan speed")
-                                .foregroundStyle(.secondary)
-                            Text("No Data")
-                                .font(.title.bold())
-                        }
+                DetailPanel("Temperature sensors") {
+                    if let temperature = power.batteryTemperatureCelsius {
+                        secondaryStat("Battery", String(format: "%.1f°C", temperature))
                     }
-                    Text("Temperature and fan telemetry require hardware interfaces that are not part of the public macOS API.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    unavailableRow("CPU/GPU die sensors are not exposed through a stable documented API; the private HID/SMC backend is not enabled.")
+                }
+
+                DetailPanel("Power draw") {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 14) {
+                        insetStat("System input", power.systemPowerWatts.map { String(format: "%.1f W", $0) } ?? "—")
+                        insetStat("CPU package", "—")
+                        insetStat("GPU", "—")
+                        insetStat("Battery", power.currentAmps.map { String(format: "%.2f A", $0) } ?? "—")
+                    }
                 }
             }
         }
@@ -239,36 +339,44 @@ private struct PowerDetailView: View {
 
 private struct DockerDetailView: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @Binding var selection: MonitorSection
 
     private var docker: DockerStatus { monitor.snapshot.docker }
 
     var body: some View {
-        DetailPanel("Docker") {
-            HStack(spacing: 20) {
-                Image(systemName: "shippingbox")
-                    .font(.system(size: 52))
-                    .foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(docker.statusTitle)
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
-                        .id(docker.statusTitle)
-                        .transition(MoniMotion.itemTransition)
-                    Text(docker.installation ?? "No supported installation")
-                        .foregroundStyle(.secondary)
-                }
+        DetailPanel {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("Docker").font(.system(size: 17, weight: .bold)).foregroundStyle(MoniPalette.blue)
+                Text(docker.isRunning ? "Daemon reachable" : "Daemon not reachable")
+                    .font(.system(size: 12.5)).foregroundStyle(.tertiary)
             }
+            VStack(spacing: 10) {
+                Image(systemName: "shippingbox")
+                    .font(.system(size: 52, weight: .light))
+                    .foregroundStyle(docker.isRunning ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
+                Text(docker.statusTitle)
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                Text(docker.statusReason)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Back to summary") { selection = .summary }
+                    .buttonStyle(.bordered)
+                    .moniPointingHand()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 52)
+
             Divider()
-            value("Installed", docker.isInstalled ? "Yes" : "No")
-            value("Engine socket", docker.socketPath ?? "Not found")
-            value("Status", docker.isRunning ? "Local socket available" : "Engine unavailable")
-            Text(docker.statusReason)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("Moni checks only local installation and engine socket state; it does not start or modify Docker.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 12) {
+                dockerStat("Installed", docker.isInstalled ? "Yes" : "No")
+                dockerStat("Status", docker.statusTitle)
+                dockerStat("Provider", docker.installation ?? "—")
+                dockerStat("Socket", docker.socketPath ?? "—")
+                dockerStat("Detection", "Local")
+                dockerStat("Management", "Read only")
+            }
         }
-        .moniAnimation(value: docker.statusTitle)
     }
 }
 
@@ -293,40 +401,75 @@ private struct DiskBrowserView: View {
     @State private var loadError: String?
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Picker("Volume", selection: $selectedPath) {
-                    ForEach(monitor.snapshot.volumes) { volume in
-                        Text(volume.name).tag(volume.mountPath)
-                    }
-                }
-                .frame(width: 220)
-                Button {
-                    let parent = URL(fileURLWithPath: selectedPath).deletingLastPathComponent().path
-                    selectedPath = parent.isEmpty ? "/" : parent
-                } label: {
-                    Image(systemName: "arrow.up")
-                }
-                .disabled(selectedPath == "/" || monitor.snapshot.volumes.contains { $0.mountPath == selectedPath })
-                Text(selectedPath)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .transition(MoniMotion.itemTransition)
-                } else {
-                    Text("\(items.count) items")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .moniNumericTransition(items.count)
-                        .transition(MoniMotion.itemTransition)
-                }
-            }
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("VOLUMES")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .tracking(0.7)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
 
-            DetailPanel("Disk browser") {
+                ForEach(monitor.snapshot.volumes) { volume in
+                    Button {
+                        selectedPath = volume.mountPath
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(volume.name)
+                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(percent(volume.usedPercent))
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundStyle(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
+                            }
+                            ProgressView(value: volume.usedPercent, total: 100)
+                                .tint(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
+                            Text("\(bytes(UInt64(volume.usedBytes))) of \(bytes(UInt64(volume.totalBytes)))")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 11)
+                        .background(isWithin(volume) ? MoniPalette.selection : MoniPalette.insetSecondary)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(isWithin(volume) ? MoniPalette.blue.opacity(0.5) : Color.clear, lineWidth: 1)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(MoniPressButtonStyle())
+                }
+                Spacer()
+            }
+            .frame(width: 250)
+
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Button {
+                        let parent = URL(fileURLWithPath: selectedPath).deletingLastPathComponent().path
+                        selectedPath = parent.isEmpty ? "/" : parent
+                    } label: {
+                        Image(systemName: "chevron.up")
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(MoniPressButtonStyle())
+                    .disabled(isVolumeRoot)
+                    Text(selectedPath)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Size").frame(width: 110, alignment: .trailing)
+                    Text("Modified").frame(width: 130, alignment: .trailing)
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                Divider()
+
                 if let loadError {
                     ContentUnavailableView(
                         "Unable to read folder",
@@ -341,23 +484,25 @@ private struct DiskBrowserView: View {
                                 Button {
                                     if item.isDirectory { selectedPath = item.url.path }
                                 } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: item.isDirectory ? "folder.fill" : "doc")
-                                            .foregroundStyle(item.isDirectory ? .blue : .secondary)
-                                        Text(item.url.lastPathComponent)
-                                            .lineLimit(1)
-                                        Spacer()
+                                    HStack(spacing: 8) {
+                                        HStack(spacing: 9) {
+                                            RoundedRectangle(cornerRadius: 2)
+                                                .fill(item.isDirectory ? MoniPalette.blue : MoniPalette.foregroundTertiary)
+                                                .frame(width: 8, height: 8)
+                                            Text(item.url.lastPathComponent).lineLimit(1)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                         Text(item.isDirectory ? "—" : bytes(item.size))
                                             .foregroundStyle(.secondary)
-                                            .frame(width: 90, alignment: .trailing)
+                                            .frame(width: 110, alignment: .trailing)
                                         Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
                                             .foregroundStyle(.tertiary)
-                                            .frame(width: 145, alignment: .trailing)
+                                            .frame(width: 130, alignment: .trailing)
                                     }
-                                    .font(.system(size: 12))
+                                    .font(.system(size: 13))
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 5)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 9)
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(MoniPressButtonStyle(scale: 0.99))
@@ -368,6 +513,13 @@ private struct DiskBrowserView: View {
                     }
                 }
             }
+            .padding(6)
+            .background(MoniPalette.insetSecondary)
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(MoniPalette.line, lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .moniAnimation(value: isLoading)
         .moniAnimation(value: loadError)
@@ -382,6 +534,25 @@ private struct DiskBrowserView: View {
             loadError = result.error
             isLoading = false
         }
+    }
+
+    private var isVolumeRoot: Bool {
+        monitor.snapshot.volumes.contains { $0.mountPath == selectedPath }
+    }
+
+    private func isWithin(_ volume: VolumeUsage) -> Bool {
+        selectedVolumeID == volume.id
+    }
+
+    private var selectedVolumeID: String? {
+        monitor.snapshot.volumes
+            .filter { volume in
+                volume.mountPath == "/"
+                    ? selectedPath.hasPrefix("/")
+                    : selectedPath == volume.mountPath || selectedPath.hasPrefix(volume.mountPath + "/")
+            }
+            .max { $0.mountPath.count < $1.mountPath.count }?
+            .id
     }
 
     private nonisolated static func loadItems(at path: String) -> LoadResult {
@@ -412,16 +583,94 @@ private struct DiskBrowserView: View {
     }
 }
 
-private func value(_ key: String, _ text: String) -> some View {
-    HStack {
+private struct SecondaryRangePicker: View {
+    @Binding var selection: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(["1m", "1h", "24h"], id: \.self) { range in
+                Button(range) { selection = range }
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(selection == range ? .primary : .tertiary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(selection == range ? MoniPalette.controlSelected : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .buttonStyle(MoniPressButtonStyle(scale: 0.98))
+            }
+        }
+    }
+}
+
+private func secondaryStat(_ key: String, _ text: String) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
         Text(key).foregroundStyle(.secondary)
-        Spacer()
-        Text(text)
-            .fontWeight(.semibold)
-            .monospacedDigit()
-            .moniNumericTransition(text)
+        Text(text).fontWeight(.bold).monospacedDigit().lineLimit(1)
     }
     .font(.system(size: 12.5))
+    .frame(maxWidth: .infinity, alignment: .leading)
+}
+
+private func insetStat(_ key: String, _ text: String) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+        Text(key).font(.system(size: 12)).foregroundStyle(.secondary)
+        Text(text).font(.system(size: 20, weight: .bold)).monospacedDigit()
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(MoniPalette.inset)
+    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+}
+
+private func dockerStat(_ key: String, _ text: String) -> some View {
+    HStack(spacing: 8) {
+        Text(key).foregroundStyle(.secondary)
+        Spacer(minLength: 6)
+        Text(text).fontWeight(.bold).lineLimit(1)
+    }
+    .font(.system(size: 12.5))
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .background(MoniPalette.inset)
+    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+}
+
+private func unavailableChart(_ message: String) -> some View {
+    ZStack {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(MoniPalette.insetSecondary)
+        Text(message)
+            .font(.system(size: 12.5))
+            .foregroundStyle(.tertiary)
+            .multilineTextAlignment(.center)
+            .padding()
+    }
+}
+
+private func unavailableRow(_ message: String) -> some View {
+    Text(message)
+        .font(.system(size: 12.5))
+        .foregroundStyle(.tertiary)
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
+}
+
+private func rangeFooter(_ range: String) -> some View {
+    HStack {
+        Text(range == "1m" ? "-1 min" : range == "1h" ? "-1 hour" : "-24 hours")
+        Spacer()
+        Text("now")
+    }
+    .font(.system(size: 11.5))
+    .foregroundStyle(.quaternary)
+}
+
+private func secondarySampleCount(_ range: String) -> Int {
+    switch range {
+    case "1h": 3_600
+    case "24h": 86_400
+    default: 60
+    }
 }
 
 private func percent(_ value: Double) -> String {
@@ -434,4 +683,16 @@ private func bytes(_ value: UInt64) -> String {
 
 private func rate(_ value: Double) -> String {
     "\(ByteCountFormatter.string(fromByteCount: Int64(max(0, value)), countStyle: .decimal))/s"
+}
+
+private func bitRate(_ value: UInt64) -> String {
+    let units = ["bps", "Kbps", "Mbps", "Gbps"]
+    var amount = Double(value)
+    var index = 0
+    while amount >= 1_000, index < units.count - 1 {
+        amount /= 1_000
+        index += 1
+    }
+    let format = amount >= 100 || amount.rounded() == amount ? "%.0f %@" : "%.1f %@"
+    return String(format: format, amount, units[index])
 }

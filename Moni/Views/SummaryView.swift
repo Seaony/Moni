@@ -63,7 +63,7 @@ struct SummaryView: View {
 
     private var hostCard: some View {
         cardButton(.host) {
-            MetricCard(title: snapshot.host.name, symbol: "server.rack", color: .cyan) {
+            MetricCard(title: snapshot.host.name, symbol: MonitorSection.host.symbol, color: MoniPalette.cyan) {
                 if cardSize(.host).columns == 2 {
                     HStack(alignment: .top, spacing: 32) {
                         VStack(alignment: .leading, spacing: 8) {
@@ -78,8 +78,8 @@ struct SummaryView: View {
                                 .foregroundStyle(.secondary)
                         }
                         VStack(spacing: 12) {
-                            MetricRow(label: "Load", value: snapshot.host.loadAverages.map { String(format: "%.2f", $0) }.joined(separator: " · "), color: .orange)
-                            MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: .purple)
+                            MetricRow(label: "Load", value: snapshot.host.loadAverages.map { String(format: "%.2f", $0) }.joined(separator: " · "), color: MoniPalette.orange)
+                            MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple)
                         }
                         .frame(maxWidth: .infinity)
                     }
@@ -93,8 +93,8 @@ struct SummaryView: View {
                         .moniNumericTransition(Int(snapshot.host.uptime))
                     Text("Uptime")
                         .foregroundStyle(.secondary)
-                    MetricRow(label: "Load", value: snapshot.host.loadAverages.map { String(format: "%.2f", $0) }.joined(separator: " · "), color: .orange)
-                    MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: .purple)
+                    MetricRow(label: "Load", value: snapshot.host.loadAverages.map { String(format: "%.2f", $0) }.joined(separator: " · "), color: MoniPalette.orange)
+                    MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple)
                 }
             }
         }
@@ -102,25 +102,25 @@ struct SummaryView: View {
 
     private var cpuCard: some View {
         cardButton(.cpu) {
-            MetricCard(title: "CPU", symbol: "cpu", color: .pink, trailing: "\(snapshot.host.processorCount) cores") {
+            MetricCard(title: "CPU", symbol: MonitorSection.cpu.symbol, color: MoniPalette.pink, trailing: "\(snapshot.host.processorCount) cores") {
                 HStack(alignment: .bottom, spacing: 12) {
                     Text(percent(snapshot.cpu.total))
                         .font(.system(size: 36, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .moniNumericTransition(snapshot.cpu.total)
-                    Sparkline(values: monitor.cpuHistory, color: .pink)
+                    Sparkline(values: monitor.cpuHistory, color: MoniPalette.pink)
                         .frame(height: cardSize(.cpu).rows == 2 ? 245 : 66)
                 }
-                MetricRow(label: "User", value: percent(snapshot.cpu.user), color: .pink)
-                MetricRow(label: "System", value: percent(snapshot.cpu.system), color: .orange)
-                MetricRow(label: "Idle", value: percent(snapshot.cpu.idle), color: .green)
+                MetricRow(label: "User", value: percent(snapshot.cpu.user), color: MoniPalette.pink)
+                MetricRow(label: "System", value: percent(snapshot.cpu.system), color: MoniPalette.orange)
+                MetricRow(label: "Idle", value: percent(snapshot.cpu.idle), color: MoniPalette.green)
             }
         }
     }
 
     private var memoryCard: some View {
         cardButton(.memory) {
-            MetricCard(title: "Memory", symbol: "memorychip", color: .blue, trailing: "Live") {
+            MetricCard(title: "Memory", symbol: MonitorSection.memory.symbol, color: MoniPalette.blue, trailing: "Live") {
                 HStack(alignment: .bottom, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(percent(snapshot.memory.usedPercent))
@@ -131,47 +131,51 @@ struct SummaryView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
-                    Sparkline(values: monitor.memoryHistory, color: .blue)
+                    Sparkline(values: monitor.memoryHistory, color: MoniPalette.blue)
                         .frame(height: cardSize(.memory).rows == 2 ? 245 : 66)
                 }
-                MetricRow(label: "Free", value: bytes(snapshot.memory.freeBytes), color: .green)
-                MetricRow(label: "Cached", value: bytes(snapshot.memory.cachedBytes), color: .cyan)
-                MetricRow(label: "Wired", value: bytes(snapshot.memory.wiredBytes), color: .orange)
+                MetricRow(label: "Free", value: bytes(snapshot.memory.freeBytes), color: MoniPalette.green)
+                MetricRow(label: "Cached", value: bytes(snapshot.memory.cachedBytes), color: MoniPalette.cyan)
+                MetricRow(label: "Wired", value: bytes(snapshot.memory.wiredBytes), color: MoniPalette.orange)
             }
         }
     }
 
     private var gpuCard: some View {
         cardButton(.gpu) {
-            MetricCard(title: "GPU", symbol: "display", color: .green, trailing: "\(snapshot.gpuDevices.count) device\(snapshot.gpuDevices.count == 1 ? "" : "s")") {
+            MetricCard(title: "GPU", symbol: MonitorSection.gpu.symbol, color: MoniPalette.green, trailing: "\(snapshot.gpuDevices.count) device\(snapshot.gpuDevices.count == 1 ? "" : "s")") {
                 if cardSize(.gpu).columns == 2 {
                     HStack(alignment: .top, spacing: 32) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Utilization")
                                 .foregroundStyle(.secondary)
-                            Text("No Data")
+                            Text(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
                                 .font(.system(size: 30, weight: .bold, design: .rounded))
                         }
                         VStack(alignment: .leading, spacing: 8) {
                             Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
                                 .fontWeight(.semibold)
-                            Text("macOS does not expose GPU utilization through a public API")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
+                            if let memory = snapshot.gpu.allocatedMemoryBytes {
+                                Text("\(bytes(memory)) allocated")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
                     Text("Utilization")
                         .foregroundStyle(.secondary)
-                    Text("No Data")
+                    Text(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
                         .font(.system(size: 30, weight: .bold, design: .rounded))
                     Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("macOS does not expose GPU utilization through a public API")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                    if let memory = snapshot.gpu.allocatedMemoryBytes {
+                        Text("\(bytes(memory)) allocated")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
         }
@@ -179,30 +183,30 @@ struct SummaryView: View {
 
     private var networkCard: some View {
         cardButton(.network) {
-            MetricCard(title: "Network", symbol: "arrow.up.arrow.down", color: .cyan, trailing: "Live") {
+            MetricCard(title: "Network", symbol: MonitorSection.network.symbol, color: MoniPalette.cyan, trailing: "Live") {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("↓ \(rate(snapshot.network.downloadBytesPerSecond))")
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(MoniPalette.cyan)
                             .moniNumericTransition(snapshot.network.downloadBytesPerSecond)
                         Text("↑ \(rate(snapshot.network.uploadBytesPerSecond))")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(MoniPalette.orange)
                             .moniNumericTransition(snapshot.network.uploadBytesPerSecond)
                     }
                     .font(.system(size: 19, weight: .bold, design: .rounded))
-                    Sparkline(values: monitor.downloadHistory, color: .cyan)
+                    Sparkline(values: monitor.downloadHistory, color: MoniPalette.cyan)
                         .frame(height: cardSize(.network).rows == 2 ? 245 : 72)
                 }
-                MetricRow(label: "Received", value: bytes(snapshot.network.totalReceivedBytes), color: .cyan)
-                MetricRow(label: "Sent", value: bytes(snapshot.network.totalSentBytes), color: .orange)
-                MetricRow(label: "Active", value: "\(snapshot.network.interfaces.filter(\.isActive).count) interfaces", color: .green)
+                MetricRow(label: "Received", value: bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan)
+                MetricRow(label: "Sent", value: bytes(snapshot.network.totalSentBytes), color: MoniPalette.orange)
+                MetricRow(label: "Active", value: "\(snapshot.network.interfaces.filter(\.isActive).count) interfaces", color: MoniPalette.green)
             }
         }
     }
 
     private var storageCard: some View {
         cardButton(.storage) {
-            MetricCard(title: "Storage", symbol: "internaldrive", color: .orange, trailing: "\(snapshot.volumes.count) volumes") {
+            MetricCard(title: "Storage", symbol: MonitorSection.storage.symbol, color: MoniPalette.orange, trailing: "\(snapshot.volumes.count) volumes") {
                 if let volume = rootVolume {
                     HStack {
                         Text(volume.mountPath)
@@ -210,17 +214,17 @@ struct SummaryView: View {
                         Spacer()
                         Text(percent(volume.usedPercent))
                             .fontWeight(.bold)
-                            .foregroundStyle(volume.usedPercent >= 90 ? .red : .green)
+                            .foregroundStyle(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.green)
                             .moniNumericTransition(volume.usedPercent)
                     }
                     ProgressView(value: volume.usedPercent, total: 100)
-                        .tint(volume.usedPercent >= 90 ? .red : .orange)
+                        .tint(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
                         .moniAnimation(MoniMotion.data, value: volume.usedPercent)
                     Text("\(bytes(UInt64(volume.usedBytes))) / \(bytes(UInt64(volume.totalBytes))) used")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    MetricRow(label: "Available", value: bytes(UInt64(max(0, volume.availableBytes))), color: .green)
+                    MetricRow(label: "Available", value: bytes(UInt64(max(0, volume.availableBytes))), color: MoniPalette.green)
                 } else {
                     Text("No mounted volumes")
                         .foregroundStyle(.secondary)
@@ -236,7 +240,7 @@ struct SummaryView: View {
             : (size.rows == 2 ? 9 : 4)
 
         return cardButton(.processes) {
-            MetricCard(title: "Processes", symbol: "list.bullet.rectangle", color: .purple, trailing: snapshot.processes.count.formatted()) {
+            MetricCard(title: "Processes", symbol: MonitorSection.processes.symbol, color: MoniPalette.purple, trailing: snapshot.processes.count.formatted()) {
                 LazyVGrid(
                     columns: Array(
                         repeating: GridItem(.flexible(), spacing: 18, alignment: .leading),
@@ -271,7 +275,7 @@ struct SummaryView: View {
 
     private var powerCard: some View {
         cardButton(.sensors) {
-            MetricCard(title: "Power & Sensors", symbol: "battery.75percent", color: .yellow, trailing: snapshot.power.isCharging ? "Charging" : nil) {
+            MetricCard(title: "Power & Sensors", symbol: MonitorSection.sensors.symbol, color: MoniPalette.yellow, trailing: snapshot.power.isCharging ? "Charging" : nil) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Battery")
@@ -282,9 +286,9 @@ struct SummaryView: View {
                     }
                     Spacer()
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("CPU die")
+                        Text("Battery temp")
                             .foregroundStyle(.secondary)
-                        Text("No Data")
+                        Text(snapshot.power.batteryTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "No Data")
                             .font(.system(size: 22, weight: .bold, design: .rounded))
                     }
                 }
@@ -292,9 +296,9 @@ struct SummaryView: View {
                 MetricRow(
                     label: snapshot.power.isCharging ? "Power source" : "Time remaining",
                     value: powerDetail,
-                    color: snapshot.power.isCharging ? .green : .yellow
+                    color: snapshot.power.isCharging ? MoniPalette.green : MoniPalette.yellow
                 )
-                Text("Temperature sensors require non-public hardware access")
+                Text("CPU and GPU die sensors require an undocumented HID/SMC backend")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
@@ -303,12 +307,12 @@ struct SummaryView: View {
 
     private var dockerCard: some View {
         let docker = snapshot.docker
-        let color: Color = docker.isRunning ? .blue : docker.isInstalled ? .orange : .secondary
+        let color: Color = docker.isRunning ? MoniPalette.blue : docker.isInstalled ? MoniPalette.orange : MoniPalette.foregroundSecondary
 
         return cardButton(.docker) {
             MetricCard(
                 title: "Docker",
-                symbol: "shippingbox",
+                symbol: MonitorSection.docker.symbol,
                 color: color,
                 trailing: docker.isRunning ? "Live" : nil
             ) {
@@ -324,7 +328,7 @@ struct SummaryView: View {
                             MetricRow(
                                 label: "Engine",
                                 value: docker.isRunning ? "Connected" : "Unavailable",
-                                color: docker.isRunning ? .green : docker.isInstalled ? .orange : .red
+                                color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red
                             )
                             Text(docker.statusReason)
                                 .font(.system(size: 11))
@@ -342,7 +346,7 @@ struct SummaryView: View {
                     MetricRow(
                         label: "Engine",
                         value: docker.isRunning ? "Connected" : "Unavailable",
-                        color: docker.isRunning ? .green : docker.isInstalled ? .orange : .red
+                        color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red
                     )
                     Text(docker.statusReason)
                         .font(.system(size: 11))
@@ -360,8 +364,8 @@ struct SummaryView: View {
         return cardButton(.ai) {
             MetricCard(
                 title: "AI Usage",
-                symbol: "sparkles",
-                color: .indigo,
+                symbol: MonitorSection.ai.symbol,
+                color: MoniPalette.indigo,
                 trailing: "\(aiUsageRangeDays) days"
             ) {
                 if summary.providers.isEmpty {
@@ -382,7 +386,7 @@ struct SummaryView: View {
                         }
                     }
                     Spacer()
-                    MetricRow(label: "Providers", value: "0", color: .indigo)
+                    MetricRow(label: "Providers", value: "0", color: MoniPalette.indigo)
                 } else if size.columns == 2 {
                     HStack(alignment: .bottom, spacing: 18) {
                         aiUsageTotals
@@ -418,12 +422,12 @@ struct SummaryView: View {
             MetricRow(
                 label: "Requests",
                 value: aiUsage.summary.requestCount.formatted(),
-                color: .cyan
+                color: MoniPalette.cyan
             )
             MetricRow(
                 label: "Est. cost",
                 value: aiUsage.summary.estimatedCostUSD.map(currency) ?? "—",
-                color: .green
+                color: MoniPalette.green
             )
         }
     }
@@ -434,7 +438,7 @@ struct SummaryView: View {
                 MetricRow(
                     label: provider.provider,
                     value: "\(compactTokens(provider.totalTokens)) · \(provider.requestCount) req",
-                    color: provider.provider == "Codex" ? .blue : .orange
+                    color: provider.provider == "Codex" ? MoniPalette.cyan : MoniPalette.claude
                 )
             }
         }

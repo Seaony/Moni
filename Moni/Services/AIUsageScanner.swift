@@ -111,6 +111,17 @@ actor AIUsageScanner {
         var sessionID: String?
         var parentID: String?
         var events: [CodexEvent] = []
+        var quota: TimestampedQuota?
+    }
+
+    private struct TimestampedQuota {
+        let date: Date
+        let result: AIQuotaFetchResult
+    }
+
+    private struct CodexScanResult {
+        let totals: Totals
+        let quota: AIQuotaFetchResult?
     }
 
     private struct FileSignature: Equatable {
@@ -173,19 +184,47 @@ actor AIUsageScanner {
         self.calendar = calendar
     }
 
-    func scan(days: Int = 30, now: Date = Date()) -> AIUsageSummary {
+    func scan(days: Int = 30, includeQuotas: Bool = false, now: Date = Date()) async -> AIUsageSummary {
         let today = calendar.startOfDay(for: now)
-        let cutoff =
+        let start =
             calendar.date(byAdding: .day, value: -(max(1, days) - 1), to: today) ?? .distantPast
+        let end = calendar.date(byAdding: .day, value: 1, to: today) ?? now
+        return await scan(start: start, end: end, includeQuotas: includeQuotas, now: now)
+    }
+
+    func scan(range: AIUsageRange, includeQuotas: Bool = false, now: Date = Date()) async -> AIUsageSummary {
+        let interval = range.interval(containing: now, calendar: calendar)
+        return await scan(
+            start: interval.start,
+            end: interval.end,
+            includeQuotas: includeQuotas,
+            now: now
+        )
+    }
+
+    private func scan(
+        start: Date,
+        end: Date,
+        includeQuotas: Bool,
+        now: Date
+    ) async -> AIUsageSummary {
         var daily: [Date: DailyBucket] = [:]
-        let codex = scanCodex(cutoff: cutoff, daily: &daily)
-        let claude = scanClaude(cutoff: cutoff, daily: &daily)
-        let providers = [provider("Codex", totals: codex), provider("Claude", totals: claude)]
-            .filter { $0.totalTokens > 0 || $0.sessionCount > 0 }
+        let codex = scanCodex(start: start, end: end, daily: &daily)
+        let claude = scanClaude(start: start, end: end, daily: &daily)
+        var quotas = includeQuotas ? await AIQuotaFetcher.fetchAll(homeDirectory: homeDirectory) : [:]
+        if includeQuotas, quotas["Codex"]?.windows.isEmpty != false, let localQuota = codex.quota {
+            quotas["Codex"] = localQuota
+        }
+        let providers = [
+            provider("Claude", totals: claude, quota: quotas["Claude"]),
+            provider("Codex", totals: codex.totals, quota: quotas["Codex"]),
+        ].filter { $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty }
+        let lastDay = calendar.date(byAdding: .day, value: -1, to: end) ?? start
         return AIUsageSummary(
             providers: providers,
-            daily: dailyUsage(from: cutoff, through: today, buckets: daily),
-            scannedAt: now
+            daily: dailyUsage(from: start, through: lastDay, buckets: daily),
+            scannedAt: now,
+            quotaScannedAt: includeQuotas ? now : nil
         )
     }
 
@@ -211,7 +250,7 @@ actor AIUsageScanner {
         return result
     }
 
-    private func scanCodex(cutoff: Date, daily: inout [Date: DailyBucket]) -> Totals {
+    private func scanCodex(start: Date, end: Date, daily: inout [Date: DailyBucket]) -> CodexScanResult {
         let roots = [
             homeDirectory.appending(path: ".codex/sessions"),
             homeDirectory.appending(path: ".codex/archived_sessions"),
@@ -225,16 +264,18 @@ actor AIUsageScanner {
         var totals = Totals()
 
         for session in sessions {
-            let start = droppedPrefixes[session.path] ?? 0
+            let droppedCount = droppedPrefixes[session.path] ?? 0
             var countedSession = false
-            for event in session.events.dropFirst(start) where event.usage.date >= cutoff {
+            for event in session.events.dropFirst(droppedCount)
+            where event.usage.date >= start && event.usage.date < end {
                 totals.add(event.usage)
                 addDaily(event.usage, to: &daily)
                 countedSession = true
             }
             if countedSession { totals.sessions += 1 }
         }
-        return totals
+        let quota = sessions.compactMap(\.quota).max { $0.date < $1.date }?.result
+        return CodexScanResult(totals: totals, quota: quota)
     }
 
     private func parseCodexSession(_ url: URL) -> CodexSession {
@@ -267,9 +308,17 @@ actor AIUsageScanner {
             }
             guard type == "event_msg",
                 string(payload["type"]) == "token_count",
-                let info = payload["info"] as? [String: Any],
                 let timestamp = date(object["timestamp"])
             else { return }
+
+            if let rateLimits = payload["rate_limits"] as? [String: Any],
+                let quota = codexLogQuota(from: rateLimits),
+                timestamp > (session.quota?.date ?? .distantPast)
+            {
+                session.quota = TimestampedQuota(date: timestamp, result: quota)
+            }
+
+            guard let info = payload["info"] as? [String: Any] else { return }
 
             let total = (info["total_token_usage"] as? [String: Any]).map(tokenValues)
             let last = (info["last_token_usage"] as? [String: Any]).map(tokenValues)
@@ -378,8 +427,8 @@ actor AIUsageScanner {
         return count
     }
 
-    private func scanClaude(cutoff: Date, daily: inout [Date: DailyBucket]) -> Totals {
-        let files = jsonlFiles(in: claudeRoots(), modifiedAfter: cutoff)
+    private func scanClaude(start: Date, end: Date, daily: inout [Date: DailyBucket]) -> Totals {
+        let files = jsonlFiles(in: claudeRoots(), modifiedAfter: start)
         let paths = Set(files.map(\.path))
         claudeCache = claudeCache.filter { paths.contains($0.key) }
         let allEvents = files.flatMap(cachedClaudeEvents)
@@ -387,7 +436,7 @@ actor AIUsageScanner {
         var totals = Totals()
         var sessions: Set<String> = []
 
-        for event in events where event.usage.date >= cutoff {
+        for event in events where event.usage.date >= start && event.usage.date < end {
             totals.add(event.usage)
             addDaily(event.usage, to: &daily)
             sessions.insert(event.sessionID)
@@ -524,7 +573,11 @@ actor AIUsageScanner {
         return candidate.usage.date >= current.usage.date ? candidate : current
     }
 
-    private func provider(_ name: String, totals: Totals) -> AIProviderUsage {
+    private func provider(
+        _ name: String,
+        totals: Totals,
+        quota: AIQuotaFetchResult?
+    ) -> AIProviderUsage {
         let models = totals.models.map { model, values in
             AIModelUsage(
                 model: model,
@@ -557,7 +610,10 @@ actor AIUsageScanner {
             estimatedCostUSD: values.pricedRequests == 0 ? nil : values.cost,
             unpricedRequestCount: values.requests - values.pricedRequests,
             models: models,
-            lastUpdated: totals.lastUpdated
+            lastUpdated: totals.lastUpdated,
+            planName: quota?.planName,
+            quotaWindows: quota?.windows ?? [],
+            quotaMessage: quota?.message
         )
     }
 
@@ -591,6 +647,36 @@ actor AIUsageScanner {
             let spawn = subagent["thread_spawn"] as? [String: Any]
         else { return nil }
         return string(spawn["parent_thread_id"])
+    }
+
+    private func codexLogQuota(from rateLimits: [String: Any]) -> AIQuotaFetchResult? {
+        var windows: [AIQuotaWindow] = []
+        for (key, suffix) in [("primary", "primary"), ("secondary", "secondary")] {
+            guard let raw = rateLimits[key] as? [String: Any],
+                let used = (raw["used_percent"] as? NSNumber)?.doubleValue
+            else { continue }
+            let minutes = (raw["window_minutes"] as? NSNumber)?.intValue
+            let label: String
+            switch minutes {
+            case 300: label = "5-hour window"
+            case 10_080: label = "Weekly"
+            default: label = "Usage window"
+            }
+            let resetSeconds = (raw["resets_at"] as? NSNumber)?.doubleValue
+            windows.append(
+                AIQuotaWindow(
+                    id: "codex-\(suffix)-\(minutes ?? 0)",
+                    label: label,
+                    usedPercent: used,
+                    windowMinutes: minutes,
+                    resetsAt: resetSeconds.map(Date.init(timeIntervalSince1970:))
+                ))
+        }
+        guard !windows.isEmpty else { return nil }
+        let plan = string(rateLimits["plan_type"])?
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
+        return AIQuotaFetchResult(planName: plan, windows: windows, message: nil)
     }
 
     private func claudeSessionID(_ object: [String: Any], message: [String: Any]) -> String? {

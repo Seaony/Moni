@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import IOKit
 import IOKit.ps
 import Metal
 
@@ -24,6 +25,7 @@ actor SystemSampler {
 
     private var previousCPUTicks: [CPUTicks] = []
     private var previousNetworkBytes: (received: UInt64, sent: UInt64, date: Date)?
+    private var previousDiskBytes: (read: UInt64, written: UInt64, date: Date)?
     private var previousProcessTimes: [Int32: UInt64] = [:]
     private var previousProcessDate: Date?
     private var processMetadata: [Int32: (name: String, path: String)] = [:]
@@ -67,10 +69,12 @@ actor SystemSampler {
             cpu: sampleCPU(),
             memory: sampleMemory(),
             network: sampleNetwork(at: now),
+            diskActivity: sampleDiskActivity(at: now),
             volumes: cachedVolumes,
             processes: cachedProcesses,
             power: cachedPower,
             gpuDevices: gpuDevices,
+            gpu: Self.sampleGPU(),
             docker: cachedDocker
         )
     }
@@ -139,8 +143,9 @@ actor SystemSampler {
         let perCore = deltas.map { percent($0.user + $0.system + $0.nice, total: $0.total) }
         return CPUUsage(
             total: percent(aggregate.user + aggregate.system + aggregate.nice, total: aggregate.total),
-            user: percent(aggregate.user + aggregate.nice, total: aggregate.total),
+            user: percent(aggregate.user, total: aggregate.total),
             system: percent(aggregate.system, total: aggregate.total),
+            nice: percent(aggregate.nice, total: aggregate.total),
             idle: percent(aggregate.idle, total: aggregate.total),
             perCore: perCore
         )
@@ -171,6 +176,9 @@ actor SystemSampler {
         let wired = UInt64(statistics.wire_count) * pageSize
         let compressed = UInt64(statistics.compressor_page_count) * pageSize
         let used = total > free + cached ? total - free - cached : 0
+        var swap = xsw_usage()
+        var swapSize = MemoryLayout<xsw_usage>.size
+        let hasSwap = sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0
 
         return MemoryUsage(
             totalBytes: total,
@@ -178,7 +186,11 @@ actor SystemSampler {
             freeBytes: free,
             cachedBytes: cached,
             wiredBytes: wired,
-            compressedBytes: compressed
+            compressedBytes: compressed,
+            swapUsedBytes: hasSwap ? swap.xsu_used : 0,
+            pageIns: UInt64(statistics.pageins),
+            pageOuts: UInt64(statistics.pageouts),
+            faults: UInt64(statistics.faults)
         )
     }
 
@@ -209,7 +221,8 @@ actor SystemSampler {
                 name: name,
                 receivedBytes: UInt64(usage.ifi_ibytes),
                 sentBytes: UInt64(usage.ifi_obytes),
-                isActive: isActive
+                isActive: isActive,
+                linkSpeedBitsPerSecond: UInt64(usage.ifi_baudrate)
             )
             interfaces.append(interface)
             received += interface.receivedBytes
@@ -237,6 +250,7 @@ actor SystemSampler {
     private func sampleVolumes() -> [VolumeUsage] {
         let keys: Set<URLResourceKey> = [
             .volumeLocalizedNameKey,
+            .volumeLocalizedFormatDescriptionKey,
             .volumeTotalCapacityKey,
             .volumeAvailableCapacityForImportantUsageKey
         ]
@@ -254,6 +268,7 @@ actor SystemSampler {
             return VolumeUsage(
                 name: values.volumeLocalizedName ?? url.lastPathComponent,
                 mountPath: url.path,
+                format: values.volumeLocalizedFormatDescription,
                 totalBytes: Int64(total),
                 availableBytes: available
             )
@@ -263,6 +278,44 @@ actor SystemSampler {
             if rhs.mountPath == "/" { return false }
             return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
         }
+    }
+
+    private func sampleDiskActivity(at date: Date) -> DiskActivity {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(
+            kIOMainPortDefault,
+            IOServiceMatching("IOBlockStorageDriver"),
+            &iterator
+        ) == KERN_SUCCESS else { return DiskActivity() }
+        defer { IOObjectRelease(iterator) }
+
+        var totalRead: UInt64 = 0
+        var totalWritten: UInt64 = 0
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            if let statistics = IORegistryEntryCreateCFProperty(
+                service,
+                "Statistics" as CFString,
+                kCFAllocatorDefault,
+                0
+            )?.takeRetainedValue() as? [String: Any] {
+                totalRead += (statistics["Bytes (Read)"] as? NSNumber)?.uint64Value ?? 0
+                totalWritten += (statistics["Bytes (Write)"] as? NSNumber)?.uint64Value ?? 0
+            }
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+
+        let elapsed = previousDiskBytes.map { date.timeIntervalSince($0.date) } ?? 0
+        let priorRead = previousDiskBytes?.read ?? totalRead
+        let priorWritten = previousDiskBytes?.written ?? totalWritten
+        let readDelta = totalRead >= priorRead ? totalRead - priorRead : 0
+        let writeDelta = totalWritten >= priorWritten ? totalWritten - priorWritten : 0
+        previousDiskBytes = (totalRead, totalWritten, date)
+        return DiskActivity(
+            readBytesPerSecond: elapsed > 0 ? Double(readDelta) / elapsed : 0,
+            writeBytesPerSecond: elapsed > 0 ? Double(writeDelta) / elapsed : 0
+        )
     }
 
     private func sampleProcesses(at date: Date) -> [ProcessUsage] {
@@ -327,11 +380,12 @@ actor SystemSampler {
     }
 
     private func samplePower() -> PowerUsage {
+        let telemetry = Self.sampleBatteryTelemetry()
         let snapshot = IOPSCopyPowerSourcesInfo().takeRetainedValue()
         let sources = IOPSCopyPowerSourcesList(snapshot).takeRetainedValue() as Array
         guard let source = sources.first,
               let description = IOPSGetPowerSourceDescription(snapshot, source)?.takeUnretainedValue() as? [String: Any] else {
-            return PowerUsage()
+            return telemetry
         }
 
         let current = description[kIOPSCurrentCapacityKey] as? Double
@@ -347,7 +401,46 @@ actor SystemSampler {
         return PowerUsage(
             batteryPercent: percent,
             isCharging: charging,
-            timeRemainingMinutes: minutes.flatMap { $0 >= 0 ? $0 : nil }
+            timeRemainingMinutes: minutes.flatMap { $0 >= 0 ? $0 : nil },
+            batteryTemperatureCelsius: telemetry.batteryTemperatureCelsius,
+            cycleCount: telemetry.cycleCount,
+            voltageVolts: telemetry.voltageVolts,
+            currentAmps: telemetry.currentAmps,
+            systemPowerWatts: telemetry.systemPowerWatts
+        )
+    }
+
+    private static func sampleBatteryTelemetry() -> PowerUsage {
+        let service = IOServiceGetMatchingService(
+            kIOMainPortDefault,
+            IOServiceMatching("AppleSmartBattery")
+        )
+        guard service != 0 else { return PowerUsage() }
+        defer { IOObjectRelease(service) }
+
+        var properties: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(
+            service,
+            &properties,
+            kCFAllocatorDefault,
+            0
+        ) == KERN_SUCCESS,
+            let values = properties?.takeRetainedValue() as? [String: Any]
+        else { return PowerUsage() }
+
+        let temperature = (values["Temperature"] as? NSNumber).map { $0.doubleValue / 100 }
+        let cycleCount = (values["CycleCount"] as? NSNumber)?.intValue
+        let voltage = (values["Voltage"] as? NSNumber).map { $0.doubleValue / 1_000 }
+        let current = (values["InstantAmperage"] as? NSNumber).map { $0.doubleValue / 1_000 }
+        let powerTelemetry = values["PowerTelemetryData"] as? [String: Any]
+        let systemPower = (powerTelemetry?["SystemPowerIn"] as? NSNumber).map { $0.doubleValue / 1_000 }
+
+        return PowerUsage(
+            batteryTemperatureCelsius: temperature,
+            cycleCount: cycleCount,
+            voltageVolts: voltage,
+            currentAmps: current,
+            systemPowerWatts: systemPower
         )
     }
 
@@ -362,6 +455,53 @@ actor SystemSampler {
                 recommendedMaxWorkingSetSize: device.recommendedMaxWorkingSetSize
             )
         }
+    }
+
+    private static func sampleGPU() -> GPUUsage {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(
+            kIOMainPortDefault,
+            IOServiceMatching("IOAccelerator"),
+            &iterator
+        ) == KERN_SUCCESS else {
+            return GPUUsage()
+        }
+        defer { IOObjectRelease(iterator) }
+
+        var utilization: Double?
+        var renderer: Double?
+        var tiler: Double?
+        var allocatedMemory: UInt64?
+        var service = IOIteratorNext(iterator)
+
+        while service != 0 {
+            defer {
+                IOObjectRelease(service)
+                service = IOIteratorNext(iterator)
+            }
+            guard let value = IORegistryEntryCreateCFProperty(
+                service,
+                "PerformanceStatistics" as CFString,
+                kCFAllocatorDefault,
+                0
+            )?.takeRetainedValue() as? [String: Any] else {
+                continue
+            }
+
+            utilization = max(utilization ?? 0, (value["Device Utilization %"] as? NSNumber)?.doubleValue ?? 0)
+            renderer = max(renderer ?? 0, (value["Renderer Utilization %"] as? NSNumber)?.doubleValue ?? 0)
+            tiler = max(tiler ?? 0, (value["Tiler Utilization %"] as? NSNumber)?.doubleValue ?? 0)
+            if let bytes = value["Alloc system memory"] as? NSNumber {
+                allocatedMemory = max(allocatedMemory ?? 0, bytes.uint64Value)
+            }
+        }
+
+        return GPUUsage(
+            utilizationPercent: utilization,
+            rendererPercent: renderer,
+            tilerPercent: tiler,
+            allocatedMemoryBytes: allocatedMemory
+        )
     }
 
     private func sampleDockerStatus() -> DockerStatus {

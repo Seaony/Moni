@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum MoniMotion {
@@ -24,6 +25,30 @@ struct MoniPressButtonStyle: ButtonStyle {
             .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : scale)
             .opacity(configuration.isPressed ? 0.78 : 1)
             .animation(reduceMotion ? nil : MoniMotion.press, value: configuration.isPressed)
+            .moniPointingHand()
+    }
+}
+
+private struct MoniPointingHandModifier: ViewModifier {
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovering in
+                guard hovering != isHovering else { return }
+                if hovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+                isHovering = hovering
+            }
+            .onDisappear {
+                if isHovering {
+                    NSCursor.pop()
+                    isHovering = false
+                }
+            }
     }
 }
 
@@ -54,6 +79,10 @@ private struct MoniValueAnimation<Value: Equatable>: ViewModifier {
 }
 
 extension View {
+    func moniPointingHand() -> some View {
+        modifier(MoniPointingHandModifier())
+    }
+
     func moniNumericTransition<Value: Equatable>(_ value: Value) -> some View {
         modifier(MoniNumericTransition(value: value))
     }

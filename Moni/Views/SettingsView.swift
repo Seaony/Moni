@@ -34,17 +34,11 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var section: SettingsSection = .general
+    @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("SETTINGS")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .tracking(0.7)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 4)
-
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
                 ForEach(SettingsSection.allCases) { item in
                     Button {
                         select(item)
@@ -53,16 +47,29 @@ struct SettingsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 8)
-                            .foregroundStyle(section == item ? .white : .primary)
-                            .background(section == item ? Color.accentColor : Color.clear)
+                            .foregroundStyle(section == item ? MoniPalette.foreground : MoniPalette.foregroundTertiary)
+                            .background(section == item ? MoniPalette.control : Color.clear)
                             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                             .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
                     .buttonStyle(MoniPressButtonStyle())
                 }
                 Spacer()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Moni \(appVersion)")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                    Text("Sampling \(samplingLabel)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(MoniPalette.insetSecondary)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            .frame(width: 150)
+            .frame(width: 186)
 
             Group {
                 switch section {
@@ -80,6 +87,14 @@ struct SettingsView: View {
         }
     }
 
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+
+    private var samplingLabel: String {
+        samplingInterval == 1 ? "1 s" : String(format: "%.1f s", samplingInterval)
+    }
+
     private func select(_ newSection: SettingsSection) {
         guard newSection != section else { return }
         if reduceMotion {
@@ -94,19 +109,24 @@ struct SettingsView: View {
 
 private struct AIUsageSettings: View {
     @EnvironmentObject private var store: AIUsageStore
-    @AppStorage(PreferenceKey.aiUsageRangeDays) private var rangeDays = 30
+    @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.month.rawValue
+
+    private var range: AIUsageRange {
+        AIUsageRange(rawValue: rangeValue) ?? .month
+    }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("Usage range") {
-                    Picker("History", selection: $rangeDays) {
-                        Text("7 days").tag(7)
-                        Text("30 days").tag(30)
-                        Text("90 days").tag(90)
+                    Picker("History", selection: $rangeValue) {
+                        ForEach(AIUsageRange.allCases) { item in
+                            Text(item.title).tag(item.rawValue)
+                        }
                     }
                     .pickerStyle(.segmented)
-                    Text("Moni reads usage metadata from local session logs. Prompt and response text is never shown.")
+                    .moniPointingHand()
+                    Text("Moni reads token metadata from local session logs and subscription limits from the providers' usage endpoints. Prompt and response text is never shown.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -115,7 +135,7 @@ private struct AIUsageSettings: View {
                     providerStatus("Codex", detected: store.summary.providers.contains { $0.provider == "Codex" })
                     providerStatus("Claude", detected: store.summary.providers.contains { $0.provider == "Claude" })
                     HStack {
-                        Text("Costs are local estimates using public API rates, not subscription invoices or quota usage.")
+                        Text("Costs are local estimates using public API rates; quota percentages come from each provider.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -124,17 +144,18 @@ private struct AIUsageSettings: View {
                                 .controlSize(.small)
                                 .transition(MoniMotion.itemTransition)
                         }
-                        Button("Rescan") { store.refresh(days: rangeDays) }
+                        Button("Rescan") { store.refresh(range: range, includeQuotas: true) }
                             .disabled(store.isLoading)
+                            .moniPointingHand()
                     }
                 }
             }
         }
-        .onChange(of: rangeDays) { _, value in
-            store.refresh(days: value)
+        .onChange(of: rangeValue) { _, value in
+            store.refresh(range: AIUsageRange(rawValue: value) ?? .month, includeQuotas: true)
         }
         .task {
-            store.loadIfNeeded(days: rangeDays)
+            store.loadIfNeeded(range: range, includeQuotas: true)
         }
         .moniAnimation(value: store.isLoading)
     }
@@ -144,7 +165,7 @@ private struct AIUsageSettings: View {
             Label(name, systemImage: name == "Codex" ? "terminal" : "brain")
             Spacer()
             Label(detected ? "Detected" : "Not detected", systemImage: detected ? "checkmark.circle.fill" : "minus.circle")
-                .foregroundStyle(detected ? .green : .secondary)
+                .foregroundStyle(detected ? MoniPalette.green : MoniPalette.foregroundSecondary)
         }
     }
 }
@@ -170,7 +191,7 @@ private struct AlertSettings: View {
                     thresholdRow("Memory usage", enabled: $memoryEnabled, value: $memoryThreshold)
                     Divider()
                     thresholdRow("System disk usage", enabled: $diskEnabled, value: $diskThreshold)
-                    Text("Temperature alerts are unavailable because macOS does not expose sensor values through a public API.")
+                    Text("CPU/GPU die temperature alerts require an undocumented HID/SMC sensor backend, which is not enabled in this build.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -180,13 +201,16 @@ private struct AlertSettings: View {
                         get: { notificationAlerts },
                         set: updateNotifications
                     ))
+                    .moniPointingHand()
                     Toggle("Play alert sound", isOn: $alertSounds)
                         .disabled(!notificationAlerts)
+                        .moniPointingHand()
                     Toggle("Repeat every 5 minutes while above threshold", isOn: $repeatAlerts)
+                        .moniPointingHand()
                     if let notificationError {
                         Text(notificationError)
                             .font(.caption)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(MoniPalette.red)
                             .transition(MoniMotion.itemTransition)
                     }
                 }
@@ -198,6 +222,7 @@ private struct AlertSettings: View {
     private func thresholdRow(_ title: String, enabled: Binding<Bool>, value: Binding<Double>) -> some View {
         HStack {
             Toggle(title, isOn: enabled)
+                .moniPointingHand()
             Spacer()
             Stepper(value: value, in: 50...99, step: 1) {
                 Text("\(Int(value.wrappedValue))%")
@@ -206,6 +231,7 @@ private struct AlertSettings: View {
                     .moniNumericTransition(value.wrappedValue)
             }
             .disabled(!enabled.wrappedValue)
+            .moniPointingHand()
         }
     }
 
@@ -242,6 +268,7 @@ private struct GeneralSettings: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .moniPointingHand()
                 }
 
                 DetailPanel("Sampling") {
@@ -257,6 +284,7 @@ private struct GeneralSettings: View {
                         }
                         .labelsHidden()
                         .frame(width: 130)
+                        .moniPointingHand()
                     }
                     Text("Shorter intervals use more processor time.")
                         .font(.caption)
@@ -268,11 +296,13 @@ private struct GeneralSettings: View {
                         get: { launchAtLogin },
                         set: updateLoginItem
                     ))
+                    .moniPointingHand()
                     Toggle("Show Moni in the Dock", isOn: $showDockIcon)
+                        .moniPointingHand()
                     if let loginItemError {
                         Text(loginItemError)
                             .font(.caption)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(MoniPalette.red)
                             .transition(MoniMotion.itemTransition)
                     }
                 }
@@ -318,7 +348,7 @@ private struct MenuBarSettings: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
-                    .background(Color.primary.opacity(0.1))
+                    .background(MoniPalette.inset)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .moniAnimation(value: compactMenuBar)
                     Spacer()
@@ -331,7 +361,9 @@ private struct MenuBarSettings: View {
                         Label(item.title, systemImage: item.symbol).tag(item.rawValue)
                     }
                 }
+                .moniPointingHand()
                 Toggle("Compact value only", isOn: $compactMenuBar)
+                    .moniPointingHand()
             }
             Spacer()
         }
@@ -365,16 +397,16 @@ private struct ModuleSettings: View {
 
     var body: some View {
         DetailPanel("Summary cards") {
-            moduleToggle("Host", "server.rack", $showHost)
-            moduleToggle("CPU", "cpu", $showCPU)
-            moduleToggle("Memory", "memorychip", $showMemory)
-            moduleToggle("GPU", "display", $showGPU)
-            moduleToggle("Network", "arrow.up.arrow.down", $showNetwork)
-            moduleToggle("Storage", "internaldrive", $showStorage)
-            moduleToggle("Processes", "list.bullet.rectangle", $showProcesses)
-            moduleToggle("Power & Sensors", "battery.75percent", $showPower)
-            moduleToggle("Docker", "shippingbox", $showDocker)
-            Label("AI Usage is always shown", systemImage: "sparkles")
+            moduleToggle(MonitorSection.host.title, MonitorSection.host.symbol, $showHost)
+            moduleToggle(MonitorSection.cpu.title, MonitorSection.cpu.symbol, $showCPU)
+            moduleToggle(MonitorSection.memory.title, MonitorSection.memory.symbol, $showMemory)
+            moduleToggle(MonitorSection.gpu.title, MonitorSection.gpu.symbol, $showGPU)
+            moduleToggle(MonitorSection.network.title, MonitorSection.network.symbol, $showNetwork)
+            moduleToggle(MonitorSection.storage.title, MonitorSection.storage.symbol, $showStorage)
+            moduleToggle(MonitorSection.processes.title, MonitorSection.processes.symbol, $showProcesses)
+            moduleToggle(MonitorSection.sensors.title, MonitorSection.sensors.symbol, $showPower)
+            moduleToggle(MonitorSection.docker.title, MonitorSection.docker.symbol, $showDocker)
+            Label("AI Usage is always shown", systemImage: MonitorSection.ai.symbol)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -384,6 +416,7 @@ private struct ModuleSettings: View {
         Toggle(isOn: binding) {
             Label(title, systemImage: symbol)
         }
+        .moniPointingHand()
     }
 }
 
@@ -404,7 +437,7 @@ private struct AboutSettings: View {
                 HStack(spacing: 14) {
                     Image(systemName: "chart.bar.fill")
                         .font(.system(size: 34))
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(MoniPalette.cyan)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Moni")
                             .font(.title2.bold())
@@ -421,6 +454,7 @@ private struct AboutSettings: View {
                     updates.checkForUpdates()
                 }
                 .disabled(!updates.canCheckForUpdates)
+                .moniPointingHand()
 
                 Toggle(
                     "Check for updates automatically",
@@ -430,6 +464,7 @@ private struct AboutSettings: View {
                     )
                 )
                 .disabled(updates.configurationError != nil)
+                .moniPointingHand()
 
                 Toggle(
                     "Download and install updates automatically",
@@ -439,6 +474,7 @@ private struct AboutSettings: View {
                     )
                 )
                 .disabled(!updates.allowsAutomaticUpdates)
+                .moniPointingHand()
 
                 if let configurationError = updates.configurationError {
                     Text(configurationError)
@@ -450,6 +486,7 @@ private struct AboutSettings: View {
                 Button("Quit Moni") {
                     NSApp.terminate(nil)
                 }
+                .moniPointingHand()
             }
             Spacer()
         }

@@ -2,167 +2,306 @@ import SwiftUI
 
 struct AIUsageView: View {
     @EnvironmentObject private var store: AIUsageStore
-    @AppStorage(PreferenceKey.aiUsageRangeDays) private var rangeDays = 30
+    @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.month.rawValue
+
+    private var range: AIUsageRange {
+        AIUsageRange(rawValue: rangeValue) ?? .month
+    }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
-                DetailPanel("AI usage · last \(rangeDays) days") {
-                    HStack(alignment: .bottom, spacing: 24) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(tokens(store.summary.totalTokens))
-                                .font(.system(size: 38, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .moniNumericTransition(store.summary.totalTokens)
-                            Text("tokens · \(store.summary.requestCount.formatted()) requests")
-                                .foregroundStyle(.secondary)
-                                .moniNumericTransition(store.summary.requestCount)
-                        }
-                        if let cost = store.summary.estimatedCostUSD {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(currency(cost))
-                                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                                    .monospacedDigit()
-                                    .moniNumericTransition(cost)
-                                Text("estimated API cost")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        DailyUsageChart(values: store.summary.daily)
-                            .frame(height: 120)
-                    }
-                    HStack {
-                        Text("Local logs only. Costs use public API rates and are estimates, not subscription charges.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        if store.isLoading {
-                            ProgressView()
-                                .controlSize(.small)
+                rangePicker
+                usagePanel
+
+                if !store.summary.providers.isEmpty {
+                    LazyVGrid(
+                        columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible())],
+                        spacing: 12
+                    ) {
+                        ForEach(store.summary.providers) { provider in
+                            providerPanel(provider)
                                 .transition(MoniMotion.itemTransition)
                         }
-                        Button("Refresh") { store.refresh(days: rangeDays) }
-                            .disabled(store.isLoading)
                     }
-                }
-
-                if store.summary.providers.isEmpty && !store.isLoading {
+                } else if !store.isLoading {
                     DetailPanel("No local usage") {
-                        Text("No Codex or Claude token usage was found in the last \(rangeDays) days.")
+                        Text("No Codex or Claude Code token usage was found for \(range.title.lowercased()).")
                             .foregroundStyle(.secondary)
                     }
                     .transition(MoniMotion.itemTransition)
                 }
 
-                ForEach(store.summary.providers) { provider in
-                    providerPanel(provider)
-                        .transition(MoniMotion.itemTransition)
+                DetailPanel {
+                    HStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.circle")
+                            .foregroundStyle(MoniPalette.orange)
+                        Text("No local logs found for: Gemini CLI · Qwen Code · Kimi Code · DeepSeek Harness · OpenCode")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                        Text("Add source…")
+                            .font(.system(size: 12))
+                            .foregroundStyle(MoniPalette.blue)
+                    }
                 }
             }
             .moniAnimation(value: store.isLoading)
             .moniAnimation(value: store.summary.providers.map(\.id))
         }
         .task {
-            store.loadIfNeeded(days: rangeDays)
+            store.loadIfNeeded(range: range, includeQuotas: true)
+        }
+        .onChange(of: rangeValue) { _, value in
+            store.refresh(range: AIUsageRange(rawValue: value) ?? .month, includeQuotas: true)
+        }
+    }
+
+    private var rangePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(AIUsageRange.allCases) { item in
+                Button {
+                    rangeValue = item.rawValue
+                } label: {
+                    Text(item.title)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(range == item ? MoniPalette.foreground : MoniPalette.foregroundTertiary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(range == item ? MoniPalette.controlSelected : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .moniPointingHand()
+            }
+        }
+        .padding(4)
+        .background(MoniPalette.control)
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private var usagePanel: some View {
+        DetailPanel {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("Usage & spend")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(MoniPalette.indigo)
+                Text("\(range.title) · estimated at API list prices, not your invoice")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 12)
+                Text(store.summary.estimatedCostUSD.map(currency) ?? "—")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+            }
+
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4),
+                spacing: 12
+            ) {
+                totalStat("Spend", store.summary.estimatedCostUSD.map(currencyWithoutGrouping) ?? "—")
+                totalStat("Tokens", tokens(store.summary.totalTokens))
+                totalStat("Cache hit", store.summary.cacheHitPercent.map(percent) ?? "—")
+                totalStat(
+                    "Priced entries",
+                    "\(store.summary.pricedRequestCount.formatted()) / \(store.summary.requestCount.formatted())"
+                )
+            }
+
+            DailyUsageChart(values: store.summary.daily)
+                .frame(height: 92)
+
+            HStack {
+                Text(chartStartLabel)
+                Spacer()
+                Text(range == .yesterday || range == .lastWeek ? range.title.lowercased() : "today")
+            }
+            .font(.system(size: 11.5))
+            .foregroundStyle(.quaternary)
+
         }
     }
 
     private func providerPanel(_ provider: AIProviderUsage) -> some View {
-        DetailPanel(provider.provider) {
-            HStack(alignment: .firstTextBaseline) {
+        DetailPanel {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(providerColor(provider))
+                    .frame(width: 9, height: 9)
+                Text(provider.provider == "Claude" ? "Claude Code" : provider.provider)
+                    .font(.system(size: 15, weight: .bold))
+                Spacer()
+                Text(provider.planName ?? "Local logs")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
+                    .background(MoniPalette.control)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(tokens(provider.totalTokens))
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .foregroundStyle(provider.provider == "Codex" ? .blue : .orange)
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
                     .moniNumericTransition(provider.totalTokens)
-                Text("tokens")
+                Text("tokens · \(provider.estimatedCostUSD.map(currency) ?? "unpriced")")
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    if let cost = provider.estimatedCostUSD {
-                        Text(currency(cost))
-                            .fontWeight(.semibold)
-                            .moniNumericTransition(cost)
-                    }
-                    Text("\(provider.requestCount) requests · \(provider.sessionCount) sessions")
-                        .foregroundStyle(.secondary)
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible())],
+                spacing: 12
+            ) {
+                providerStat("≈ Cost", provider.estimatedCostUSD.map(currency) ?? "—")
+                providerStat("Cache hit", provider.cacheHitPercent.map(percent) ?? "—")
+                providerStat("Input", tokens(provider.inputTokens))
+                providerStat("Output", tokens(provider.outputTokens))
+                providerStat("Cache read", tokens(provider.cacheReadTokens))
+                if provider.provider == "Codex" {
+                    providerStat("Reasoning", tokens(provider.reasoningTokens))
+                } else {
+                    providerStat("Cache write", tokens(provider.cacheWriteTokens))
                 }
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 12) {
-                stat("Non-cached input", provider.inputTokens, .blue)
-                stat("Output", provider.outputTokens, .green)
-                stat("Cache read", provider.cacheReadTokens, .cyan)
-                stat("Cache write", provider.cacheWriteTokens, .teal)
-                stat("Reasoning", provider.reasoningTokens, .purple)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Cache hit").foregroundStyle(.secondary)
-                    Text(provider.cacheHitPercent.map { "\(String(format: "%.1f", $0))%" } ?? "—")
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .moniNumericTransition(provider.cacheHitPercent)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Divider()
-            HStack {
-                Label(provider.models.first?.model ?? "Model unavailable", systemImage: "brain")
-                Spacer()
-                if provider.unpricedRequestCount > 0 {
-                    Text("\(provider.unpricedRequestCount) unpriced")
-                        .foregroundStyle(.orange)
-                }
-                if let lastUpdated = provider.lastUpdated {
-                    Text("Updated \(lastUpdated.formatted(.relative(presentation: .named)))")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .font(.caption)
-
-            if !provider.models.isEmpty {
+            if !provider.quotaWindows.isEmpty {
                 Divider()
-                ForEach(provider.models.prefix(6)) { model in
-                    HStack(spacing: 12) {
-                        Text(model.model)
-                            .lineLimit(1)
-                        Spacer()
-                        Text("\(model.requestCount) req")
-                            .foregroundStyle(.secondary)
-                        Text(tokens(model.totalTokens))
-                            .monospacedDigit()
-                            .frame(width: 72, alignment: .trailing)
-                        Text(model.estimatedCostUSD.map(currency) ?? "—")
-                            .monospacedDigit()
-                            .frame(width: 72, alignment: .trailing)
+                VStack(spacing: 12) {
+                    ForEach(provider.quotaWindows) { window in
+                        quotaRow(window, color: providerColor(provider))
                     }
-                    .font(.caption)
-                    .transition(MoniMotion.itemTransition)
+                }
+            } else if let message = provider.quotaMessage {
+                Divider()
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(MoniPalette.orange)
+                    Text(message)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                 }
             }
+
+            HStack(spacing: 8) {
+                Text("Top model")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(provider.models.first?.model ?? "Model unavailable")
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(MoniPalette.inset)
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
-        .moniAnimation(value: provider.models.map(\.id))
+        .frame(maxHeight: .infinity, alignment: .top)
+        .moniAnimation(value: provider.quotaWindows.map(\.remainingPercent))
     }
 
-    private func stat(_ title: String, _ value: UInt64, _ color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 5) {
-                Circle().fill(color).frame(width: 7, height: 7)
-                Text(title).foregroundStyle(.secondary)
+    private func quotaRow(_ window: AIQuotaWindow, color: Color) -> some View {
+        VStack(spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(window.label)
+                    .font(.system(size: 12.5, weight: .semibold))
+                Spacer()
+                Text("\(Int(window.remainingPercent.rounded()))% left")
+                    .font(.system(size: 12.5, weight: .bold))
+                    .foregroundStyle(color)
+                    .monospacedDigit()
+                if let resetsAt = window.resetsAt {
+                    Text(resetDuration(until: resetsAt))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
             }
-            Text(tokens(value))
-                .font(.system(size: 15, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .moniNumericTransition(value)
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(MoniPalette.track)
+                    Capsule()
+                        .fill(color)
+                        .frame(width: geometry.size.width * CGFloat(window.remainingPercent / 100))
+                }
+            }
+            .frame(height: 6)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(window.label)
+            .accessibilityValue("\(Int(window.remainingPercent.rounded())) percent remaining")
         }
+    }
+
+    private func totalStat(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 20, weight: .bold))
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MoniPalette.inset)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func providerStat(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).foregroundStyle(.secondary)
+            Text(value).fontWeight(.bold).monospacedDigit()
+        }
+        .font(.system(size: 12.5))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var chartStartLabel: String {
+        switch range {
+        case .today: "00:00"
+        case .year: "Jan"
+        default: "-14 d"
+        }
+    }
+
+    private func providerColor(_ provider: AIProviderUsage) -> Color {
+        provider.provider == "Codex" ? MoniPalette.cyan : MoniPalette.claude
     }
 
     private func tokens(_ value: UInt64) -> String {
         value.formatted(.number.notation(.compactName))
     }
 
+    private func percent(_ value: Double) -> String {
+        "\(Int(value.rounded()))%"
+    }
+
     private func currency(_ value: Double) -> String {
-        value.formatted(.currency(code: "USD").precision(.fractionLength(value < 0.01 ? 4 : 2)))
+        "$" + value.formatted(
+            .number.grouping(.automatic).precision(.fractionLength(value < 0.01 ? 4 : 2))
+        )
+    }
+
+    private func currencyWithoutGrouping(_ value: Double) -> String {
+        "$" + value.formatted(
+            .number.grouping(.never).precision(.fractionLength(value < 0.01 ? 4 : 2))
+        )
+    }
+
+    private func resetDuration(until date: Date) -> String {
+        let seconds = max(0, Int(date.timeIntervalSinceNow))
+        let days = seconds / 86_400
+        let hours = seconds % 86_400 / 3_600
+        let minutes = seconds % 3_600 / 60
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
     }
 }
 
@@ -173,23 +312,29 @@ struct DailyUsageChart: View {
         GeometryReader { geometry in
             let recent = Array(values.suffix(14))
             let maximum = max(1, recent.map(\.tokens).max() ?? 1)
-            HStack(alignment: .bottom, spacing: 4) {
-                ForEach(recent) { day in
+            HStack(alignment: .bottom, spacing: 6) {
+                ForEach(Array(recent.enumerated()), id: \.element.id) { index, day in
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(Color.indigo.gradient)
-                        .frame(height: max(3, geometry.size.height * CGFloat(Double(day.tokens) / Double(maximum))))
-                        .help(
-                            "\(day.date.formatted(date: .abbreviated, time: .omitted)): "
-                                + "\(day.tokens.formatted()) tokens · \(day.requestCount) requests · "
-                                + day.costUSD.formatted(
-                                    .currency(code: "USD")
-                                        .precision(.fractionLength(day.costUSD < 0.01 ? 4 : 2))
-                                )
+                        .fill(MoniPalette.indigo.opacity(index == max(0, recent.count - 3) ? 1 : 0.45))
+                        .frame(
+                            height: max(
+                                4,
+                                geometry.size.height * CGFloat(Double(day.tokens) / Double(maximum))
+                            )
                         )
+                        .help(tooltip(for: day))
                 }
             }
             .moniAnimation(MoniMotion.data, value: recent.map(\.tokens))
         }
-        .accessibilityLabel("Daily token usage for the last fourteen calendar days")
+        .accessibilityLabel("Daily token usage")
+    }
+
+    private func tooltip(for day: DailyAIUsage) -> String {
+        let date = day.date.formatted(date: .abbreviated, time: .omitted)
+        let cost = day.costUSD.formatted(
+            .number.precision(.fractionLength(day.costUSD < 0.01 ? 4 : 2))
+        )
+        return "\(date): \(day.tokens.formatted()) tokens · \(day.requestCount) requests · $\(cost)"
     }
 }

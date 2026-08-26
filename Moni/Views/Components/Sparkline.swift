@@ -4,6 +4,8 @@ struct Sparkline: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let values: [Double]
     let color: Color
+    var showsFill = true
+    var lineWidth = 2.2
 
     var body: some View {
         GeometryReader { geometry in
@@ -11,25 +13,27 @@ struct Sparkline: View {
 
             ZStack {
                 if points.count > 1 {
-                    Path { path in
-                        path.move(to: CGPoint(x: points[0].x, y: geometry.size.height))
-                        points.forEach { path.addLine(to: $0) }
-                        path.addLine(to: CGPoint(x: points.last?.x ?? 0, y: geometry.size.height))
-                        path.closeSubpath()
-                    }
-                    .fill(
-                        LinearGradient(
-                            colors: [color.opacity(0.35), color.opacity(0.02)],
-                            startPoint: .top,
-                            endPoint: .bottom
+                    if showsFill {
+                        Path { path in
+                            path.move(to: CGPoint(x: points[0].x, y: geometry.size.height))
+                            points.forEach { path.addLine(to: $0) }
+                            path.addLine(to: CGPoint(x: points.last?.x ?? 0, y: geometry.size.height))
+                            path.closeSubpath()
+                        }
+                        .fill(
+                            LinearGradient(
+                                colors: [color.opacity(0.35), color.opacity(0.02)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                         )
-                    )
+                    }
 
                     Path { path in
                         path.move(to: points[0])
                         points.dropFirst().forEach { path.addLine(to: $0) }
                     }
-                    .stroke(color, style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+                    .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
                 }
             }
             .id(values)

@@ -240,7 +240,7 @@ struct ResizableDashboardCard<Content: View>: View {
 
                 if limits.maxColumns > 1 {
                     Capsule()
-                        .fill(Color.secondary.opacity(isRightHandleHovered ? 0.72 : 0.24))
+                        .fill(isRightHandleHovered ? MoniPalette.foregroundSecondary : MoniPalette.foregroundQuaternary)
                         .frame(width: 3, height: 36)
                         .frame(width: 14)
                         .frame(maxHeight: .infinity, alignment: .trailing)
@@ -256,9 +256,9 @@ struct ResizableDashboardCard<Content: View>: View {
                 if limits.maxRows > 1 {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                         .padding(6)
-                        .background(.ultraThinMaterial, in: Circle())
+                        .background(MoniPalette.control, in: Circle())
                         .opacity(isCornerHandleHovered ? 1 : 0.62)
                         .padding(6)
                         .contentShape(Rectangle())
@@ -272,7 +272,7 @@ struct ResizableDashboardCard<Content: View>: View {
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(Color.accentColor, lineWidth: isDropTargeted ? 2 : 0)
+                    .stroke(MoniPalette.blue, lineWidth: isDropTargeted ? 2 : 0)
                     .padding(1)
                     .allowsHitTesting(false)
             }

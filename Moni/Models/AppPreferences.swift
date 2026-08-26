@@ -18,6 +18,7 @@ enum PreferenceKey {
     static let alertSounds = "alertSounds"
     static let repeatAlerts = "repeatAlerts"
     static let aiUsageRangeDays = "aiUsageRangeDays"
+    static let aiUsageRange = "aiUsageRange"
     static let summaryCardLayout = "summaryCardLayout"
 
     static let showHost = "showHost"

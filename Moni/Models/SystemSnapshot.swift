@@ -4,6 +4,7 @@ struct CPUUsage: Sendable {
     var total: Double = 0
     var user: Double = 0
     var system: Double = 0
+    var nice: Double = 0
     var idle: Double = 100
     var perCore: [Double] = []
 
@@ -11,12 +12,14 @@ struct CPUUsage: Sendable {
         total: Double = 0,
         user: Double = 0,
         system: Double = 0,
+        nice: Double = 0,
         idle: Double = 100,
         perCore: [Double] = []
     ) {
         self.total = total
         self.user = user
         self.system = system
+        self.nice = nice
         self.idle = idle
         self.perCore = perCore
     }
@@ -29,6 +32,10 @@ struct MemoryUsage: Sendable {
     var cachedBytes: UInt64 = 0
     var wiredBytes: UInt64 = 0
     var compressedBytes: UInt64 = 0
+    var swapUsedBytes: UInt64 = 0
+    var pageIns: UInt64 = 0
+    var pageOuts: UInt64 = 0
+    var faults: UInt64 = 0
 
     nonisolated init(
         totalBytes: UInt64 = 0,
@@ -36,7 +43,11 @@ struct MemoryUsage: Sendable {
         freeBytes: UInt64 = 0,
         cachedBytes: UInt64 = 0,
         wiredBytes: UInt64 = 0,
-        compressedBytes: UInt64 = 0
+        compressedBytes: UInt64 = 0,
+        swapUsedBytes: UInt64 = 0,
+        pageIns: UInt64 = 0,
+        pageOuts: UInt64 = 0,
+        faults: UInt64 = 0
     ) {
         self.totalBytes = totalBytes
         self.usedBytes = usedBytes
@@ -44,6 +55,10 @@ struct MemoryUsage: Sendable {
         self.cachedBytes = cachedBytes
         self.wiredBytes = wiredBytes
         self.compressedBytes = compressedBytes
+        self.swapUsedBytes = swapUsedBytes
+        self.pageIns = pageIns
+        self.pageOuts = pageOuts
+        self.faults = faults
     }
 
     var usedPercent: Double {
@@ -57,6 +72,7 @@ struct NetworkInterfaceUsage: Identifiable, Sendable {
     let receivedBytes: UInt64
     let sentBytes: UInt64
     let isActive: Bool
+    let linkSpeedBitsPerSecond: UInt64
 
     var id: String { name }
 }
@@ -86,6 +102,7 @@ struct NetworkUsage: Sendable {
 struct VolumeUsage: Identifiable, Sendable {
     let name: String
     let mountPath: String
+    let format: String?
     let totalBytes: Int64
     let availableBytes: Int64
 
@@ -94,6 +111,16 @@ struct VolumeUsage: Identifiable, Sendable {
     var usedPercent: Double {
         guard totalBytes > 0 else { return 0 }
         return Double(usedBytes) / Double(totalBytes) * 100
+    }
+}
+
+struct DiskActivity: Sendable {
+    var readBytesPerSecond: Double = 0
+    var writeBytesPerSecond: Double = 0
+
+    nonisolated init(readBytesPerSecond: Double = 0, writeBytesPerSecond: Double = 0) {
+        self.readBytesPerSecond = readBytesPerSecond
+        self.writeBytesPerSecond = writeBytesPerSecond
     }
 }
 
@@ -111,15 +138,30 @@ struct PowerUsage: Sendable {
     var batteryPercent: Double?
     var isCharging = false
     var timeRemainingMinutes: Int?
+    var batteryTemperatureCelsius: Double?
+    var cycleCount: Int?
+    var voltageVolts: Double?
+    var currentAmps: Double?
+    var systemPowerWatts: Double?
 
     nonisolated init(
         batteryPercent: Double? = nil,
         isCharging: Bool = false,
-        timeRemainingMinutes: Int? = nil
+        timeRemainingMinutes: Int? = nil,
+        batteryTemperatureCelsius: Double? = nil,
+        cycleCount: Int? = nil,
+        voltageVolts: Double? = nil,
+        currentAmps: Double? = nil,
+        systemPowerWatts: Double? = nil
     ) {
         self.batteryPercent = batteryPercent
         self.isCharging = isCharging
         self.timeRemainingMinutes = timeRemainingMinutes
+        self.batteryTemperatureCelsius = batteryTemperatureCelsius
+        self.cycleCount = cycleCount
+        self.voltageVolts = voltageVolts
+        self.currentAmps = currentAmps
+        self.systemPowerWatts = systemPowerWatts
     }
 }
 
@@ -132,6 +174,25 @@ struct GPUDeviceInfo: Identifiable, Sendable {
     let recommendedMaxWorkingSetSize: UInt64
 
     var id: UInt64 { registryID }
+}
+
+struct GPUUsage: Sendable {
+    var utilizationPercent: Double?
+    var rendererPercent: Double?
+    var tilerPercent: Double?
+    var allocatedMemoryBytes: UInt64?
+
+    nonisolated init(
+        utilizationPercent: Double? = nil,
+        rendererPercent: Double? = nil,
+        tilerPercent: Double? = nil,
+        allocatedMemoryBytes: UInt64? = nil
+    ) {
+        self.utilizationPercent = utilizationPercent
+        self.rendererPercent = rendererPercent
+        self.tilerPercent = tilerPercent
+        self.allocatedMemoryBytes = allocatedMemoryBytes
+    }
 }
 
 struct DockerStatus: Sendable {
@@ -206,9 +267,11 @@ struct SystemSnapshot: Sendable {
     var cpu = CPUUsage()
     var memory = MemoryUsage()
     var network = NetworkUsage()
+    var diskActivity = DiskActivity()
     var volumes: [VolumeUsage] = []
     var processes: [ProcessUsage] = []
     var power = PowerUsage()
     var gpuDevices: [GPUDeviceInfo] = []
+    var gpu = GPUUsage()
     var docker = DockerStatus()
 }

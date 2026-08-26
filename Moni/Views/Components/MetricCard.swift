@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct MetricCard<Content: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
     let title: String
     let symbol: String
     let color: Color
@@ -25,6 +28,10 @@ struct MetricCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: symbol)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 14, height: 14)
+                    .frame(width: 16, height: 16)
                 Text(title)
                     .fontWeight(.bold)
                 Spacer(minLength: 4)
@@ -41,12 +48,14 @@ struct MetricCard<Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 205, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.primary.opacity(0.055))
+        .background(isHovered ? MoniPalette.cardHover : MoniPalette.card)
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                .stroke(MoniPalette.line, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onHover { isHovered = $0 }
+        .animation(reduceMotion ? nil : MoniMotion.press, value: isHovered)
     }
 }
 

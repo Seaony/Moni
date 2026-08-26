@@ -8,6 +8,9 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var memoryHistory: [Double] = []
     @Published private(set) var downloadHistory: [Double] = []
     @Published private(set) var uploadHistory: [Double] = []
+    @Published private(set) var gpuHistory: [Double] = []
+    @Published private(set) var diskReadHistory: [Double] = []
+    @Published private(set) var diskWriteHistory: [Double] = []
 
     private let sampler = SystemSampler()
     private let alertMonitor = AlertMonitor()
@@ -58,6 +61,11 @@ final class SystemMonitor: ObservableObject {
         append(snapshot.memory.usedPercent, to: &memoryHistory)
         append(snapshot.network.downloadBytesPerSecond, to: &downloadHistory)
         append(snapshot.network.uploadBytesPerSecond, to: &uploadHistory)
+        append(snapshot.diskActivity.readBytesPerSecond, to: &diskReadHistory)
+        append(snapshot.diskActivity.writeBytesPerSecond, to: &diskWriteHistory)
+        if let gpu = snapshot.gpu.utilizationPercent {
+            append(gpu, to: &gpuHistory)
+        }
     }
 
     private func append(_ value: Double, to history: inout [Double]) {

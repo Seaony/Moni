@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+private enum DashboardSizing {
+    static let designWidth: CGFloat = 900
+    static let designHeight: CGFloat = 720
+    static let interfaceScale: CGFloat = 1.0
+    static let renderedWidth = designWidth * interfaceScale
+    static let renderedHeight = designHeight * interfaceScale
+}
+
 enum MonitorSection: String, CaseIterable, Identifiable {
     case summary, host, cpu, memory, gpu, network, storage, processes, sensors, ai, docker, disks, settings
 
@@ -26,28 +34,45 @@ enum MonitorSection: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
-        case .summary: "chart.bar.fill"
+        case .summary: "chart.bar"
         case .host: "server.rack"
         case .cpu: "cpu"
         case .memory: "memorychip"
-        case .gpu: "display"
-        case .network: "arrow.up.arrow.down"
+        case .gpu: "square.stack.3d.up"
+        case .network: "network"
         case .storage: "internaldrive"
         case .processes: "list.bullet.rectangle"
-        case .sensors: "battery.75percent"
+        case .sensors: "bolt.batteryblock"
         case .ai: "sparkles"
         case .docker: "shippingbox"
         case .disks: "folder"
         case .settings: "gearshape"
         }
     }
+
+    var accentColor: Color {
+        switch self {
+        case .summary: MoniPalette.foreground
+        case .host, .memory, .docker: MoniPalette.blue
+        case .cpu: MoniPalette.pink
+        case .gpu: MoniPalette.green
+        case .network: MoniPalette.cyan
+        case .storage: MoniPalette.orange
+        case .processes: MoniPalette.purple
+        case .sensors: MoniPalette.yellow
+        case .ai: MoniPalette.indigo
+        case .disks, .settings: MoniPalette.foregroundTertiary
+        }
+    }
 }
 
 struct ContentView: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @EnvironmentObject private var aiUsage: AIUsageStore
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: MonitorSection = .summary
+    @State private var hoveredSection: MonitorSection?
     @State private var refreshRotation = 0.0
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
@@ -81,8 +106,14 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding(16)
-        .frame(width: 900, height: 720, alignment: .topLeading)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(
+            width: DashboardSizing.designWidth,
+            height: DashboardSizing.designHeight,
+            alignment: .topLeading
+        )
+        .foregroundStyle(MoniPalette.foreground)
+        .tint(MoniPalette.blue)
+        .background(MoniPalette.panel)
         .preferredColorScheme(preferredColorScheme)
         .onAppear {
             monitor.setSamplingInterval(samplingInterval)
@@ -97,6 +128,13 @@ struct ContentView: View {
                 openWindow(id: "dashboard")
             }
         }
+        .scaleEffect(DashboardSizing.interfaceScale, anchor: .topLeading)
+        .frame(
+            width: DashboardSizing.renderedWidth,
+            height: DashboardSizing.renderedHeight,
+            alignment: .topLeading
+        )
+        .clipped()
     }
 
     private var preferredColorScheme: ColorScheme? {
@@ -134,25 +172,42 @@ struct ContentView: View {
                         select(section)
                     } label: {
                         Image(systemName: section.symbol)
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 28, height: 28)
-                            .foregroundStyle(selection == section ? .white : .secondary)
-                            .background(selection == section ? Color.accentColor : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 17, height: 17)
+                            .frame(width: 38, height: 30)
+                            .foregroundStyle(selection == section ? section.accentColor : MoniPalette.foregroundTertiary)
+                            .background(
+                                selection == section
+                                    ? MoniPalette.controlSelected
+                                    : hoveredSection == section ? MoniPalette.controlHover : Color.clear
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
                     .buttonStyle(MoniPressButtonStyle())
                     .help(section.title)
+                    .onHover { isHovered in
+                        if isHovered {
+                            hoveredSection = section
+                        } else if hoveredSection == section {
+                            hoveredSection = nil
+                        }
+                    }
+                    .animation(reduceMotion ? nil : MoniMotion.press, value: hoveredSection)
                 }
             }
             .padding(4)
-            .background(Color.primary.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .background(MoniPalette.control)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             Spacer()
 
             Button {
                 monitor.refresh(forceSlowMetrics: true)
+                if selection == .ai {
+                    aiUsage.refreshCurrent(includeQuotas: true)
+                }
                 if !reduceMotion {
                     withAnimation(.easeInOut(duration: 0.45)) {
                         refreshRotation += 360
@@ -160,7 +215,10 @@ struct ContentView: View {
                 }
             } label: {
                 Image(systemName: "arrow.clockwise")
-                    .frame(width: 30, height: 30)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 18, height: 18)
+                    .frame(width: 34, height: 34)
                     .rotationEffect(.degrees(refreshRotation))
                     .contentShape(Rectangle())
             }
@@ -171,8 +229,11 @@ struct ContentView: View {
                 select(.settings)
             } label: {
                 Image(systemName: "gearshape")
-                    .frame(width: 30, height: 30)
-                    .background(selection == .settings ? Color.primary.opacity(0.12) : Color.primary.opacity(0.06))
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 18, height: 18)
+                    .frame(width: 34, height: 34)
+                    .background(selection == .settings ? MoniPalette.controlSelected : MoniPalette.control)
                     .clipShape(Circle())
                     .contentShape(Circle())
             }
@@ -194,9 +255,10 @@ private struct ModulePlaceholder: View {
             Text(section.title)
                 .font(.title2.bold())
             Button("Back to summary", action: back)
+                .moniPointingHand()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.primary.opacity(0.035))
+        .background(MoniPalette.card)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }

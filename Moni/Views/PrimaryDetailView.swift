@@ -21,28 +21,30 @@ struct PrimaryDetailView: View {
 }
 
 struct DetailPanel<Content: View>: View {
-    let title: String
+    let title: String?
     @ViewBuilder let content: Content
 
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    init(_ title: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title.uppercased())
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .tracking(0.7)
+            if let title {
+                Text(title.uppercased())
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .tracking(0.7)
+            }
             content
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(Color.primary.opacity(0.05))
+        .background(MoniPalette.card)
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                .stroke(MoniPalette.line, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
@@ -50,134 +52,134 @@ struct DetailPanel<Content: View>: View {
 
 private struct HostDetailView: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @State private var historyRange = "1m"
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
+    private var rootVolume: VolumeUsage? { snapshot.volumes.first { $0.mountPath == "/" } }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
-                DetailPanel("Host") {
-                    HStack(alignment: .top, spacing: 20) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(snapshot.host.name)
-                                .font(.title2.bold())
-                                .foregroundStyle(.cyan)
-                            Text(snapshot.host.model)
-                                .foregroundStyle(.secondary)
-                            Text(snapshot.host.chip)
-                                .fontWeight(.semibold)
-                            Text(uptime(snapshot.host.uptime))
-                                .font(.system(size: 38, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .moniNumericTransition(Int(snapshot.host.uptime))
-                            Text("Uptime")
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        gauges
-                            .frame(width: 410)
+                DetailPanel {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(snapshot.host.name)
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(MoniPalette.blue)
+                        Text("\(snapshot.host.model) · \(snapshot.host.kernel)")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                        Spacer(minLength: 12)
+                        HistoryRangePicker(selection: $historyRange)
+                        Text(uptime(snapshot.host.uptime))
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .moniNumericTransition(Int(snapshot.host.uptime))
                     }
-                }
 
-                HStack(alignment: .top, spacing: 12) {
-                    DetailPanel("System information") {
-                        valueGrid([
-                            ("Model", snapshot.host.model),
-                            ("Chip", snapshot.host.chip),
-                            ("Memory", bytes(snapshot.memory.totalBytes)),
-                            ("macOS", snapshot.host.operatingSystem),
-                            ("Kernel", snapshot.host.kernel),
-                            ("Logical CPUs", snapshot.host.processorCount.formatted()),
-                            ("Processes", snapshot.processes.count.formatted()),
-                            ("Volumes", snapshot.volumes.count.formatted())
-                        ])
-                    }
-                    DetailPanel("Load averages") {
-                        ForEach(Array(snapshot.host.loadAverages.enumerated()), id: \.offset) { index, load in
-                            HStack {
-                                Text(["1 min", "5 min", "15 min"][index])
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
+                        spacing: 12
+                    ) {
+                        ForEach(hostStatistics, id: \.0) { key, value in
+                            HStack(spacing: 8) {
+                                Text(key)
                                     .foregroundStyle(.secondary)
-                                Spacer()
-                                Text(String(format: "%.2f", load))
+                                Spacer(minLength: 6)
+                                Text(value)
                                     .fontWeight(.bold)
                                     .monospacedDigit()
+                                    .lineLimit(1)
                             }
+                            .font(.system(size: 12.5))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 13)
+                            .background(MoniPalette.inset)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                     }
-                    .frame(width: 250)
+                }
+
+                DetailPanel("Load average") {
+                    HStack(spacing: 26) {
+                        ForEach(Array(snapshot.host.loadAverages.enumerated()), id: \.offset) { index, load in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(["1 min", "5 min", "15 min"][index])
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(.secondary)
+                                Text(String(format: "%.2f", load))
+                                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                                    .monospacedDigit()
+                                    .moniNumericTransition(load)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    Sparkline(
+                        values: Array(monitor.cpuHistory.suffix(historySampleCount(historyRange))),
+                        color: .secondary,
+                        showsFill: false,
+                        lineWidth: 1.8
+                    )
+                    .frame(height: 110)
                 }
             }
         }
     }
 
-    private var gauges: some View {
-        VStack(spacing: 14) {
-            gauge("CPU", snapshot.cpu.total, .pink)
-            gauge("Memory", snapshot.memory.usedPercent, .blue)
-            gauge("Disk", snapshot.volumes.first?.usedPercent ?? 0, .orange)
-        }
+    private var hostStatistics: [(String, String)] {
+        [
+            ("Model", snapshot.host.model),
+            ("Chip", snapshot.host.chip),
+            ("Memory", bytes(snapshot.memory.totalBytes)),
+            ("macOS", snapshot.host.operatingSystem),
+            ("Kernel", snapshot.host.kernel),
+            ("Logical CPUs", snapshot.host.processorCount.formatted()),
+            ("Boot volume", rootVolume?.name ?? "—"),
+            ("Processes", snapshot.processes.count.formatted()),
+            ("Volumes", snapshot.volumes.count.formatted())
+        ]
     }
 
-    private func gauge(_ title: String, _ value: Double, _ color: Color) -> some View {
-        VStack(spacing: 5) {
-            HStack {
-                Text(title)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(percent(value))
-                    .fontWeight(.bold)
-                    .monospacedDigit()
-                    .moniNumericTransition(value)
-            }
-            ProgressView(value: min(100, value), total: 100)
-                .tint(color)
-                .moniAnimation(MoniMotion.data, value: value)
-        }
-    }
-
-    private func valueGrid(_ values: [(String, String)]) -> some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-            ForEach(values, id: \.0) { key, value in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(key)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(value)
-                        .fontWeight(.semibold)
-                        .lineLimit(2)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
 }
 
 private struct CPUDetailView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @Binding var selection: MonitorSection
+    @State private var historyRange = "1m"
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
-                DetailPanel("CPU") {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(snapshot.host.chip)
-                            .foregroundStyle(.secondary)
-                        Spacer()
+                DetailPanel {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("CPU")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(MoniPalette.pink)
+                        Text("\(snapshot.host.chip) · \(snapshot.cpu.perCore.count) cores")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.tertiary)
+                        Spacer(minLength: 12)
+                        HistoryRangePicker(selection: $historyRange)
                         Text(percent(snapshot.cpu.total))
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
                             .monospacedDigit()
                             .moniNumericTransition(snapshot.cpu.total)
                     }
-                    Sparkline(values: monitor.cpuHistory, color: .pink)
-                        .frame(height: 155)
+                    Sparkline(
+                        values: Array(monitor.cpuHistory.suffix(historySampleCount(historyRange))),
+                        color: MoniPalette.pink
+                    )
+                    .frame(height: 160)
                     HStack {
-                        MetricRow(label: "User", value: percent(snapshot.cpu.user), color: .pink)
-                        MetricRow(label: "System", value: percent(snapshot.cpu.system), color: .orange)
-                        MetricRow(label: "Idle", value: percent(snapshot.cpu.idle), color: .green)
+                        Text(historyRange == "1m" ? "-1 min" : historyRange == "1h" ? "-1 hour" : "-24 hours")
+                        Spacer()
+                        Text("now")
                     }
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.quaternary)
                 }
 
                 HStack(alignment: .top, spacing: 12) {
@@ -190,7 +192,7 @@ private struct CPUDetailView: View {
                                         .foregroundStyle(.secondary)
                                         .frame(width: 48, alignment: .leading)
                                     ProgressView(value: value, total: 100)
-                                        .tint(value > 80 ? .red : value > 45 ? .orange : .green)
+                                        .tint(value > 80 ? MoniPalette.red : value > 45 ? MoniPalette.orange : MoniPalette.green)
                                         .moniAnimation(MoniMotion.data, value: value)
                                     Text(percent(value))
                                         .font(.caption.bold())
@@ -202,19 +204,29 @@ private struct CPUDetailView: View {
                         }
                     }
                     DetailPanel("Breakdown") {
-                        detailValue("User", percent(snapshot.cpu.user))
-                        detailValue("System", percent(snapshot.cpu.system))
-                        detailValue("Idle", percent(snapshot.cpu.idle))
-                        detailValue("Load (1m)", String(format: "%.2f", snapshot.host.loadAverages.first ?? 0))
-                        detailValue("Logical CPUs", snapshot.host.processorCount.formatted())
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            detailStat("User", percent(snapshot.cpu.user))
+                            detailStat("System", percent(snapshot.cpu.system))
+                            detailStat("Idle", percent(snapshot.cpu.idle))
+                            detailStat("Nice", percent(snapshot.cpu.nice))
+                            detailStat("Load (1m)", String(format: "%.2f", snapshot.host.loadAverages.first ?? 0))
+                        }
                     }
-                    .frame(width: 260)
+                    .frame(width: 390)
                 }
 
                 DetailPanel("Top CPU consumers") {
                     processHeader(action: { selection = .processes })
-                    ForEach(snapshot.processes.prefix(8)) { process in
-                        processRow(process, metric: percent(process.cpuPercent), color: .pink)
+                    let maximum = max(1, snapshot.processes.prefix(6).map(\.cpuPercent).max() ?? 1)
+                    ForEach(snapshot.processes.prefix(6)) { process in
+                        consumerRow(
+                            process,
+                            value: process.cpuPercent,
+                            maximum: maximum,
+                            metric: percent(process.cpuPercent),
+                            color: MoniPalette.pink,
+                            metricWidth: 60
+                        )
                     }
                 }
             }
@@ -225,53 +237,91 @@ private struct CPUDetailView: View {
 private struct MemoryDetailView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @Binding var selection: MonitorSection
+    @State private var historyRange = "1m"
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
-                DetailPanel("Memory") {
-                    HStack(alignment: .firstTextBaseline) {
+                DetailPanel {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("Memory")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(MoniPalette.blue)
                         Text(bytes(snapshot.memory.totalBytes) + " unified memory")
-                            .foregroundStyle(.secondary)
-                        Spacer()
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.tertiary)
+                        Spacer(minLength: 12)
+                        HistoryRangePicker(selection: $historyRange)
                         Text(percent(snapshot.memory.usedPercent))
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
                             .monospacedDigit()
                             .moniNumericTransition(snapshot.memory.usedPercent)
                     }
-                    Sparkline(values: monitor.memoryHistory, color: .blue)
-                        .frame(height: 155)
+                    Sparkline(
+                        values: Array(monitor.memoryHistory.suffix(historySampleCount(historyRange))),
+                        color: MoniPalette.blue
+                    )
+                    .frame(height: 160)
+                    HStack {
+                        Text(historyRange == "1m" ? "-1 min" : historyRange == "1h" ? "-1 hour" : "-24 hours")
+                        Spacer()
+                        Text("now")
+                    }
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.quaternary)
                 }
 
                 HStack(alignment: .top, spacing: 12) {
-                    DetailPanel("Memory composition") {
-                        memoryBar
-                        detailValue("Used", bytes(snapshot.memory.usedBytes))
-                        detailValue("Free", bytes(snapshot.memory.freeBytes))
-                        detailValue("Cached", bytes(snapshot.memory.cachedBytes))
-                        detailValue("Wired", bytes(snapshot.memory.wiredBytes))
-                        detailValue("Compressed", bytes(snapshot.memory.compressedBytes))
-                    }
                     DetailPanel("Memory pressure") {
-                        Text(pressureLabel)
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .foregroundStyle(pressureColor)
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(percent(snapshot.memory.usedPercent))
+                                .font(.system(size: 30, weight: .bold, design: .rounded))
+                                .foregroundStyle(pressureColor)
+                                .moniNumericTransition(snapshot.memory.usedPercent)
+                            Text(pressureLabel)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(pressureColor)
+                        }
                         ProgressView(value: snapshot.memory.usedPercent, total: 100)
                             .tint(pressureColor)
                             .moniAnimation(MoniMotion.data, value: snapshot.memory.usedPercent)
-                        Text("Calculated from physical memory usage")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        memoryBar
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                            memoryLegend("App", appMemoryBytes, MoniPalette.blue)
+                            memoryLegend("Wired", snapshot.memory.wiredBytes, MoniPalette.purple)
+                            memoryLegend("Compressed", snapshot.memory.compressedBytes, MoniPalette.orange)
+                            memoryLegend("Cached", snapshot.memory.cachedBytes, MoniPalette.cyan)
+                        }
                     }
-                    .frame(width: 300)
+                    DetailPanel("VM statistics") {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            detailStat("Used", bytes(snapshot.memory.usedBytes))
+                            detailStat("Free", bytes(snapshot.memory.freeBytes))
+                            detailStat("Cached files", bytes(snapshot.memory.cachedBytes))
+                            detailStat("Swap used", bytes(snapshot.memory.swapUsedBytes))
+                            detailStat("Page ins", snapshot.memory.pageIns.formatted())
+                            detailStat("Page outs", snapshot.memory.pageOuts.formatted())
+                            detailStat("Compressor", bytes(snapshot.memory.compressedBytes))
+                            detailStat("Faults", snapshot.memory.faults.formatted())
+                        }
+                    }
                 }
 
                 DetailPanel("Top memory consumers") {
                     processHeader(action: { selection = .processes })
-                    ForEach(snapshot.processes.sorted { $0.memoryBytes > $1.memoryBytes }.prefix(8)) { process in
-                        processRow(process, metric: bytes(process.memoryBytes), color: .blue)
+                    let consumers = Array(snapshot.processes.sorted { $0.memoryBytes > $1.memoryBytes }.prefix(6))
+                    let maximum = max(UInt64(1), consumers.map(\.memoryBytes).max() ?? 1)
+                    ForEach(consumers) { process in
+                        consumerRow(
+                            process,
+                            value: Double(process.memoryBytes),
+                            maximum: Double(maximum),
+                            metric: bytes(process.memoryBytes),
+                            color: MoniPalette.blue,
+                            metricWidth: 76
+                        )
                     }
                 }
             }
@@ -281,17 +331,30 @@ private struct MemoryDetailView: View {
     private var memoryBar: some View {
         GeometryReader { geometry in
             HStack(spacing: 2) {
-                Rectangle().fill(Color.blue).frame(width: geometry.size.width * fraction(snapshot.memory.usedBytes))
-                Rectangle().fill(Color.cyan).frame(width: geometry.size.width * fraction(snapshot.memory.cachedBytes))
-                Rectangle().fill(Color.green)
+                Rectangle().fill(MoniPalette.blue).frame(width: geometry.size.width * fraction(appMemoryBytes))
+                Rectangle().fill(MoniPalette.purple).frame(width: geometry.size.width * fraction(snapshot.memory.wiredBytes))
+                Rectangle().fill(MoniPalette.orange).frame(width: geometry.size.width * fraction(snapshot.memory.compressedBytes))
+                Rectangle().fill(MoniPalette.cyan).frame(width: geometry.size.width * fraction(snapshot.memory.cachedBytes))
             }
-            .clipShape(Capsule())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             .moniAnimation(
                 MoniMotion.data,
-                value: [snapshot.memory.usedBytes, snapshot.memory.cachedBytes]
+                value: [
+                    appMemoryBytes,
+                    snapshot.memory.wiredBytes,
+                    snapshot.memory.compressedBytes,
+                    snapshot.memory.cachedBytes
+                ]
             )
         }
         .frame(height: 10)
+    }
+
+    private var appMemoryBytes: UInt64 {
+        snapshot.memory.usedBytes
+            .subtractingClamped(snapshot.memory.wiredBytes)
+            .subtractingClamped(snapshot.memory.compressedBytes)
     }
 
     private func fraction(_ value: UInt64) -> CGFloat {
@@ -304,7 +367,13 @@ private struct MemoryDetailView: View {
     }
 
     private var pressureColor: Color {
-        snapshot.memory.usedPercent > 85 ? .red : snapshot.memory.usedPercent > 65 ? .orange : .green
+        snapshot.memory.usedPercent > 85
+            ? MoniPalette.red
+            : snapshot.memory.usedPercent > 65 ? MoniPalette.orange : MoniPalette.green
+    }
+
+    private func memoryLegend(_ title: String, _ value: UInt64, _ color: Color) -> some View {
+        MetricRow(label: title, value: bytes(value), color: color)
     }
 }
 
@@ -331,51 +400,89 @@ private struct ProcessesDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack {
-                TextField("Search name, path, or PID", text: $query)
+        DetailPanel {
+            HStack(spacing: 10) {
+                Text("Processes")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(MoniPalette.purple)
+                Text("\(processes.count) matches")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.tertiary)
+                    .moniNumericTransition(processes.count)
+                Spacer()
+                TextField("Search processes", text: $query)
                     .textFieldStyle(.roundedBorder)
-                Picker("Sort", selection: $sort) {
-                    ForEach(Sort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .frame(width: 155)
-                Text("\(processes.count) processes")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .frame(width: 260)
             }
 
-            DetailPanel("Processes") {
-                HStack {
-                    Text("Name").frame(maxWidth: .infinity, alignment: .leading)
-                    Text("PID").frame(width: 64, alignment: .trailing)
-                    Text("CPU").frame(width: 70, alignment: .trailing)
-                    Text("Memory").frame(width: 90, alignment: .trailing)
-                }
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                sortHeader("Process", value: .name)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("PID").frame(width: 70, alignment: .trailing)
+                sortHeader("CPU", value: .cpu).frame(width: 90, alignment: .trailing)
+                sortHeader("Memory", value: .memory).frame(width: 90, alignment: .trailing)
+                Text("Threads").frame(width: 80, alignment: .trailing)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
 
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(spacing: 2) {
-                        ForEach(processes) { process in
-                            HStack(spacing: 10) {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(process.name).fontWeight(.semibold).lineLimit(1)
-                                    Text(process.path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                Text(process.pid.formatted()).frame(width: 64, alignment: .trailing)
-                                Text(percent(process.cpuPercent)).frame(width: 70, alignment: .trailing)
-                                Text(bytes(process.memoryBytes)).frame(width: 90, alignment: .trailing)
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: 2) {
+                    ForEach(processes) { process in
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(process.name).fontWeight(.semibold).lineLimit(1)
+                                Text(process.path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                             }
-                            .font(.system(size: 12))
-                            .monospacedDigit()
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(Color.primary.opacity(0.025))
-                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(process.pid.formatted()).frame(width: 70, alignment: .trailing)
+                            Text(percent(process.cpuPercent)).frame(width: 90, alignment: .trailing)
+                            Text(bytes(process.memoryBytes)).frame(width: 90, alignment: .trailing)
+                            Text("—").foregroundStyle(.tertiary).frame(width: 80, alignment: .trailing)
                         }
+                        .font(.system(size: 12.5))
+                        .monospacedDigit()
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(MoniPalette.card)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                 }
+            }
+            .frame(maxHeight: 604)
+        }
+    }
+
+    private func sortHeader(_ title: String, value: Sort) -> some View {
+        Button {
+            sort = value
+        } label: {
+            Text(title + (sort == value ? " ↓" : ""))
+                .frame(maxWidth: .infinity, alignment: value == .name ? .leading : .trailing)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .moniPointingHand()
+    }
+}
+
+private struct HistoryRangePicker: View {
+    @Binding var selection: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(["1m", "1h", "24h"], id: \.self) { range in
+                Button(range) {
+                    selection = range
+                }
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(selection == range ? .primary : .tertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(selection == range ? MoniPalette.controlSelected : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .buttonStyle(MoniPressButtonStyle(scale: 0.98))
             }
         }
     }
@@ -387,39 +494,60 @@ private func processHeader(action: @escaping () -> Void) -> some View {
         Spacer()
         Button("All processes ›", action: action)
             .buttonStyle(MoniPressButtonStyle())
-            .foregroundStyle(.blue)
+            .foregroundStyle(MoniPalette.blue)
     }
     .font(.caption)
     .foregroundStyle(.secondary)
 }
 
-private func processRow(_ process: ProcessUsage, metric: String, color: Color) -> some View {
+private func consumerRow(
+    _ process: ProcessUsage,
+    value: Double,
+    maximum: Double,
+    metric: String,
+    color: Color,
+    metricWidth: CGFloat
+) -> some View {
     HStack(spacing: 10) {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(process.name).fontWeight(.semibold).lineLimit(1)
-            Text("PID \(process.pid)").font(.caption2).foregroundStyle(.tertiary)
-        }
-        Spacer()
+        Text(process.name)
+            .fontWeight(.semibold)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        Text(process.pid.formatted())
+            .foregroundStyle(.tertiary)
+            .frame(width: 72, alignment: .leading)
+        ProgressView(value: value, total: maximum)
+            .tint(color)
+            .frame(width: 130)
         Text(metric)
             .fontWeight(.bold)
-            .foregroundStyle(color)
             .monospacedDigit()
+            .frame(width: metricWidth, alignment: .trailing)
             .moniNumericTransition(metric)
     }
-    .font(.system(size: 12))
-    .padding(.vertical, 3)
+    .font(.system(size: 13))
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
 }
 
-private func detailValue(_ key: String, _ value: String) -> some View {
-    HStack {
-        Text(key).foregroundStyle(.secondary)
-        Spacer()
+private func detailStat(_ key: String, _ value: String) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+        Text(key)
+            .foregroundStyle(.secondary)
         Text(value)
-            .fontWeight(.semibold)
+            .fontWeight(.bold)
             .monospacedDigit()
-            .moniNumericTransition(value)
     }
     .font(.system(size: 12.5))
+    .frame(maxWidth: .infinity, alignment: .leading)
+}
+
+private func historySampleCount(_ range: String) -> Int {
+    switch range {
+    case "1h": 3_600
+    case "24h": 86_400
+    default: 60
+    }
 }
 
 private func percent(_ value: Double) -> String {
@@ -435,4 +563,10 @@ private func uptime(_ interval: TimeInterval) -> String {
     let hours = (Int(interval) % 86_400) / 3_600
     let minutes = (Int(interval) % 3_600) / 60
     return "\(days)d \(hours)h \(minutes)m"
+}
+
+private extension UInt64 {
+    func subtractingClamped(_ value: UInt64) -> UInt64 {
+        self >= value ? self - value : 0
+    }
 }
