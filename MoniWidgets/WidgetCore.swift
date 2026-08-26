@@ -32,6 +32,7 @@ struct MoniWidgetProvider: TimelineProvider {
 
 enum MoniWidgetKind: String {
     case cpuSmall = "com.seaony.Moni.widget.cpu-small"
+    case memorySmall = "com.seaony.Moni.widget.memory-small"
 }
 
 struct MoniWidgetView: View {
@@ -42,6 +43,8 @@ struct MoniWidgetView: View {
         switch kind {
         case .cpuSmall:
             CPUSmallWidgetView(snapshot: entry.system)
+        case .memorySmall:
+            MemorySmallWidgetView(snapshot: entry.system)
         }
     }
 }

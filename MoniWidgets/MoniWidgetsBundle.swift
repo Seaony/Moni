@@ -5,5 +5,6 @@ import WidgetKit
 struct MoniWidgetsBundle: WidgetBundle {
     var body: some Widget {
         CPUSmallWidget()
+        MemorySmallWidget()
     }
 }

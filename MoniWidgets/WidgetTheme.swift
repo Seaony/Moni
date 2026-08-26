@@ -60,6 +60,25 @@ struct WidgetBars: View {
     }
 }
 
+struct WidgetRing<Content: View>: View {
+    let progress: Double
+    let color: Color
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(WidgetTheme.track, lineWidth: 10)
+            Circle()
+                .trim(from: 0, to: min(1, max(0, progress)))
+                .stroke(color, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            content
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
 struct WidgetLineChart: View {
     let values: [Double]
     let color: Color
