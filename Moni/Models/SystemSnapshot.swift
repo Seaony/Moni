@@ -226,6 +226,7 @@ struct FanUsage: Identifiable, Sendable {
 struct PowerUsage: Sendable {
     var batteryPercent: Double?
     var isCharging = false
+    var isExternalPowerConnected = false
     var timeRemainingMinutes: Int?
     var batteryTemperatureCelsius: Double?
     var cycleCount: Int?
@@ -244,6 +245,7 @@ struct PowerUsage: Sendable {
     nonisolated init(
         batteryPercent: Double? = nil,
         isCharging: Bool = false,
+        isExternalPowerConnected: Bool = false,
         timeRemainingMinutes: Int? = nil,
         batteryTemperatureCelsius: Double? = nil,
         cycleCount: Int? = nil,
@@ -261,6 +263,7 @@ struct PowerUsage: Sendable {
     ) {
         self.batteryPercent = batteryPercent
         self.isCharging = isCharging
+        self.isExternalPowerConnected = isExternalPowerConnected
         self.timeRemainingMinutes = timeRemainingMinutes
         self.batteryTemperatureCelsius = batteryTemperatureCelsius
         self.cycleCount = cycleCount

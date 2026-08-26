@@ -275,7 +275,7 @@ struct SummaryView: View {
 
     private var powerCard: some View {
         cardButton(.sensors) {
-            MetricCard(title: "Power & Sensors", symbol: MonitorSection.sensors.symbol, color: MoniPalette.yellow, trailing: snapshot.power.isCharging ? "Charging" : nil) {
+            MetricCard(title: "Power & Sensors", symbol: MonitorSection.sensors.symbol, color: MoniPalette.yellow, trailing: powerSourceTitle) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Battery")
@@ -294,9 +294,9 @@ struct SummaryView: View {
                 }
                 Spacer()
                 MetricRow(
-                    label: snapshot.power.isCharging ? "Power source" : "Time remaining",
+                    label: snapshot.power.isExternalPowerConnected ? "Power source" : "Time remaining",
                     value: powerDetail,
-                    color: snapshot.power.isCharging ? MoniPalette.green : MoniPalette.yellow
+                    color: snapshot.power.isExternalPowerConnected ? MoniPalette.green : MoniPalette.yellow
                 )
                 Text(sensorSummary)
                     .font(.system(size: 11))
@@ -459,11 +459,18 @@ struct SummaryView: View {
     }
 
     private var powerDetail: String {
-        if snapshot.power.isCharging { return "AC Power" }
+        if snapshot.power.isCharging { return "Charging" }
+        if snapshot.power.isExternalPowerConnected { return "AC Power" }
         if snapshot.power.batteryPercent ?? 0 >= 100 { return "Fully charged" }
         guard let minutes = snapshot.power.timeRemainingMinutes else { return "Calculating" }
         guard minutes > 0 else { return "Calculating" }
         return "\(minutes / 60)h \(minutes % 60)m"
+    }
+
+    private var powerSourceTitle: String? {
+        if snapshot.power.isCharging { return "Charging" }
+        if snapshot.power.isExternalPowerConnected { return "AC Power" }
+        return nil
     }
 
     private func cardButton<Content: View>(_ target: MonitorSection, @ViewBuilder content: () -> Content) -> some View {

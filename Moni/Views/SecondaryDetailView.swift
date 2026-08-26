@@ -490,7 +490,7 @@ private struct PowerDetailView: View {
                     DetailPanel {
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text("Battery").font(.system(size: 15, weight: .bold)).foregroundStyle(MoniPalette.yellow)
-                            Text(power.isCharging ? "Charging" : "On battery")
+                            Text(powerSourceDescription)
                                 .font(.system(size: 12.5)).foregroundStyle(.tertiary)
                         }
                         if let batteryPercent = power.batteryPercent {
@@ -502,7 +502,7 @@ private struct PowerDetailView: View {
                             Text("No Battery").font(.system(size: 30, weight: .bold, design: .rounded))
                         }
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                            secondaryStat("Status", power.isCharging ? "Charging" : "Discharging")
+                            secondaryStat("Status", powerSourceDescription)
                             secondaryStat("Remaining", remainingTime)
                             secondaryStat("Voltage", power.voltageVolts.map { String(format: "%.2f V", $0) } ?? "—")
                             secondaryStat("Cycle count", power.cycleCount.map(String.init) ?? "—")
@@ -563,6 +563,12 @@ private struct PowerDetailView: View {
         if power.batteryPercent ?? 0 >= 100 { return "Fully charged" }
         guard let minutes = power.timeRemainingMinutes, minutes > 0 else { return "Calculating remaining time" }
         return "\(minutes / 60)h \(minutes % 60)m remaining"
+    }
+
+    private var powerSourceDescription: String {
+        if power.isCharging { return "Charging" }
+        if power.isExternalPowerConnected { return "AC Power" }
+        return "On battery"
     }
 }
 

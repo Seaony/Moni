@@ -648,6 +648,7 @@ actor SystemSampler {
         guard let source = sources.first,
               let description = IOPSGetPowerSourceDescription(snapshot, source)?.takeUnretainedValue() as? [String: Any] else {
             return PowerUsage(
+                isExternalPowerConnected: telemetry.isExternalPowerConnected,
                 batteryTemperatureCelsius: telemetry.batteryTemperatureCelsius,
                 cycleCount: telemetry.cycleCount,
                 voltageVolts: telemetry.voltageVolts,
@@ -677,6 +678,7 @@ actor SystemSampler {
         return PowerUsage(
             batteryPercent: percent,
             isCharging: charging,
+            isExternalPowerConnected: telemetry.isExternalPowerConnected,
             timeRemainingMinutes: minutes.flatMap { $0 >= 0 ? $0 : nil },
             batteryTemperatureCelsius: telemetry.batteryTemperatureCelsius,
             cycleCount: telemetry.cycleCount,
@@ -805,6 +807,7 @@ actor SystemSampler {
         else { return PowerUsage() }
 
         let temperature = (values["Temperature"] as? NSNumber).map { $0.doubleValue / 100 }
+        let externalPowerConnected = (values["ExternalConnected"] as? NSNumber)?.boolValue ?? false
         let cycleCount = (values["CycleCount"] as? NSNumber)?.intValue
         let voltage = (values["Voltage"] as? NSNumber).map { $0.doubleValue / 1_000 }
         let current = (values["InstantAmperage"] as? NSNumber).map { $0.doubleValue / 1_000 }
@@ -812,6 +815,7 @@ actor SystemSampler {
         let systemPower = (powerTelemetry?["SystemPowerIn"] as? NSNumber).map { $0.doubleValue / 1_000 }
 
         return PowerUsage(
+            isExternalPowerConnected: externalPowerConnected,
             batteryTemperatureCelsius: temperature,
             cycleCount: cycleCount,
             voltageVolts: voltage,
