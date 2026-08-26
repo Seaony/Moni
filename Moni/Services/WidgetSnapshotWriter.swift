@@ -29,7 +29,8 @@ extension WidgetSystemSnapshot {
         snapshot: SystemSnapshot,
         histories: Histories,
         publicIPAddress: String?,
-        networkLatencyMilliseconds: Double?
+        networkLatencyMilliseconds: Double?,
+        storageFolders: [StorageFolderUsage]
     ) {
         let root = snapshot.volumes.first { $0.mountPath == "/" }
         self.init(
@@ -88,7 +89,10 @@ extension WidgetSystemSnapshot {
             ),
             docker: Docker(isInstalled: snapshot.docker.isInstalled, isRunning: snapshot.docker.isRunning, installation: snapshot.docker.installation, socketPath: snapshot.docker.socketPath),
             histories: histories,
-            alerts: Self.alerts(for: snapshot)
+            alerts: Self.alerts(for: snapshot),
+            storageItems: storageFolders.prefix(5).map {
+                .init(name: URL(fileURLWithPath: $0.path).lastPathComponent, bytes: $0.sizeBytes)
+            }
         )
     }
 

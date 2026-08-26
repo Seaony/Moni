@@ -206,7 +206,8 @@ final class SystemMonitor: ObservableObject {
                 battery: batteryHistory
             ),
             publicIPAddress: publicIPAddress,
-            networkLatencyMilliseconds: networkLatencyMilliseconds
+            networkLatencyMilliseconds: networkLatencyMilliseconds,
+            storageFolders: largestFolders
         )
         Task {
             await WidgetSnapshotWriter.shared.persistSystem(widgetSnapshot)

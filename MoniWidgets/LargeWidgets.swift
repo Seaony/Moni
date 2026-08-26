@@ -401,3 +401,91 @@ struct ActivityMonitorLargeWidgetView: View {
         ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
     }
 }
+
+struct StorageBreakdownLargeWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .storageBreakdownLarge,
+            displayName: "Storage Breakdown",
+            description: "查看系统磁盘占用与主要目录分布。",
+            family: .systemLarge
+        )
+    }
+}
+
+struct StorageBreakdownLargeWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private let colors = [WidgetTheme.blue, WidgetTheme.purple, WidgetTheme.cyan, WidgetTheme.orange, WidgetTheme.green]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Storage Breakdown", symbol: "internaldrive", color: WidgetTheme.orange, trailing: snapshot.volume.map { bytes($0.totalBytes) + " total" })
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(snapshot.volume.map { bytes($0.totalBytes - $0.availableBytes) } ?? "—")
+                    .font(.system(size: 31, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                Text(snapshot.volume.map { "\(Int($0.usedPercent.rounded()))% used" } ?? "Unavailable")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle((snapshot.volume?.usedPercent ?? 0) >= 90 ? WidgetTheme.red : WidgetTheme.secondary)
+            }
+            .padding(.top, 10)
+            GeometryReader { geometry in
+                HStack(spacing: 2) {
+                    ForEach(Array(snapshot.storageItems.enumerated()), id: \.offset) { index, item in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(colors[index % colors.count])
+                            .frame(width: geometry.size.width * fraction(item.bytes))
+                    }
+                }
+            }
+            .frame(height: 11)
+            .padding(.top, 10)
+            if snapshot.storageItems.isEmpty {
+                Text("Open Disk Browser in Moni once to populate folder details.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(WidgetTheme.secondary)
+                    .frame(maxHeight: .infinity)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(snapshot.storageItems.prefix(5).enumerated()), id: \.offset) { index, item in
+                        HStack(spacing: 8) {
+                            RoundedRectangle(cornerRadius: 2).fill(colors[index % colors.count]).frame(width: 8, height: 8)
+                            Text(item.name).fontWeight(.semibold).lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text(bytes(Int64(item.bytes))).fontWeight(.bold).monospacedDigit()
+                        }
+                        .font(.system(size: 10.5))
+                    }
+                }
+                .padding(.top, 14)
+                Spacer(minLength: 8)
+            }
+            HStack(spacing: 8) {
+                detailTile("Available", snapshot.volume.map { bytes($0.availableBytes) } ?? "—")
+                detailTile("S.M.A.R.T.", snapshot.driveSmartStatus ?? "—")
+            }
+        }
+        .padding(18)
+    }
+
+    private func fraction(_ value: UInt64) -> CGFloat {
+        guard let total = snapshot.volume?.totalBytes, total > 0 else { return 0 }
+        return CGFloat(Double(value) / Double(total))
+    }
+
+    private func bytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
+
+    private func detailTile(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(value).font(.system(size: 16, weight: .heavy, design: .rounded)).lineLimit(1)
+        }
+        .font(.system(size: 9.5))
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(WidgetTheme.inset, in: RoundedRectangle(cornerRadius: 11))
+    }
+}

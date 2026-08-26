@@ -114,6 +114,11 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
         let severity: Int
     }
 
+    struct StorageItem: Codable, Sendable {
+        let name: String
+        let bytes: UInt64
+    }
+
     let date: Date
     let hostName: String
     let uptime: TimeInterval
@@ -138,6 +143,7 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
     let docker: Docker
     let histories: Histories
     let alerts: [Alert]
+    let storageItems: [StorageItem]
 
     static let placeholder = WidgetSystemSnapshot(
         date: .now,
@@ -163,7 +169,8 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
         gpu: GPU(name: "Apple GPU", coreCount: 16, utilizationPercent: 19, rendererPercent: 17, tilerPercent: 11, allocatedMemoryBytes: 1_700_000_000, powerWatts: 5.2),
         docker: Docker(isInstalled: true, isRunning: true, installation: "Docker", socketPath: "/var/run/docker.sock"),
         histories: Histories(cpu: [28, 35, 52, 46, 68], memory: [73, 74, 75, 76, 77], download: [22, 55, 61, 42, 45], upload: [9, 14, 12, 7, 8], gpu: [8, 12, 16, 14, 19], diskRead: [12, 34, 28, 51, 42], diskWrite: [8, 11, 26, 18, 21], battery: [96, 93, 90, 86, 82]),
-        alerts: [Alert(message: "Disk usage crossed 90%", date: .now.addingTimeInterval(-2_400), severity: 2)]
+        alerts: [Alert(message: "Disk usage crossed 90%", date: .now.addingTimeInterval(-2_400), severity: 2)],
+        storageItems: [StorageItem(name: "System", bytes: 248_000_000_000), StorageItem(name: "Users", bytes: 372_000_000_000), StorageItem(name: "Applications", bytes: 116_000_000_000), StorageItem(name: "Other", bytes: 115_500_000_000)]
     )
 }
 
