@@ -30,6 +30,7 @@ final class SystemMonitor: ObservableObject {
     private var samplingInterval: TimeInterval
     private var recentHistory: [HistorySample] = []
     private var minuteHistory: [HistorySample] = []
+    private var lastWidgetPersistence = Date.distantPast
 
     private struct HistorySample {
         let date: Date
@@ -184,6 +185,28 @@ final class SystemMonitor: ObservableObject {
         appendHistory(snapshot)
         self.snapshot = snapshot
         alertMonitor.evaluate(snapshot)
+        persistWidgetSnapshotIfNeeded(snapshot)
+    }
+
+    private func persistWidgetSnapshotIfNeeded(_ snapshot: SystemSnapshot) {
+        guard snapshot.date.timeIntervalSince(lastWidgetPersistence) >= 15 else { return }
+        lastWidgetPersistence = snapshot.date
+        let widgetSnapshot = WidgetSystemSnapshot(
+            snapshot: snapshot,
+            histories: .init(
+                cpu: cpuHistory,
+                memory: memoryHistory,
+                download: downloadHistory,
+                upload: uploadHistory,
+                gpu: gpuHistory,
+                diskRead: diskReadHistory,
+                diskWrite: diskWriteHistory,
+                battery: []
+            )
+        )
+        Task {
+            await WidgetSnapshotWriter.shared.persistSystem(widgetSnapshot)
+        }
     }
 
     private func appendHistory(_ snapshot: SystemSnapshot) {

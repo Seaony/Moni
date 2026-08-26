@@ -188,6 +188,10 @@ final class AIUsageStore: ObservableObject {
         completedQuery = query
         cachedSummaries[query.cacheKey] = CachedSummary(summary: value, storedAt: Date())
         Self.persistCachedSummaries(cachedSummaries)
+        let widgetSnapshot = WidgetAISnapshot(summary: value)
+        Task {
+            await WidgetSnapshotWriter.shared.persistAI(widgetSnapshot)
+        }
     }
 
     private func quotaRefreshIsDue(for query: Query, now: Date = Date()) -> Bool {
