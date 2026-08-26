@@ -18,6 +18,8 @@ enum PreferenceKey {
     static let aiUsageRangeDays = "aiUsageRangeDays"
     static let aiUsageRange = "aiUsageRange"
     static let summaryCardLayout = "summaryCardLayout"
+    static let storageFolderCache = "storageFolderCache"
+    static let storageFolderCacheDate = "storageFolderCacheDate"
 
     static let showHost = "showHost"
     static let showCPU = "showCPU"

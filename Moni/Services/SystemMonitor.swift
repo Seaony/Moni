@@ -13,11 +13,15 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var diskWriteHistory: [Double] = []
     @Published private(set) var cpuTemperatureHistory: [Double] = []
     @Published private(set) var gpuTemperatureHistory: [Double] = []
+    @Published private(set) var largestFolders: [StorageFolderUsage] = []
+    @Published private(set) var isScanningStorage = false
 
     private let sampler = SystemSampler()
     private let alertMonitor = AlertMonitor()
     private var timer: AnyCancellable?
     private var refreshTask: Task<Void, Never>?
+    private var storageScanTask: Task<Void, Never>?
+    private var didCompleteStorageScan = false
     private var samplingInterval: TimeInterval
 
     init(samplingInterval: TimeInterval = 1) {
@@ -38,6 +42,8 @@ final class SystemMonitor: ObservableObject {
         timer = nil
         refreshTask?.cancel()
         refreshTask = nil
+        storageScanTask?.cancel()
+        storageScanTask = nil
     }
 
     func setSamplingInterval(_ interval: TimeInterval) {
@@ -53,6 +59,37 @@ final class SystemMonitor: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             apply(snapshot)
             refreshTask = nil
+        }
+    }
+
+    func loadStorageFoldersIfNeeded() {
+        guard !didCompleteStorageScan, storageScanTask == nil else { return }
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: PreferenceKey.storageFolderCache),
+           let cached = try? JSONDecoder().decode([StorageFolderUsage].self, from: data) {
+            largestFolders = cached
+            let cacheDate = defaults.object(forKey: PreferenceKey.storageFolderCacheDate) as? Date
+            if let cacheDate, Date().timeIntervalSince(cacheDate) < 6 * 60 * 60 {
+                didCompleteStorageScan = true
+                return
+            }
+        }
+        isScanningStorage = true
+        storageScanTask = Task { [weak self] in
+            let folders = await Task.detached(priority: .utility) {
+                Self.scanLargestFolders()
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            if !folders.isEmpty {
+                largestFolders = folders
+                if let data = try? JSONEncoder().encode(folders) {
+                    defaults.set(data, forKey: PreferenceKey.storageFolderCache)
+                    defaults.set(Date(), forKey: PreferenceKey.storageFolderCacheDate)
+                }
+            }
+            isScanningStorage = false
+            didCompleteStorageScan = true
+            storageScanTask = nil
         }
     }
 
@@ -80,6 +117,71 @@ final class SystemMonitor: ObservableObject {
         history.append(value)
         if history.count > 60 {
             history.removeFirst(history.count - 60)
+        }
+    }
+
+    private nonisolated static func scanLargestFolders() -> [StorageFolderUsage] {
+        let homePath = FileManager.default.homeDirectoryForCurrentUser.path
+        var paths = [homePath, "/Library", "/Applications"]
+        let optionalPaths = [
+            homePath + "/.orbstack",
+            homePath + "/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw",
+            homePath + "/Library/Group Containers/group.com.docker/Docker.raw",
+        ]
+        paths.append(contentsOf: optionalPaths.filter { FileManager.default.fileExists(atPath: $0) })
+        let groupContainersPath = homePath + "/Library/Group Containers"
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: groupContainersPath) {
+            paths.append(contentsOf: names
+                .filter { $0.localizedCaseInsensitiveContains("orbstack") }
+                .map { groupContainersPath + "/" + $0 })
+        }
+
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/taskpolicy")
+        process.arguments = ["-b", "/usr/bin/nice", "-n", "20", "/usr/bin/du", "-sk", "-x"] + paths
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard let text = String(data: data, encoding: .utf8) else { return [] }
+            var folders: [StorageFolderUsage] = text.split(whereSeparator: \.isNewline).compactMap { line in
+                let fields = line.split(separator: "\t", maxSplits: 1)
+                guard fields.count == 2, let kilobytes = UInt64(fields[0]) else { return nil }
+                return StorageFolderUsage(path: String(fields[1]), sizeBytes: kilobytes * 1_024)
+            }
+            if let systemSize = systemVolumeSize() {
+                folders.append(StorageFolderUsage(path: "/System", sizeBytes: systemSize))
+            }
+            return folders
+            .sorted { $0.sizeBytes > $1.sizeBytes }
+            .prefix(5)
+            .map { $0 }
+        } catch {
+            return []
+        }
+    }
+
+    private nonisolated static func systemVolumeSize() -> UInt64? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+        process.arguments = ["info", "-plist", "/"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard let propertyList = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+                return nil
+            }
+            return (propertyList["CapacityInUse"] as? NSNumber)?.uint64Value
+        } catch {
+            return nil
         }
     }
 }

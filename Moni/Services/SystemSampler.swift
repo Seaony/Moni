@@ -25,7 +25,13 @@ actor SystemSampler {
 
     private var previousCPUTicks: [CPUTicks] = []
     private var previousNetworkBytes: (received: UInt64, sent: UInt64, date: Date)?
-    private var previousDiskBytes: (read: UInt64, written: UInt64, date: Date)?
+    private var previousDiskCounters: (
+        readBytes: UInt64,
+        writtenBytes: UInt64,
+        readOperations: UInt64,
+        writeOperations: UInt64,
+        date: Date
+    )?
     private var previousProcessTimes: [Int32: UInt64] = [:]
     private var previousProcessDate: Date?
     private var previousGPUClientTimes: [Int32: UInt64] = [:]
@@ -38,6 +44,7 @@ actor SystemSampler {
     private var gpuDevices: [GPUDeviceInfo] = []
     private var didLoadGPUDevices = false
     private var cachedVolumes: [VolumeUsage] = []
+    private var cachedDriveHealth = DriveHealth()
     private var cachedProcesses: [ProcessUsage] = []
     private var cachedNetworkConnections: [NetworkConnectionUsage] = []
     private var cachedPower = PowerUsage()
@@ -65,6 +72,7 @@ actor SystemSampler {
         }
         if forceSlowMetrics || shouldRefresh(lastPeripheralSample, at: now, interval: peripheralInterval) {
             cachedVolumes = sampleVolumes()
+            cachedDriveHealth = sampleDriveHealth()
             cachedPower = samplePower()
             cachedDocker = sampleDockerStatus()
             lastPeripheralSample = now
@@ -77,6 +85,7 @@ actor SystemSampler {
             memory: sampleMemory(),
             network: sampleNetwork(at: now),
             diskActivity: sampleDiskActivity(at: now),
+            driveHealth: cachedDriveHealth,
             volumes: cachedVolumes,
             processes: cachedProcesses,
             power: cachedPower,
@@ -370,6 +379,8 @@ actor SystemSampler {
 
         var totalRead: UInt64 = 0
         var totalWritten: UInt64 = 0
+        var totalReadOperations: UInt64 = 0
+        var totalWriteOperations: UInt64 = 0
         var service = IOIteratorNext(iterator)
         while service != 0 {
             if let statistics = IORegistryEntryCreateCFProperty(
@@ -380,20 +391,39 @@ actor SystemSampler {
             )?.takeRetainedValue() as? [String: Any] {
                 totalRead += (statistics["Bytes (Read)"] as? NSNumber)?.uint64Value ?? 0
                 totalWritten += (statistics["Bytes (Write)"] as? NSNumber)?.uint64Value ?? 0
+                totalReadOperations += (statistics["Operations (Read)"] as? NSNumber)?.uint64Value ?? 0
+                totalWriteOperations += (statistics["Operations (Write)"] as? NSNumber)?.uint64Value ?? 0
             }
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
         }
 
-        let elapsed = previousDiskBytes.map { date.timeIntervalSince($0.date) } ?? 0
-        let priorRead = previousDiskBytes?.read ?? totalRead
-        let priorWritten = previousDiskBytes?.written ?? totalWritten
+        let elapsed = previousDiskCounters.map { date.timeIntervalSince($0.date) } ?? 0
+        let priorRead = previousDiskCounters?.readBytes ?? totalRead
+        let priorWritten = previousDiskCounters?.writtenBytes ?? totalWritten
+        let priorReadOperations = previousDiskCounters?.readOperations ?? totalReadOperations
+        let priorWriteOperations = previousDiskCounters?.writeOperations ?? totalWriteOperations
         let readDelta = totalRead >= priorRead ? totalRead - priorRead : 0
         let writeDelta = totalWritten >= priorWritten ? totalWritten - priorWritten : 0
-        previousDiskBytes = (totalRead, totalWritten, date)
+        let readOperationDelta = totalReadOperations >= priorReadOperations ? totalReadOperations - priorReadOperations : 0
+        let writeOperationDelta = totalWriteOperations >= priorWriteOperations ? totalWriteOperations - priorWriteOperations : 0
+        previousDiskCounters = (totalRead, totalWritten, totalReadOperations, totalWriteOperations, date)
         return DiskActivity(
             readBytesPerSecond: elapsed > 0 ? Double(readDelta) / elapsed : 0,
-            writeBytesPerSecond: elapsed > 0 ? Double(writeDelta) / elapsed : 0
+            writeBytesPerSecond: elapsed > 0 ? Double(writeDelta) / elapsed : 0,
+            readOperationsPerSecond: elapsed > 0 ? Double(readOperationDelta) / elapsed : 0,
+            writeOperationsPerSecond: elapsed > 0 ? Double(writeOperationDelta) / elapsed : 0
+        )
+    }
+
+    private func sampleDriveHealth() -> DriveHealth {
+        guard let data = MoniNVMeSMARTData() else { return DriveHealth() }
+        return DriveHealth(
+            model: data["model"] as? String,
+            smartStatus: data["smartStatus"] as? String,
+            trimEnabled: (data["trimEnabled"] as? NSNumber)?.boolValue,
+            temperatureCelsius: (data["temperatureCelsius"] as? NSNumber)?.doubleValue,
+            totalWrittenBytes: (data["totalWrittenBytes"] as? NSNumber)?.uint64Value
         )
     }
 

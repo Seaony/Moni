@@ -296,14 +296,50 @@ private struct StorageDetailView: View {
 
                 HStack(alignment: .top, spacing: 12) {
                     DetailPanel("Largest folders") {
-                        unavailableRow("Open the disk browser to inspect folders.")
+                        if monitor.largestFolders.isEmpty, monitor.isScanningStorage {
+                            HStack(spacing: 9) {
+                                ProgressView().controlSize(.small)
+                                Text("Calculating folder sizes…")
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .font(.system(size: 12.5))
+                            .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
+                        } else {
+                            VStack(spacing: 10) {
+                                ForEach(monitor.largestFolders) { folder in
+                                    HStack(spacing: 12) {
+                                        Text(folder.path)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                            .frame(width: 148, alignment: .leading)
+                                        GeometryReader { geometry in
+                                            ZStack(alignment: .leading) {
+                                                Capsule().fill(MoniPalette.track)
+                                                Capsule()
+                                                    .fill(MoniPalette.orange)
+                                                    .frame(width: geometry.size.width * folderRatio(folder))
+                                            }
+                                        }
+                                        .frame(height: 6)
+                                        Text(bytes(folder.sizeBytes))
+                                            .fontWeight(.bold)
+                                            .monospacedDigit()
+                                            .frame(width: 66, alignment: .trailing)
+                                    }
+                                    .font(.system(size: 12.5))
+                                    .transition(MoniMotion.itemTransition)
+                                }
+                            }
+                        }
                     }
                     DetailPanel("Drive health") {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                            secondaryStat("Volumes", monitor.snapshot.volumes.count.formatted())
-                            secondaryStat("Capacity", totalCapacity)
-                            secondaryStat("Available", totalAvailable)
-                            secondaryStat("SMART status", "—")
+                            secondaryStat("Model", driveHealth.model ?? "Reading…")
+                            secondaryStat("S.M.A.R.T.", driveHealth.smartStatus ?? "Reading…")
+                            secondaryStat("Temperature", driveTemperature)
+                            secondaryStat("Written total", driveHealth.totalWrittenBytes.map(bytes) ?? "Reading…")
+                            secondaryStat("IOPS", driveIOPS)
+                            secondaryStat("TRIM", driveHealth.trimEnabled.map { $0 ? "Enabled" : "Disabled" } ?? "Reading…")
                         }
                         Button {
                             selection = .disks
@@ -321,14 +357,31 @@ private struct StorageDetailView: View {
                 }
             }
         }
+        .task {
+            monitor.loadStorageFoldersIfNeeded()
+        }
+        .moniAnimation(value: monitor.largestFolders.map(\.id))
     }
 
-    private var totalCapacity: String {
-        bytes(UInt64(max(0, monitor.snapshot.volumes.reduce(Int64(0)) { $0 + $1.totalBytes })))
+    private var driveHealth: DriveHealth {
+        monitor.snapshot.driveHealth
     }
 
-    private var totalAvailable: String {
-        bytes(UInt64(max(0, monitor.snapshot.volumes.reduce(Int64(0)) { $0 + $1.availableBytes })))
+    private var largestFolderSize: UInt64 {
+        max(1, monitor.largestFolders.first?.sizeBytes ?? 1)
+    }
+
+    private func folderRatio(_ folder: StorageFolderUsage) -> Double {
+        min(1, max(0, Double(folder.sizeBytes) / Double(largestFolderSize)))
+    }
+
+    private var driveTemperature: String {
+        driveHealth.temperatureCelsius.map { String(format: "%.0f°C", $0) } ?? "Reading…"
+    }
+
+    private var driveIOPS: String {
+        let activity = monitor.snapshot.diskActivity
+        return "\(Int((activity.readOperationsPerSecond + activity.writeOperationsPerSecond).rounded())) / s"
     }
 }
 
@@ -717,25 +770,6 @@ private func dockerStat(_ key: String, _ text: String) -> some View {
     .padding(.vertical, 12)
     .background(MoniPalette.inset)
     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-}
-
-private func unavailableChart(_ message: String) -> some View {
-    ZStack {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(MoniPalette.insetSecondary)
-        Text(message)
-            .font(.system(size: 12.5))
-            .foregroundStyle(.tertiary)
-            .multilineTextAlignment(.center)
-            .padding()
-    }
-}
-
-private func unavailableRow(_ message: String) -> some View {
-    Text(message)
-        .font(.system(size: 12.5))
-        .foregroundStyle(.tertiary)
-        .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
 }
 
 private func rangeFooter(_ range: String) -> some View {

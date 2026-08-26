@@ -2,6 +2,9 @@
 
 #import <CoreFoundation/CoreFoundation.h>
 #import <IOKit/hidsystem/IOHIDEventSystemClient.h>
+#import <IOKit/IOCFPlugIn.h>
+#import <IOKit/IOKitLib.h>
+#import <IOKit/storage/nvme/NVMeSMARTLibExternal.h>
 #import <dlfcn.h>
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
@@ -205,4 +208,83 @@ NSDictionary<NSString *, NSNumber *> *MoniAppleSiliconEnergyCounters(void) {
         }
     }
     return result.count == 0 ? nil : result;
+}
+
+NSDictionary<NSString *, id> *MoniNVMeSMARTData(void) {
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    kern_return_t matchingResult = IOServiceGetMatchingServices(
+        kIOMainPortDefault,
+        IOServiceMatching("IONVMeBlockStorageDevice"),
+        &iterator
+    );
+    if (matchingResult != KERN_SUCCESS) {
+        return nil;
+    }
+
+    NSDictionary<NSString *, id> *result = nil;
+    io_service_t service = IOIteratorNext(iterator);
+    while (service != IO_OBJECT_NULL && result == nil) {
+        IOCFPlugInInterface **plugin = NULL;
+        SInt32 score = 0;
+        IOReturn pluginResult = IOCreatePlugInInterfaceForService(
+            service,
+            kIONVMeSMARTUserClientTypeID,
+            kIOCFPlugInInterfaceID,
+            &plugin,
+            &score
+        );
+        if (pluginResult == kIOReturnSuccess && plugin != NULL) {
+            IONVMeSMARTInterface **smart = NULL;
+            HRESULT queryResult = (*plugin)->QueryInterface(
+                plugin,
+                CFUUIDGetUUIDBytes(kIONVMeSMARTInterfaceID),
+                (LPVOID *)&smart
+            );
+            (*plugin)->Release(plugin);
+
+            if (queryResult == S_OK && smart != NULL) {
+                NVMeSMARTData data = {0};
+                if ((*smart)->SMARTReadData(smart, &data) == kIOReturnSuccess) {
+                    NSDictionary *characteristics = CFBridgingRelease(
+                        IORegistryEntryCreateCFProperty(
+                            service,
+                            CFSTR("Device Characteristics"),
+                            kCFAllocatorDefault,
+                            0
+                        )
+                    );
+                    NSDictionary *features = CFBridgingRelease(
+                        IORegistryEntryCreateCFProperty(
+                            service,
+                            CFSTR("IOStorageFeatures"),
+                            kCFAllocatorDefault,
+                            0
+                        )
+                    );
+                    NSString *model = [characteristics[@"Product Name"] isKindOfClass:NSString.class]
+                        ? characteristics[@"Product Name"]
+                        : @"NVMe SSD";
+                    BOOL trimEnabled = [features[@"Unmap"] boolValue];
+                    double temperature = data.TEMPERATURE >= 273 ? (double)data.TEMPERATURE - 273.15 : 0;
+                    __uint128_t writtenBytes = (__uint128_t)data.DATA_UNITS_WRITTEN[0] * 512000;
+                    uint64_t clampedWrittenBytes = writtenBytes > UINT64_MAX
+                        ? UINT64_MAX
+                        : (uint64_t)writtenBytes;
+
+                    result = @{
+                        @"model": model,
+                        @"smartStatus": data.CRITICAL_WARNING == 0 ? @"Verified" : @"Warning",
+                        @"trimEnabled": @(trimEnabled),
+                        @"temperatureCelsius": @(temperature),
+                        @"totalWrittenBytes": @(clampedWrittenBytes),
+                    };
+                }
+                (*smart)->Release(smart);
+            }
+        }
+        IOObjectRelease(service);
+        service = IOIteratorNext(iterator);
+    }
+    IOObjectRelease(iterator);
+    return result;
 }

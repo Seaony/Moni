@@ -129,13 +129,51 @@ struct VolumeUsage: Identifiable, Sendable {
     }
 }
 
+struct StorageFolderUsage: Codable, Identifiable, Sendable {
+    let path: String
+    let sizeBytes: UInt64
+
+    var id: String { path }
+}
+
 struct DiskActivity: Sendable {
     var readBytesPerSecond: Double = 0
     var writeBytesPerSecond: Double = 0
+    var readOperationsPerSecond: Double = 0
+    var writeOperationsPerSecond: Double = 0
 
-    nonisolated init(readBytesPerSecond: Double = 0, writeBytesPerSecond: Double = 0) {
+    nonisolated init(
+        readBytesPerSecond: Double = 0,
+        writeBytesPerSecond: Double = 0,
+        readOperationsPerSecond: Double = 0,
+        writeOperationsPerSecond: Double = 0
+    ) {
         self.readBytesPerSecond = readBytesPerSecond
         self.writeBytesPerSecond = writeBytesPerSecond
+        self.readOperationsPerSecond = readOperationsPerSecond
+        self.writeOperationsPerSecond = writeOperationsPerSecond
+    }
+}
+
+struct DriveHealth: Sendable {
+    var model: String?
+    var smartStatus: String?
+    var trimEnabled: Bool?
+    var temperatureCelsius: Double?
+    var totalWrittenBytes: UInt64?
+
+    nonisolated init(
+        model: String? = nil,
+        smartStatus: String? = nil,
+        trimEnabled: Bool? = nil,
+        temperatureCelsius: Double? = nil,
+        totalWrittenBytes: UInt64? = nil
+    ) {
+        self.model = model
+        self.smartStatus = smartStatus
+        self.trimEnabled = trimEnabled
+        self.temperatureCelsius = temperatureCelsius
+        self.totalWrittenBytes = totalWrittenBytes
     }
 }
 
@@ -334,6 +372,7 @@ struct SystemSnapshot: Sendable {
     var memory = MemoryUsage()
     var network = NetworkUsage()
     var diskActivity = DiskActivity()
+    var driveHealth = DriveHealth()
     var volumes: [VolumeUsage] = []
     var processes: [ProcessUsage] = []
     var power = PowerUsage()
