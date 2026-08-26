@@ -333,3 +333,71 @@ struct NetworkDetailLargeWidgetView: View {
         .background(WidgetTheme.inset, in: RoundedRectangle(cornerRadius: 11))
     }
 }
+
+struct ActivityMonitorLargeWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .activityMonitorLarge,
+            displayName: "Activity Monitor",
+            description: "查看 CPU 占用最高的进程及其内存使用。",
+            family: .systemLarge
+        )
+    }
+}
+
+struct ActivityMonitorLargeWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    private var processes: [WidgetSystemSnapshot.Process] {
+        snapshot.processes.sorted { $0.cpuPercent > $1.cpuPercent }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Activity Monitor", symbol: "list.bullet.rectangle", color: WidgetTheme.purple, trailing: "by CPU · \(snapshot.processCount) total")
+            HStack(spacing: 8) {
+                Text("Process").frame(maxWidth: .infinity, alignment: .leading)
+                Text("CPU").frame(width: 44, alignment: .trailing)
+                Text("Memory").frame(width: 58, alignment: .trailing)
+            }
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(WidgetTheme.tertiary)
+            .padding(.top, 12)
+            .padding(.bottom, 6)
+            Divider().opacity(0.35)
+            VStack(spacing: 1) {
+                ForEach(Array(processes.prefix(8).enumerated()), id: \.offset) { _, process in
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(process.name).fontWeight(.semibold).lineLimit(1)
+                            GeometryReader { geometry in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(WidgetTheme.track)
+                                    Capsule().fill(WidgetTheme.pink).frame(width: geometry.size.width * min(1, process.cpuPercent / 100))
+                                }
+                            }
+                            .frame(height: 3)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("\(Int(process.cpuPercent.rounded()))%")
+                            .fontWeight(.bold)
+                            .monospacedDigit()
+                            .frame(width: 44, alignment: .trailing)
+                        Text(bytes(process.memoryBytes))
+                            .foregroundStyle(WidgetTheme.tertiary)
+                            .monospacedDigit()
+                            .frame(width: 58, alignment: .trailing)
+                    }
+                    .font(.system(size: 10))
+                    .padding(.vertical, 5)
+                }
+            }
+            .padding(.top, 3)
+        }
+        .padding(18)
+    }
+
+    private func bytes(_ value: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
+    }
+}

@@ -54,6 +54,7 @@ enum MoniWidgetKind: String {
     case aiUsageLarge = "com.seaony.Moni.widget.ai-usage-large"
     case gpuThermalsLarge = "com.seaony.Moni.widget.gpu-thermals-large"
     case networkDetailLarge = "com.seaony.Moni.widget.network-detail-large"
+    case activityMonitorLarge = "com.seaony.Moni.widget.activity-monitor-large"
 }
 
 struct MoniWidgetView: View {
@@ -108,6 +109,8 @@ struct MoniWidgetView: View {
             GPUThermalsLargeWidgetView(snapshot: entry.system)
         case .networkDetailLarge:
             NetworkDetailLargeWidgetView(snapshot: entry.system)
+        case .activityMonitorLarge:
+            ActivityMonitorLargeWidgetView(snapshot: entry.system)
         }
     }
 }

@@ -27,5 +27,6 @@ struct MoniWidgetsBundle: WidgetBundle {
         AIUsageLargeWidget()
         GPUThermalsLargeWidget()
         NetworkDetailLargeWidget()
+        ActivityMonitorLargeWidget()
     }
 }
