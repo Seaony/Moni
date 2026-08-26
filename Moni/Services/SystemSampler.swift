@@ -1030,14 +1030,43 @@ actor SystemSampler {
             ("/var/run/docker.sock", "Docker Engine")
         ]
         let installation = installations.first { FileManager.default.fileExists(atPath: $0.path) }
-        let socket = sockets.first { FileManager.default.fileExists(atPath: $0.path) }
-        let provider = socket?.provider ?? installation?.provider
+        let existingSockets = sockets.filter { FileManager.default.fileExists(atPath: $0.path) }
+        let connectedSocket = existingSockets.first { Self.canConnect(toUnixSocket: $0.path) }
+        let detectedSocket = connectedSocket ?? existingSockets.first
+        let provider = detectedSocket?.provider ?? installation?.provider
         return DockerStatus(
             isInstalled: provider != nil,
-            isRunning: socket != nil,
+            isRunning: connectedSocket != nil,
             installation: provider,
-            socketPath: socket?.path
+            socketPath: detectedSocket?.path
         )
+    }
+
+    private nonisolated static func canConnect(toUnixSocket path: String) -> Bool {
+        let pathBytes = path.utf8CString
+        var address = sockaddr_un()
+        let pathCapacity = MemoryLayout.size(ofValue: address.sun_path)
+        guard pathBytes.count <= pathCapacity else { return false }
+
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutablePointer(to: &address.sun_path) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: pathCapacity) { destination in
+                pathBytes.withUnsafeBufferPointer { source in
+                    destination.update(from: source.baseAddress!, count: pathBytes.count)
+                }
+            }
+        }
+        let addressLength = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
+        address.sun_len = UInt8(addressLength)
+        return withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(descriptor, $0, addressLength) == 0
+            }
+        }
     }
 
     private func sampleHost() -> HostDetails {

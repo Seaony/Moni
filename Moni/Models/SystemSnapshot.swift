@@ -352,7 +352,10 @@ struct DockerStatus: Sendable {
 
     var statusReason: String {
         if isRunning, let socketPath {
-            return "Local engine socket detected at \(socketPath)."
+            return "Local engine connected at \(socketPath)."
+        }
+        if isInstalled, let socketPath {
+            return "\(installation ?? "Docker") was detected, but the local engine socket at \(socketPath) is not accepting connections."
         }
         if isInstalled {
             return "\(installation ?? "Docker") is installed, but no supported local engine socket was found."
