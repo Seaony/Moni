@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 
 actor AIUsageScanner {
-    private struct TokenValues: Hashable {
+    private struct TokenValues: Codable, Hashable {
         var input: UInt64 = 0
         var cacheRead: UInt64 = 0
         var cacheWrite: UInt64 = 0
@@ -33,7 +33,7 @@ actor AIUsageScanner {
         }
     }
 
-    private struct UsageEvent {
+    private struct UsageEvent: Codable {
         let date: Date
         let model: String
         let tokens: TokenValues
@@ -100,26 +100,26 @@ actor AIUsageScanner {
         }
     }
 
-    private struct CodexEventKey: Hashable {
+    private struct CodexEventKey: Codable, Hashable {
         let total: TokenValues?
         let last: TokenValues?
     }
 
-    private struct CodexEvent {
+    private struct CodexEvent: Codable {
         let usage: UsageEvent
         let key: CodexEventKey?
     }
 
-    private struct CodexSession {
+    private struct CodexSession: Codable {
         let path: String
-        let size: Int64
+        var size: Int64
         var sessionID: String?
         var parentID: String?
         var events: [CodexEvent] = []
         var quota: TimestampedQuota?
     }
 
-    private struct TimestampedQuota {
+    private struct TimestampedQuota: Codable {
         let date: Date
         let result: AIQuotaFetchResult
     }
@@ -129,17 +129,20 @@ actor AIUsageScanner {
         let quota: AIQuotaFetchResult?
     }
 
-    private struct FileSignature: Equatable {
+    private struct FileSignature: Codable, Equatable {
         let size: Int64
         let modifiedAt: Date
     }
 
-    private struct CodexCacheEntry {
+    private struct CodexCacheEntry: Codable {
         let signature: FileSignature
         let session: CodexSession
+        let completeOffset: UInt64
+        let currentModel: String?
+        let previousTotal: TokenValues?
     }
 
-    private struct ClaudeCacheEntry {
+    private struct ClaudeCacheEntry: Codable {
         let signature: FileSignature
         let events: [ClaudeEvent]
     }
@@ -154,7 +157,7 @@ actor AIUsageScanner {
         let session: GeminiSession?
     }
 
-    private struct ClaudeEvent {
+    private struct ClaudeEvent: Codable {
         let path: String
         let sessionID: String
         let messageID: String?
@@ -242,8 +245,11 @@ actor AIUsageScanner {
         return formatter
     }()
     private let fallbackFormatter = ISO8601DateFormatter()
-    private var codexCache: [String: CodexCacheEntry] = [:]
-    private var claudeCache: [String: ClaudeCacheEntry] = [:]
+    private var codexCache: [String: CodexCacheEntry]
+    private var claudeCache: [String: ClaudeCacheEntry]
+    private var loadedPersistentCaches = false
+    private var codexCacheDirty = false
+    private var claudeCacheDirty = false
     private var geminiCache: [String: GeminiCacheEntry] = [:]
     private var deepSeekCache: [String: DeepSeekCacheEntry] = [:]
     private let recordNeedles = [
@@ -259,6 +265,8 @@ actor AIUsageScanner {
     ) {
         self.homeDirectory = homeDirectory
         self.calendar = calendar
+        codexCache = [:]
+        claudeCache = [:]
     }
 
     func scan(days: Int = 30, includeQuotas: Bool = false, now: Date = Date()) async -> AIUsageSummary {
@@ -285,6 +293,7 @@ actor AIUsageScanner {
         includeQuotas: Bool,
         now: Date
     ) async -> AIUsageSummary {
+        loadPersistentCachesIfNeeded()
         var daily: [Date: DailyBucket] = [:]
         let codex = scanCodex(start: start, end: end, daily: &daily)
         let claude = scanClaude(start: start, end: end, daily: &daily)
@@ -293,9 +302,12 @@ actor AIUsageScanner {
         let kimi = scanKimi(start: start, end: end, daily: &daily)
         let gemini = scanGemini(start: start, end: end, daily: &daily)
         let deepSeek = scanDeepSeek(start: start, end: end, daily: &daily)
-        var quotas = includeQuotas ? await AIQuotaFetcher.fetchAll(homeDirectory: homeDirectory) : [:]
-        if includeQuotas, quotas["Codex"]?.windows.isEmpty != false, let localQuota = codex.quota {
+        var quotas: [String: AIQuotaFetchResult] = [:]
+        if let localQuota = codex.quota {
             quotas["Codex"] = localQuota
+        }
+        if let localQuota = ClaudeDesktopQuotaReader.fetch(homeDirectory: homeDirectory, now: now) {
+            quotas["Claude"] = localQuota
         }
         let coreProviders = [
             provider("Claude", totals: claude, quota: quotas["Claude"]),
@@ -310,11 +322,56 @@ actor AIUsageScanner {
         ].filter { $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty }
         let providers = coreProviders + detectedProviders
         let lastDay = calendar.date(byAdding: .day, value: -1, to: end) ?? start
-        return AIUsageSummary(
+        let summary = AIUsageSummary(
             providers: providers,
             daily: dailyUsage(from: start, through: lastDay, buckets: daily),
             scannedAt: now,
-            quotaScannedAt: includeQuotas ? now : nil
+            quotaScannedAt: nil
+        )
+        return includeQuotas ? await refreshQuotas(in: summary, now: now) : summary
+    }
+
+    func refreshQuotas(
+        in summary: AIUsageSummary,
+        now: Date = Date(),
+        allowClaudeKeychainPrompt: Bool = false
+    ) async -> AIUsageSummary {
+        let fetched = await AIQuotaFetcher.fetchAll(
+            homeDirectory: homeDirectory,
+            allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
+        )
+        var refreshed = summary
+        refreshed.providers = summary.providers.map { provider in
+            guard let quota = fetched[provider.provider],
+                !quota.windows.isEmpty || provider.quotaWindows.isEmpty
+            else { return provider }
+            return replacingQuota(of: provider, with: quota)
+        }
+        refreshed.quotaScannedAt = now
+        return refreshed
+    }
+
+    private func replacingQuota(
+        of provider: AIProviderUsage,
+        with quota: AIQuotaFetchResult
+    ) -> AIProviderUsage {
+        AIProviderUsage(
+            provider: provider.provider,
+            totalTokens: provider.totalTokens,
+            inputTokens: provider.inputTokens,
+            outputTokens: provider.outputTokens,
+            cacheReadTokens: provider.cacheReadTokens,
+            cacheWriteTokens: provider.cacheWriteTokens,
+            reasoningTokens: provider.reasoningTokens,
+            requestCount: provider.requestCount,
+            sessionCount: provider.sessionCount,
+            estimatedCostUSD: provider.estimatedCostUSD,
+            unpricedRequestCount: provider.unpricedRequestCount,
+            models: provider.models,
+            lastUpdated: provider.lastUpdated,
+            planName: quota.planName ?? provider.planName,
+            quotaWindows: quota.windows,
+            quotaMessage: quota.message
         )
     }
 
@@ -347,7 +404,11 @@ actor AIUsageScanner {
         ]
         let files = jsonlFiles(in: roots, modifiedAfter: nil, filenamePrefix: "rollout-")
         let paths = Set(files.map(\.path))
-        codexCache = codexCache.filter { paths.contains($0.key) }
+        let retainedCache = codexCache.filter { paths.contains($0.key) }
+        if retainedCache.count != codexCache.count {
+            codexCache = retainedCache
+            codexCacheDirty = true
+        }
         let parsed = files.map(cachedCodexSession)
         let sessions = canonicalCodexSessions(parsed)
         let droppedPrefixes = replayedCodexPrefixes(sessions)
@@ -365,16 +426,27 @@ actor AIUsageScanner {
             if countedSession { totals.sessions += 1 }
         }
         let quota = sessions.compactMap(\.quota).max { $0.date < $1.date }?.result
+        persistCodexCacheIfNeeded()
         return CodexScanResult(totals: totals, quota: quota)
     }
 
-    private func parseCodexSession(_ url: URL) -> CodexSession {
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-        var session = CodexSession(path: url.path, size: size)
-        var currentModel: String?
-        var previousTotal: TokenValues?
+    private func parseCodexSession(
+        _ url: URL,
+        signature: FileSignature,
+        continuing cached: CodexCacheEntry?
+    ) -> CodexCacheEntry {
+        let canContinue = cached.map {
+            signature.size > $0.signature.size && $0.completeOffset <= UInt64($0.signature.size)
+        } ?? false
+        var session = canContinue
+            ? cached!.session
+            : CodexSession(path: url.path, size: signature.size)
+        session.size = signature.size
+        var currentModel = canContinue ? cached?.currentModel : nil
+        var previousTotal = canContinue ? cached?.previousTotal : nil
+        let startOffset = canContinue ? cached?.completeOffset ?? 0 : 0
 
-        enumerateLines(in: url) { line in
+        let completeOffset = enumerateCompleteLines(in: url, from: startOffset) { line in
             guard recordNeedles.contains(where: { line.range(of: $0) != nil }),
                 let object = json(line),
                 let type = object["type"] as? String,
@@ -441,17 +513,30 @@ actor AIUsageScanner {
                     key: total == nil && last == nil ? nil : CodexEventKey(total: total, last: last)
                 ))
         }
-        return session
+        return CodexCacheEntry(
+            signature: signature,
+            session: session,
+            completeOffset: completeOffset,
+            currentModel: currentModel,
+            previousTotal: previousTotal
+        )
     }
 
     private func cachedCodexSession(_ url: URL) -> CodexSession {
-        guard let signature = fileSignature(url) else { return parseCodexSession(url) }
+        guard let signature = fileSignature(url) else {
+            return parseCodexSession(
+                url,
+                signature: FileSignature(size: 0, modifiedAt: .distantPast),
+                continuing: nil
+            ).session
+        }
         if let cached = codexCache[url.path], cached.signature == signature {
             return cached.session
         }
-        let session = parseCodexSession(url)
-        codexCache[url.path] = CodexCacheEntry(signature: signature, session: session)
-        return session
+        let entry = parseCodexSession(url, signature: signature, continuing: codexCache[url.path])
+        codexCache[url.path] = entry
+        codexCacheDirty = true
+        return entry.session
     }
 
     private func canonicalCodexSessions(_ sessions: [CodexSession]) -> [CodexSession] {
@@ -519,8 +604,6 @@ actor AIUsageScanner {
 
     private func scanClaude(start: Date, end: Date, daily: inout [Date: DailyBucket]) -> Totals {
         let files = jsonlFiles(in: claudeRoots(), modifiedAfter: start)
-        let paths = Set(files.map(\.path))
-        claudeCache = claudeCache.filter { paths.contains($0.key) }
         let allEvents = files.flatMap(cachedClaudeEvents)
         let events = reconciledClaudeEvents(allEvents)
         var totals = Totals()
@@ -532,6 +615,7 @@ actor AIUsageScanner {
             sessions.insert(event.path)
         }
         totals.sessions = sessions.count
+        persistClaudeCacheIfNeeded()
         return totals
     }
 
@@ -1800,6 +1884,7 @@ actor AIUsageScanner {
         }
         let events = parseClaudeFile(url)
         claudeCache[url.path] = ClaudeCacheEntry(signature: signature, events: events)
+        claudeCacheDirty = true
         return events
     }
 
@@ -2052,29 +2137,96 @@ actor AIUsageScanner {
         return FileSignature(size: Int64(size), modifiedAt: modifiedAt)
     }
 
-    private func enumerateLines(in url: URL, body: (Data) -> Void) {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
-        defer { try? handle.close() }
+    private func enumerateCompleteLines(
+        in url: URL,
+        from offset: UInt64,
+        body: (Data) -> Void
+    ) -> UInt64 {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+            offset <= UInt64(data.count)
+        else { return offset }
 
-        var buffer = Data()
-        while autoreleasepool(invoking: {
-            guard let chunk = try? handle.read(upToCount: 256 * 1_024), !chunk.isEmpty else {
-                return false
-            }
-            buffer.append(chunk)
-            var lineStart = buffer.startIndex
-            while let newline = buffer[lineStart...].firstIndex(of: 0x0A) {
-                body(buffer[lineStart..<newline])
-                lineStart = buffer.index(after: newline)
-            }
-            if lineStart > buffer.startIndex {
-                buffer = Data(buffer[lineStart...])
-            }
-            return true
-        }) {}
-        if !buffer.isEmpty {
-            autoreleasepool { body(buffer) }
+        var lineStart = data.index(data.startIndex, offsetBy: Int(offset))
+        var completeOffset = offset
+        while lineStart < data.endIndex,
+            let newline = data[lineStart...].firstIndex(of: 0x0A)
+        {
+            autoreleasepool { body(Data(data[lineStart..<newline])) }
+            let next = data.index(after: newline)
+            completeOffset = UInt64(data.distance(from: data.startIndex, to: next))
+            lineStart = next
         }
+        return completeOffset
+    }
+
+    private func enumerateLines(in url: URL, body: (Data) -> Void) {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
+        enumerateLines(in: data, body: body)
+    }
+
+    private func persistCodexCacheIfNeeded() {
+        guard codexCacheDirty else { return }
+        Self.persistCache(codexCache, to: Self.codexCacheURL(homeDirectory: homeDirectory))
+        codexCacheDirty = false
+    }
+
+    private func loadPersistentCachesIfNeeded() {
+        guard !loadedPersistentCaches else { return }
+        codexCache = Self.loadCache(
+            [String: CodexCacheEntry].self,
+            from: Self.codexCacheURL(homeDirectory: homeDirectory)
+        ) ?? [:]
+        claudeCache = Self.loadCache(
+            [String: ClaudeCacheEntry].self,
+            from: Self.claudeCacheURL(homeDirectory: homeDirectory)
+        ) ?? [:]
+        loadedPersistentCaches = true
+    }
+
+    private func persistClaudeCacheIfNeeded() {
+        guard claudeCacheDirty else { return }
+        Self.persistCache(claudeCache, to: Self.claudeCacheURL(homeDirectory: homeDirectory))
+        claudeCacheDirty = false
+    }
+
+    private static func loadCache<Value: Decodable>(_ type: Value.Type, from url: URL) -> Value? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? PropertyListDecoder().decode(type, from: data)
+    }
+
+    private static func persistCache<Value: Encodable>(_ value: Value, to url: URL) {
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            try encoder.encode(value).write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: url.path
+            )
+        } catch {
+            return
+        }
+    }
+
+    private static func codexCacheURL(homeDirectory: URL) -> URL {
+        cacheDirectory(homeDirectory: homeDirectory)
+            .appending(path: "codex-index-v1.plist")
+    }
+
+    private static func claudeCacheURL(homeDirectory: URL) -> URL {
+        cacheDirectory(homeDirectory: homeDirectory)
+            .appending(path: "claude-index-v1.plist")
+    }
+
+    private static func cacheDirectory(homeDirectory: URL) -> URL {
+        homeDirectory.appending(
+            path: "Library/Application Support/Moni/AIUsageCache",
+            directoryHint: .isDirectory
+        )
     }
 
     private func enumerateLines(in data: Data, body: (Data) -> Void) {

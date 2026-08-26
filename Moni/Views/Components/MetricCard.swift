@@ -8,6 +8,7 @@ struct MetricCard<Content: View>: View {
     let symbol: String
     let color: Color
     var trailing: String?
+    var trailingSymbol: String?
     @ViewBuilder let content: Content
 
     init(
@@ -15,12 +16,14 @@ struct MetricCard<Content: View>: View {
         symbol: String,
         color: Color,
         trailing: String? = nil,
+        trailingSymbol: String? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
         self.symbol = symbol
         self.color = color
         self.trailing = trailing
+        self.trailingSymbol = trailingSymbol
         self.content = content()
     }
 
@@ -39,6 +42,11 @@ struct MetricCard<Content: View>: View {
                     Text(trailing)
                         .foregroundStyle(.secondary)
                         .moniNumericTransition(trailing)
+                }
+                if let trailingSymbol {
+                    Image(systemName: trailingSymbol)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.tertiary)
                 }
             }
             .font(.system(size: 14))

@@ -1,6 +1,6 @@
 import Foundation
 
-enum AIUsageRange: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum AIUsageRange: String, CaseIterable, Codable, Identifiable, Sendable {
     case today
     case yesterday
     case week
@@ -48,7 +48,7 @@ enum AIUsageRange: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct AIModelUsage: Identifiable, Sendable {
+nonisolated struct AIModelUsage: Codable, Identifiable, Sendable {
     let model: String
     let totalTokens: UInt64
     let inputTokens: UInt64
@@ -62,7 +62,7 @@ struct AIModelUsage: Identifiable, Sendable {
     var id: String { model }
 }
 
-struct AIQuotaWindow: Identifiable, Sendable {
+nonisolated struct AIQuotaWindow: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let label: String
     let usedPercent: Double
@@ -74,7 +74,7 @@ struct AIQuotaWindow: Identifiable, Sendable {
     }
 }
 
-struct AIProviderUsage: Identifiable, Sendable {
+nonisolated struct AIProviderUsage: Codable, Identifiable, Sendable {
     let provider: String
     let totalTokens: UInt64
     let inputTokens: UInt64
@@ -101,7 +101,7 @@ struct AIProviderUsage: Identifiable, Sendable {
     }
 }
 
-struct DailyAIUsage: Identifiable, Sendable {
+nonisolated struct DailyAIUsage: Codable, Identifiable, Sendable {
     let date: Date
     let tokens: UInt64
     let costUSD: Double
@@ -110,7 +110,7 @@ struct DailyAIUsage: Identifiable, Sendable {
     var id: Date { date }
 }
 
-struct AIUsageSummary: Sendable {
+nonisolated struct AIUsageSummary: Codable, Sendable {
     var providers: [AIProviderUsage] = []
     var daily: [DailyAIUsage] = []
     var scannedAt: Date?

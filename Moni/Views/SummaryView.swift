@@ -42,7 +42,11 @@ struct SummaryView: View {
             .moniAnimation(MoniMotion.dashboardReflow, value: orderedCards.map(\.rawValue))
         }
         .task {
-            aiUsage.loadIfNeeded(days: aiUsageRangeDays)
+            aiUsage.loadIfNeeded(
+                days: aiUsageRangeDays,
+                includeQuotas: true,
+                allowClaudeKeychainPrompt: true
+            )
         }
     }
 
@@ -489,7 +493,8 @@ struct SummaryView: View {
                 title: "AI Usage",
                 symbol: MonitorSection.ai.symbol,
                 color: MoniPalette.indigo,
-                trailing: "\(aiUsageRangeDays) days"
+                trailing: "Last \(aiUsageRangeDays) days",
+                trailingSymbol: "chevron.right"
             ) {
                 if summary.providers.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -511,60 +516,166 @@ struct SummaryView: View {
                     Spacer()
                     MetricRow(label: "Providers", value: "0", color: MoniPalette.indigo)
                 } else if size.columns >= 2 {
-                    HStack(alignment: .bottom, spacing: 18) {
-                        aiUsageTotals
-                            .frame(width: 170, alignment: .leading)
-                        DailyUsageChart(values: summary.daily)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: chartHeight(for: size, compact: 112))
+                    HStack(alignment: .top, spacing: 16) {
+                        aiUsageOverview
+                            .frame(width: size.columns == 3 ? 190 : 150)
+                        aiUsageProviderStrip
                     }
-                    if size.rows >= 2 {
-                        aiUsageProviders
-                    }
+                    .frame(maxHeight: .infinity)
                 } else {
-                    aiUsageTotals
+                    aiUsageOverview
                     if size.rows >= 2 {
-                        DailyUsageChart(values: summary.daily)
-                            .frame(height: 190 + CGFloat(size.rows - 2) * 179)
-                        aiUsageProviders
+                        aiUsageProviderStrip
+                            .frame(height: 136)
                     }
                 }
             }
         }
     }
 
-    private var aiUsageTotals: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(compactTokens(aiUsage.summary.totalTokens))
-                .font(.system(size: 32, weight: .bold, design: .rounded))
+    private var aiUsageOverview: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(aiUsage.summary.estimatedCostUSD.map(currency) ?? "—")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .moniNumericTransition(aiUsage.summary.totalTokens)
-            Text("tokens")
-                .font(.system(size: 12))
+                .moniNumericTransition(aiUsage.summary.estimatedCostUSD)
+            Text(
+                "\(compactTokens(aiUsage.summary.totalTokens)) tokens · "
+                    + "\(aiUsage.summary.providers.count) account"
+                    + (aiUsage.summary.providers.count == 1 ? "" : "s")
+            )
+                .font(.system(size: 12.5))
                 .foregroundStyle(.secondary)
-            MetricRow(
-                label: "Requests",
-                value: aiUsage.summary.requestCount.formatted(),
-                color: MoniPalette.cyan
-            )
-            MetricRow(
-                label: "Est. cost",
-                value: aiUsage.summary.estimatedCostUSD.map(currency) ?? "—",
-                color: MoniPalette.green
-            )
+                .padding(.top, 4)
+            DailyUsageChart(values: aiUsage.summary.daily)
+                .frame(minHeight: 40, maxHeight: .infinity)
+                .padding(.top, 14)
+        }
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var aiUsageProviderStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 12) {
+                ForEach(aiUsage.summary.providers) { provider in
+                    aiUsageProviderCard(provider)
+                        .frame(width: 236)
+                }
+            }
         }
     }
 
-    private var aiUsageProviders: some View {
-        VStack(spacing: 8) {
-            ForEach(aiUsage.summary.providers) { provider in
-                MetricRow(
-                    label: provider.provider,
-                    value: "\(compactTokens(provider.totalTokens)) · \(provider.requestCount) req",
-                    color: provider.provider == "Codex" ? MoniPalette.cyan : MoniPalette.claude
-                )
+    private func aiUsageProviderCard(_ provider: AIProviderUsage) -> some View {
+        let color = aiProviderColor(provider)
+        let quota = provider.quotaWindows.first {
+            $0.label.localizedCaseInsensitiveContains("week")
+        } ?? provider.quotaWindows.first
+
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+                Text(provider.provider == "Claude" ? "Claude Code" : provider.provider)
+                    .font(.system(size: 13.5, weight: .bold))
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text(provider.planName ?? "Local logs")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(compactTokens(provider.totalTokens))
+                    .font(.system(size: 21, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                Text(provider.estimatedCostUSD.map(currency) ?? "unpriced")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.top, 8)
+
+            if let quota {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("\(quota.label) left")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(Int(quota.remainingPercent.rounded()))%")
+                        .fontWeight(.bold)
+                        .foregroundStyle(color)
+                        .monospacedDigit()
+                }
+                .font(.system(size: 11.5))
+                .padding(.top, 12)
+
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(MoniPalette.track)
+                        Capsule()
+                            .fill(color)
+                            .frame(width: geometry.size.width * CGFloat(quota.remainingPercent / 100))
+                    }
+                }
+                .frame(height: 6)
+                .padding(.top, 6)
+            } else {
+                HStack {
+                    Text("Local usage")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(provider.requestCount.formatted()) requests")
+                        .fontWeight(.semibold)
+                        .monospacedDigit()
+                }
+                .font(.system(size: 11.5))
+                .padding(.top, 12)
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(alignment: .bottom, spacing: 8) {
+                Text(quotaResetLabel(quota))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text(provider.models.first?.model ?? "Model unavailable")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .font(.system(size: 11.5))
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(MoniPalette.inset)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func aiProviderColor(_ provider: AIProviderUsage) -> Color {
+        switch provider.provider {
+        case "Codex": MoniPalette.cyan
+        case "Claude": MoniPalette.claude
+        case "Qwen Code": MoniPalette.purple
+        case "Gemini CLI": MoniPalette.blue
+        case "Kimi Code": MoniPalette.yellow
+        case "DeepSeek Harness": MoniPalette.indigo
+        case "OpenCode": MoniPalette.green
+        default: MoniPalette.foregroundSecondary
+        }
+    }
+
+    private func quotaResetLabel(_ quota: AIQuotaWindow?) -> String {
+        guard let quota else { return "Local logs" }
+        if let resetsAt = quota.resetsAt {
+            return "resets in \(resetDuration(until: resetsAt))"
+        }
+        if let minutes = quota.windowMinutes {
+            return "\(compactDuration(minutes: minutes)) window"
+        }
+        return "Reset unavailable"
     }
 
     private var powerSourceTitle: String? {
@@ -665,7 +776,25 @@ struct SummaryView: View {
     }
 
     private func currency(_ value: Double) -> String {
-        value.formatted(.currency(code: "USD").precision(.fractionLength(value < 0.01 ? 4 : 2)))
+        "$" + value.formatted(
+            .number.grouping(.automatic).precision(.fractionLength(value < 0.01 ? 4 : 2))
+        )
+    }
+
+    private func resetDuration(until date: Date) -> String {
+        let seconds = max(0, Int(date.timeIntervalSinceNow))
+        let days = seconds / 86_400
+        let hours = seconds % 86_400 / 3_600
+        let minutes = seconds % 3_600 / 60
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
+    }
+
+    private func compactDuration(minutes: Int) -> String {
+        if minutes >= 1_440 { return "\(minutes / 1_440)d" }
+        if minutes >= 60 { return "\(minutes / 60)h" }
+        return "\(minutes)m"
     }
 
     private func formatUptime(_ interval: TimeInterval) -> String {

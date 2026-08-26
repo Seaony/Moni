@@ -149,7 +149,13 @@ private struct AIUsageSettings: View {
                                 .controlSize(.small)
                                 .transition(MoniMotion.itemTransition)
                         }
-                        Button("Rescan") { store.refresh(range: range, includeQuotas: true) }
+                        Button("Rescan") {
+                            store.refresh(
+                                range: range,
+                                includeQuotas: true,
+                                allowClaudeKeychainPrompt: true
+                            )
+                        }
                             .disabled(store.isLoading)
                             .moniPointingHand()
                     }

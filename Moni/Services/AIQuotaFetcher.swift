@@ -1,16 +1,39 @@
 import Foundation
 import Security
 
-struct AIQuotaFetchResult: Sendable {
+nonisolated struct AIQuotaFetchResult: Codable, Sendable {
     let planName: String?
     let windows: [AIQuotaWindow]
     let message: String?
 }
 
-enum AIQuotaFetcher {
-    static func fetchAll(homeDirectory: URL) async -> [String: AIQuotaFetchResult] {
+nonisolated enum AIQuotaFetcher {
+    private struct ClaudeCredentials: Sendable {
+        let accessToken: String
+        let refreshToken: String?
+        let expiresAt: Date?
+        let scopes: [String]
+        let rateLimitTier: String?
+        let subscriptionType: String?
+
+        var needsRefresh: Bool {
+            expiresAt.map { $0.timeIntervalSinceNow <= 60 } ?? false
+        }
+    }
+
+    private static let claudeCacheService = "com.seaony.Moni.claude-oauth-cache"
+    private static let claudeCacheAccount = "claudeAiOauth"
+    private static let claudeOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+    static func fetchAll(
+        homeDirectory: URL,
+        allowClaudeKeychainPrompt: Bool = false
+    ) async -> [String: AIQuotaFetchResult] {
         async let codex = fetchCodex(homeDirectory: homeDirectory)
-        async let claude = fetchClaude(homeDirectory: homeDirectory)
+        async let claude = fetchClaude(
+            homeDirectory: homeDirectory,
+            allowKeychainPrompt: allowClaudeKeychainPrompt
+        )
         return await ["Codex": codex, "Claude": claude]
     }
 
@@ -108,14 +131,18 @@ enum AIQuotaFetcher {
         }
     }
 
-    private static func fetchClaude(homeDirectory: URL) async -> AIQuotaFetchResult {
-        guard let credentials = claudeCredentials(homeDirectory: homeDirectory),
-            let accessToken = nonEmptyString(credentials["accessToken"])
-        else {
+    private static func fetchClaude(
+        homeDirectory: URL,
+        allowKeychainPrompt: Bool
+    ) async -> AIQuotaFetchResult {
+        guard let credentials = await claudeCredentials(
+            homeDirectory: homeDirectory,
+            allowKeychainPrompt: allowKeychainPrompt
+        ) else {
             return AIQuotaFetchResult(
                 planName: nil,
                 windows: [],
-                message: "Claude quota unavailable: allow Moni to read Claude Code credentials."
+                message: "Claude quota unavailable: authorize Keychain access from Refresh."
             )
         }
 
@@ -125,7 +152,7 @@ enum AIQuotaFetcher {
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("claude-code/2.1.0", forHTTPHeaderField: "User-Agent")
 
@@ -159,18 +186,41 @@ enum AIQuotaFetcher {
         }
     }
 
-    private static func claudeCredentials(homeDirectory: URL) -> [String: Any]? {
-        let fileURL = homeDirectory.appending(path: ".claude/.credentials.json")
-        if let data = try? Data(contentsOf: fileURL), let credentials = claudeOAuth(from: data) {
+    private static func claudeCredentials(
+        homeDirectory: URL,
+        allowKeychainPrompt: Bool
+    ) async -> ClaudeCredentials? {
+        if let cached = cachedClaudeCredentials(),
+            let credentials = await usableClaudeCredentials(cached)
+        {
             return credentials
         }
 
-        let query: [String: Any] = [
+        let fileURL = homeDirectory.appending(path: ".claude/.credentials.json")
+        if let data = try? Data(contentsOf: fileURL),
+            let candidate = claudeOAuth(from: data),
+            let credentials = await usableClaudeCredentials(candidate)
+        {
+            saveClaudeCredentials(credentials)
+            return credentials
+        }
+
+        guard let candidate = claudeKeychainCredentials(allowPrompt: allowKeychainPrompt),
+            let credentials = await usableClaudeCredentials(candidate)
+        else { return nil }
+        saveClaudeCredentials(credentials)
+        return credentials
+    }
+
+    private static func cachedClaudeCredentials() -> ClaudeCredentials? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
+            kSecAttrService as String: claudeCacheService,
+            kSecAttrAccount as String: claudeCacheAccount,
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecReturnData as String: true,
         ]
+        KeychainNoUIQuery.apply(to: &query)
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
             let data = item as? Data
@@ -178,9 +228,108 @@ enum AIQuotaFetcher {
         return claudeOAuth(from: data)
     }
 
-    private static func claudeOAuth(from data: Data) -> [String: Any]? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return root["claudeAiOauth"] as? [String: Any]
+    private static func claudeKeychainCredentials(allowPrompt: Bool) -> ClaudeCredentials? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true,
+        ]
+        if !allowPrompt {
+            KeychainNoUIQuery.apply(to: &query)
+        }
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+            let data = item as? Data
+        else { return nil }
+        return claudeOAuth(from: data)
+    }
+
+    private static func claudeOAuth(from data: Data) -> ClaudeCredentials? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let oauth = root["claudeAiOauth"] as? [String: Any],
+            let accessToken = nonEmptyString(oauth["accessToken"])
+        else { return nil }
+        return ClaudeCredentials(
+            accessToken: accessToken,
+            refreshToken: nonEmptyString(oauth["refreshToken"]),
+            expiresAt: double(oauth["expiresAt"]).map { Date(timeIntervalSince1970: $0 / 1000) },
+            scopes: oauth["scopes"] as? [String] ?? [],
+            rateLimitTier: nonEmptyString(oauth["rateLimitTier"]),
+            subscriptionType: nonEmptyString(oauth["subscriptionType"])
+        )
+    }
+
+    private static func usableClaudeCredentials(
+        _ credentials: ClaudeCredentials
+    ) async -> ClaudeCredentials? {
+        guard credentials.needsRefresh else { return credentials }
+        return await refreshClaudeCredentials(credentials)
+    }
+
+    private static func refreshClaudeCredentials(
+        _ credentials: ClaudeCredentials
+    ) async -> ClaudeCredentials? {
+        guard let refreshToken = credentials.refreshToken,
+            let url = URL(string: "https://platform.claude.com/v1/oauth/token")
+        else { return nil }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "grant_type", value: "refresh_token"),
+            URLQueryItem(name: "refresh_token", value: refreshToken),
+            URLQueryItem(name: "client_id", value: claudeOAuthClientID),
+        ]
+        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+
+        guard let json = try? await responseJSON(for: request),
+            let accessToken = nonEmptyString(json["access_token"]),
+            let expiresIn = double(json["expires_in"])
+        else { return nil }
+        let refreshed = ClaudeCredentials(
+            accessToken: accessToken,
+            refreshToken: nonEmptyString(json["refresh_token"]) ?? refreshToken,
+            expiresAt: Date().addingTimeInterval(expiresIn),
+            scopes: credentials.scopes,
+            rateLimitTier: credentials.rateLimitTier,
+            subscriptionType: credentials.subscriptionType
+        )
+        saveClaudeCredentials(refreshed)
+        return refreshed
+    }
+
+    private static func saveClaudeCredentials(_ credentials: ClaudeCredentials) {
+        var oauth: [String: Any] = [
+            "accessToken": credentials.accessToken,
+            "scopes": credentials.scopes,
+        ]
+        if let refreshToken = credentials.refreshToken { oauth["refreshToken"] = refreshToken }
+        if let expiresAt = credentials.expiresAt {
+            oauth["expiresAt"] = expiresAt.timeIntervalSince1970 * 1000
+        }
+        if let rateLimitTier = credentials.rateLimitTier { oauth["rateLimitTier"] = rateLimitTier }
+        if let subscriptionType = credentials.subscriptionType { oauth["subscriptionType"] = subscriptionType }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["claudeAiOauth": oauth]) else { return }
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: claudeCacheService,
+            kSecAttrAccount as String: claudeCacheAccount,
+        ]
+        let status = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        guard status == errSecItemNotFound else { return }
+        var item = query
+        item[kSecValueData as String] = data
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(item as CFDictionary, nil)
     }
 
     private static func appendCodexWindows(
@@ -268,9 +417,9 @@ enum AIQuotaFetcher {
         }
     }
 
-    private static func claudePlan(_ credentials: [String: Any]) -> String? {
-        let subscription = formattedPlan(nonEmptyString(credentials["subscriptionType"]))
-        let tier = nonEmptyString(credentials["rateLimitTier"])?.lowercased()
+    private static func claudePlan(_ credentials: ClaudeCredentials) -> String? {
+        let subscription = formattedPlan(credentials.subscriptionType)
+        let tier = credentials.rateLimitTier?.lowercased()
         if tier?.contains("20x") == true { return "Max 20x" }
         if tier?.contains("5x") == true { return "Max 5x" }
         return subscription

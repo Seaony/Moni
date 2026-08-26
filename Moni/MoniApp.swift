@@ -44,7 +44,10 @@ struct MoniApp: App {
                 Button("Refresh") {
                     monitor.refresh(forceSlowMetrics: true)
                     monitor.loadNetworkExternalDetailsIfNeeded(force: true)
-                    aiUsage.refreshCurrent(includeQuotas: true)
+                    aiUsage.refreshCurrent(
+                        includeQuotas: true,
+                        allowClaudeKeychainPrompt: true
+                    )
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }

@@ -4,6 +4,36 @@
 
 static const NSUInteger MoniZstdMaximumDecompressedSize = 2ULL * 1024 * 1024 * 1024;
 
+NSData * _Nullable MoniZstdDecompressFirstFrame(NSData *source) {
+    if (source.length == 0) {
+        return [NSData data];
+    }
+
+    size_t frameSize = ZSTD_findFrameCompressedSize(source.bytes, source.length);
+    if (ZSTD_isError(frameSize) || frameSize == 0 || frameSize > source.length) {
+        return nil;
+    }
+
+    unsigned long long contentSize = ZSTD_getFrameContentSize(source.bytes, frameSize);
+    if (contentSize == ZSTD_CONTENTSIZE_ERROR || contentSize == ZSTD_CONTENTSIZE_UNKNOWN ||
+        contentSize > MoniZstdMaximumDecompressedSize) {
+        return nil;
+    }
+
+    NSMutableData *destination = [NSMutableData dataWithLength:MAX((NSUInteger)contentSize, 1)];
+    size_t written = ZSTD_decompress(
+        destination.mutableBytes,
+        destination.length,
+        source.bytes,
+        frameSize
+    );
+    if (ZSTD_isError(written)) {
+        return nil;
+    }
+    destination.length = written;
+    return destination;
+}
+
 NSData * _Nullable MoniZstdDecompressFrames(NSData *source) {
     if (source.length == 0) {
         return [NSData data];

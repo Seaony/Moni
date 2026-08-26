@@ -55,7 +55,11 @@ struct AIUsageView: View {
             .moniAnimation(value: store.summary.providers.map(\.id))
         }
         .task {
-            store.loadIfNeeded(range: range, includeQuotas: true)
+            store.loadIfNeeded(
+                range: range,
+                includeQuotas: true,
+                allowClaudeKeychainPrompt: true
+            )
         }
         .onChange(of: rangeValue) { _, value in
             store.refresh(range: AIUsageRange(rawValue: value) ?? .month, includeQuotas: true)
