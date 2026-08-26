@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A10F30A8303F000100000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A10F30A9303F000100000001 /* Sparkle */; };
+		A10F30AC303F000100000001 /* SweetCookieKit in Frameworks */ = {isa = PBXBuildFile; productRef = A10F30AD303F000100000001 /* SweetCookieKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -41,6 +42,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10F30A8303F000100000001 /* Sparkle in Frameworks */,
+				A10F30AC303F000100000001 /* SweetCookieKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -84,6 +86,7 @@
 			name = Moni;
 			packageProductDependencies = (
 				A10F30A9303F000100000001 /* Sparkle */,
+				A10F30AD303F000100000001 /* SweetCookieKit */,
 			);
 			productName = Moni;
 			productReference = 752E78AD303ECE240029D56B /* Moni.app */;
@@ -117,6 +120,7 @@
 			productRefGroup = 752E78AE303ECE240029D56B /* Products */;
 			packageReferences = (
 				A10F30AA303F000100000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				A10F30AE303F000100000001 /* XCRemoteSwiftPackageReference "SweetCookieKit" */,
 			);
 			projectDirPath = "";
 			projectRoot = "";
@@ -367,6 +371,14 @@
 				minimumVersion = 2.9.2;
 			};
 		};
+		A10F30AE303F000100000001 /* XCRemoteSwiftPackageReference "SweetCookieKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/steipete/SweetCookieKit";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.5.2;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -374,6 +386,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A10F30AA303F000100000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		A10F30AD303F000100000001 /* SweetCookieKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10F30AE303F000100000001 /* XCRemoteSwiftPackageReference "SweetCookieKit" */;
+			productName = SweetCookieKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

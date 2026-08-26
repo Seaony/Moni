@@ -174,7 +174,8 @@ struct AIUsageView: View {
                         quotaRow(window, color: providerColor(provider))
                     }
                 }
-            } else if let message = provider.quotaMessage {
+            }
+            if let message = provider.quotaMessage {
                 Divider()
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "exclamationmark.circle")
@@ -219,6 +220,11 @@ struct AIUsageView: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(.tertiary)
                         .monospacedDigit()
+                } else if let minutes = window.windowMinutes {
+                    Text(compactDuration(minutes: minutes))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
                 }
             }
 
@@ -235,6 +241,12 @@ struct AIUsageView: View {
             .accessibilityLabel(window.label)
             .accessibilityValue("\(Int(window.remainingPercent.rounded())) percent remaining")
         }
+    }
+
+    private func compactDuration(minutes: Int) -> String {
+        if minutes >= 1_440 { return "\(minutes / 1_440)d" }
+        if minutes >= 60 { return "\(minutes / 60)h" }
+        return "\(minutes)m"
     }
 
     private func totalStat(_ title: String, _ value: String) -> some View {

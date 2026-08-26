@@ -126,7 +126,7 @@ private struct AIUsageSettings: View {
                     }
                     .pickerStyle(.segmented)
                     .moniPointingHand()
-                    Text("Moni reads token metadata from local session logs and subscription limits from the providers' usage endpoints. Prompt and response text is never shown.")
+                    Text("Moni reads token metadata from local session logs, subscription limits from provider endpoints, and the Code Review limit from your signed-in ChatGPT session in Dia. Prompt and response text is never shown.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
