@@ -506,6 +506,7 @@ private struct PowerDetailView: View {
                             secondaryStat("Remaining", remainingTime)
                             secondaryStat("Voltage", power.voltageVolts.map { String(format: "%.2f V", $0) } ?? "—")
                             secondaryStat("Cycle count", power.cycleCount.map(String.init) ?? "—")
+                            secondaryStat("Health", power.batteryHealth ?? "—")
                             secondaryStat("Current", power.currentAmps.map { String(format: "%.2f A", $0) } ?? "—")
                             secondaryStat("Temperature", power.batteryTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "—")
                         }

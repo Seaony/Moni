@@ -230,6 +230,7 @@ struct PowerUsage: Sendable {
     var timeRemainingMinutes: Int?
     var batteryTemperatureCelsius: Double?
     var cycleCount: Int?
+    var batteryHealth: String?
     var voltageVolts: Double?
     var currentAmps: Double?
     var systemPowerWatts: Double?
@@ -249,6 +250,7 @@ struct PowerUsage: Sendable {
         timeRemainingMinutes: Int? = nil,
         batteryTemperatureCelsius: Double? = nil,
         cycleCount: Int? = nil,
+        batteryHealth: String? = nil,
         voltageVolts: Double? = nil,
         currentAmps: Double? = nil,
         systemPowerWatts: Double? = nil,
@@ -267,6 +269,7 @@ struct PowerUsage: Sendable {
         self.timeRemainingMinutes = timeRemainingMinutes
         self.batteryTemperatureCelsius = batteryTemperatureCelsius
         self.cycleCount = cycleCount
+        self.batteryHealth = batteryHealth
         self.voltageVolts = voltageVolts
         self.currentAmps = currentAmps
         self.systemPowerWatts = systemPowerWatts

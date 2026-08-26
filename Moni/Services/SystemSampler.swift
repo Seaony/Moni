@@ -651,6 +651,7 @@ actor SystemSampler {
                 isExternalPowerConnected: telemetry.isExternalPowerConnected,
                 batteryTemperatureCelsius: telemetry.batteryTemperatureCelsius,
                 cycleCount: telemetry.cycleCount,
+                batteryHealth: telemetry.batteryHealth,
                 voltageVolts: telemetry.voltageVolts,
                 currentAmps: telemetry.currentAmps,
                 systemPowerWatts: telemetry.systemPowerWatts,
@@ -682,6 +683,7 @@ actor SystemSampler {
             timeRemainingMinutes: minutes.flatMap { $0 >= 0 ? $0 : nil },
             batteryTemperatureCelsius: telemetry.batteryTemperatureCelsius,
             cycleCount: telemetry.cycleCount,
+            batteryHealth: telemetry.batteryHealth,
             voltageVolts: telemetry.voltageVolts,
             currentAmps: telemetry.currentAmps,
             systemPowerWatts: telemetry.systemPowerWatts,
@@ -809,6 +811,9 @@ actor SystemSampler {
         let temperature = (values["Temperature"] as? NSNumber).map { $0.doubleValue / 100 }
         let externalPowerConnected = (values["ExternalConnected"] as? NSNumber)?.boolValue ?? false
         let cycleCount = (values["CycleCount"] as? NSNumber)?.intValue
+        let batteryHealth = (values["PermanentFailureStatus"] as? NSNumber).map {
+            $0.intValue == 0 ? "Normal" : "Service recommended"
+        }
         let voltage = (values["Voltage"] as? NSNumber).map { $0.doubleValue / 1_000 }
         let current = (values["InstantAmperage"] as? NSNumber).map { $0.doubleValue / 1_000 }
         let powerTelemetry = values["PowerTelemetryData"] as? [String: Any]
@@ -818,6 +823,7 @@ actor SystemSampler {
             isExternalPowerConnected: externalPowerConnected,
             batteryTemperatureCelsius: temperature,
             cycleCount: cycleCount,
+            batteryHealth: batteryHealth,
             voltageVolts: voltage,
             currentAmps: current,
             systemPowerWatts: systemPower

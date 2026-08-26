@@ -274,9 +274,11 @@ struct SummaryView: View {
     }
 
     private var powerCard: some View {
-        cardButton(.sensors) {
+        let isWide = cardSize(.power).columns == 2
+
+        return cardButton(.sensors) {
             MetricCard(title: "Power & Sensors", symbol: MonitorSection.sensors.symbol, color: MoniPalette.yellow, trailing: powerSourceTitle) {
-                HStack(alignment: .top) {
+                HStack(alignment: .bottom, spacing: 18) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Battery")
                             .foregroundStyle(.secondary)
@@ -289,34 +291,42 @@ struct SummaryView: View {
                         Text("CPU die")
                             .foregroundStyle(.secondary)
                         Text(snapshot.power.cpuTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "No Data")
-                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
                     }
+                    Sparkline(values: monitor.cpuTemperatureHistory, color: MoniPalette.orange)
+                        .frame(maxWidth: isWide ? .infinity : 96)
+                        .frame(height: 54)
                 }
-                Spacer()
-                MetricRow(
-                    label: snapshot.power.isExternalPowerConnected ? "Power source" : "Time remaining",
-                    value: powerDetail,
-                    color: snapshot.power.isExternalPowerConnected ? MoniPalette.green : MoniPalette.yellow
-                )
-                Text(sensorSummary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible()), count: isWide ? 4 : 2),
+                    spacing: 10
+                ) {
+                    powerStat("Fan", snapshot.power.fans.first.map { String(format: "%.0f rpm", $0.revolutionsPerMinute) } ?? "—")
+                    powerStat("Cycles", snapshot.power.cycleCount.map(String.init) ?? "—")
+                    powerStat("Power draw", snapshot.power.systemPowerWatts.map { String(format: "%.1f W", $0) } ?? "—")
+                    powerStat("Health", snapshot.power.batteryHealth ?? "—", color: batteryHealthColor)
+                }
             }
         }
     }
 
-    private var sensorSummary: String {
-        var parts: [String] = []
-        if let temperature = snapshot.power.gpuTemperatureCelsius {
-            parts.append(String(format: "GPU %.1f°C", temperature))
+    private func powerStat(_ label: String, _ value: String, color: Color = MoniPalette.foreground) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .fontWeight(.bold)
+                .foregroundStyle(color)
+                .monospacedDigit()
+                .lineLimit(1)
         }
-        if !snapshot.power.fans.isEmpty {
-            parts.append("\(snapshot.power.fans.count) fans")
-        }
-        if let watts = snapshot.power.cpuPowerWatts {
-            parts.append(String(format: "CPU %.1f W", watts))
-        }
-        return parts.isEmpty ? "Waiting for hardware sensor samples" : parts.joined(separator: " · ")
+        .font(.system(size: 12))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var batteryHealthColor: Color {
+        guard let health = snapshot.power.batteryHealth else { return MoniPalette.foregroundSecondary }
+        return health == "Normal" ? MoniPalette.green : MoniPalette.red
     }
 
     private var dockerCard: some View {
@@ -456,15 +466,6 @@ struct SummaryView: View {
                 )
             }
         }
-    }
-
-    private var powerDetail: String {
-        if snapshot.power.isCharging { return "Charging" }
-        if snapshot.power.isExternalPowerConnected { return "AC Power" }
-        if snapshot.power.batteryPercent ?? 0 >= 100 { return "Fully charged" }
-        guard let minutes = snapshot.power.timeRemainingMinutes else { return "Calculating" }
-        guard minutes > 0 else { return "Calculating" }
-        return "\(minutes / 60)h \(minutes % 60)m"
     }
 
     private var powerSourceTitle: String? {
