@@ -18,7 +18,6 @@ struct SummaryView: View {
     @AppStorage(PreferenceKey.showDocker) private var showDocker = true
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
-    private var rootVolume: VolumeUsage? { snapshot.volumes.first { $0.mountPath == "/" } }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -266,32 +265,52 @@ struct SummaryView: View {
     }
 
     private var storageCard: some View {
-        cardButton(.storage) {
+        let isWide = cardSize(.storage).columns == 2
+
+        return cardButton(.storage) {
             MetricCard(title: "Storage", symbol: MonitorSection.storage.symbol, color: MoniPalette.orange, trailing: "\(snapshot.volumes.count) volumes") {
-                if let volume = rootVolume {
-                    HStack {
-                        Text(volume.mountPath)
-                            .fontWeight(.semibold)
-                        Spacer()
-                        Text(percent(volume.usedPercent))
-                            .fontWeight(.bold)
-                            .foregroundStyle(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.green)
-                            .moniNumericTransition(volume.usedPercent)
-                    }
-                    ProgressView(value: volume.usedPercent, total: 100)
-                        .tint(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
-                        .moniAnimation(MoniMotion.data, value: volume.usedPercent)
-                    Text("\(bytes(UInt64(volume.usedBytes))) / \(bytes(UInt64(volume.totalBytes))) used")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    MetricRow(label: "Available", value: bytes(UInt64(max(0, volume.availableBytes))), color: MoniPalette.green)
-                } else {
+                if snapshot.volumes.isEmpty {
                     Text("No mounted volumes")
                         .foregroundStyle(.secondary)
+                } else {
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible()), count: isWide ? 2 : 1),
+                        spacing: 8
+                    ) {
+                        ForEach(snapshot.volumes.prefix(isWide ? 4 : 2)) { volume in
+                            compactVolume(volume)
+                        }
+                    }
+                    HStack(spacing: 16) {
+                        networkTotal("Read", rate(snapshot.diskActivity.readBytesPerSecond), color: MoniPalette.cyan)
+                        networkTotal("Write", rate(snapshot.diskActivity.writeBytesPerSecond), color: MoniPalette.orange)
+                    }
                 }
             }
         }
+    }
+
+    private func compactVolume(_ volume: VolumeUsage) -> some View {
+        VStack(spacing: 4) {
+            HStack {
+                Text(volume.mountPath)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text(percent(volume.usedPercent))
+                    .fontWeight(.bold)
+                    .foregroundStyle(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.green)
+                    .moniNumericTransition(volume.usedPercent)
+            }
+            ProgressView(value: volume.usedPercent, total: 100)
+                .tint(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
+                .moniAnimation(MoniMotion.data, value: volume.usedPercent)
+            Text("\(bytes(UInt64(volume.usedBytes))) / \(bytes(UInt64(volume.totalBytes))) used")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.system(size: 11.5))
     }
 
     private var processCard: some View {
