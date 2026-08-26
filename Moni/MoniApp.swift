@@ -21,6 +21,7 @@ struct MoniApp: App {
     @StateObject private var aiUsage = AIUsageStore()
     @AppStorage(PreferenceKey.compactMenuBar) private var compactMenuBar = false
     @AppStorage(PreferenceKey.menuBarMetric) private var menuBarMetric = MenuBarMetric.cpu.rawValue
+    @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
 
     var body: some Scene {
         MenuBarExtra {
@@ -37,6 +38,14 @@ struct MoniApp: App {
             }
         }
         .menuBarExtraStyle(.window)
+
+        Window("Moni", id: "dashboard") {
+            ContentView()
+                .environmentObject(monitor)
+                .environmentObject(aiUsage)
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(showDockIcon ? .presented : .suppressed)
     }
 
     private var selectedMetric: MenuBarMetric {

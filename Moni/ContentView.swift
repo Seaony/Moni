@@ -45,6 +45,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @Environment(\.openWindow) private var openWindow
     @State private var selection: MonitorSection = .summary
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 1.0
@@ -83,6 +84,9 @@ struct ContentView: View {
         }
         .onChange(of: showDockIcon) { _, value in
             applyDockIconPreference(value)
+            if value {
+                openWindow(id: "dashboard")
+            }
         }
     }
 
