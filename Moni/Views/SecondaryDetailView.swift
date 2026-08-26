@@ -78,7 +78,34 @@ private struct GPUDetailView: View {
                 }
 
                 DetailPanel("GPU clients") {
-                    unavailableRow("The driver exposes cumulative client GPU time, but not a stable per-process utilization percentage.")
+                    if monitor.snapshot.gpu.clients.isEmpty {
+                        Text("No active GPU clients")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(monitor.snapshot.gpu.clients.prefix(8)) { client in
+                            HStack(spacing: 10) {
+                                Text(client.name)
+                                    .fontWeight(.semibold)
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                Text("PID \(client.pid)")
+                                    .foregroundStyle(.tertiary)
+                                    .frame(width: 90, alignment: .leading)
+                                Text(client.memoryBytes > 0 ? bytes(client.memoryBytes) : "—")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 110, alignment: .trailing)
+                                Text(percent(client.utilizationPercent))
+                                    .fontWeight(.bold)
+                                    .monospacedDigit()
+                                    .frame(width: 70, alignment: .trailing)
+                                    .moniNumericTransition(client.utilizationPercent)
+                            }
+                            .font(.system(size: 13))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                        }
+                    }
                 }
             }
         }

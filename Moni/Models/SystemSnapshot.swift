@@ -215,22 +215,34 @@ struct GPUDeviceInfo: Identifiable, Sendable {
     var id: UInt64 { registryID }
 }
 
+struct GPUClientUsage: Identifiable, Sendable {
+    let pid: Int32
+    let name: String
+    let memoryBytes: UInt64
+    let utilizationPercent: Double
+
+    var id: Int32 { pid }
+}
+
 struct GPUUsage: Sendable {
     var utilizationPercent: Double?
     var rendererPercent: Double?
     var tilerPercent: Double?
     var allocatedMemoryBytes: UInt64?
+    var clients: [GPUClientUsage]
 
     nonisolated init(
         utilizationPercent: Double? = nil,
         rendererPercent: Double? = nil,
         tilerPercent: Double? = nil,
-        allocatedMemoryBytes: UInt64? = nil
+        allocatedMemoryBytes: UInt64? = nil,
+        clients: [GPUClientUsage] = []
     ) {
         self.utilizationPercent = utilizationPercent
         self.rendererPercent = rendererPercent
         self.tilerPercent = tilerPercent
         self.allocatedMemoryBytes = allocatedMemoryBytes
+        self.clients = clients
     }
 }
 

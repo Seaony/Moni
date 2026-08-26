@@ -28,6 +28,8 @@ actor SystemSampler {
     private var previousDiskBytes: (read: UInt64, written: UInt64, date: Date)?
     private var previousProcessTimes: [Int32: UInt64] = [:]
     private var previousProcessDate: Date?
+    private var previousGPUClientTimes: [Int32: UInt64] = [:]
+    private var previousGPUClientDate: Date?
     private var processMetadata: [Int32: (name: String, path: String)] = [:]
     private var previousEnergyCounters: (values: [String: Double], date: Date)?
     private let smcReader = SMCSensorReader()
@@ -76,7 +78,7 @@ actor SystemSampler {
             processes: cachedProcesses,
             power: cachedPower,
             gpuDevices: gpuDevices,
-            gpu: Self.sampleGPU(),
+            gpu: sampleGPU(at: now),
             docker: cachedDocker
         )
     }
@@ -575,7 +577,7 @@ actor SystemSampler {
         }
     }
 
-    private static func sampleGPU() -> GPUUsage {
+    private func sampleGPU(at date: Date) -> GPUUsage {
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(
             kIOMainPortDefault,
@@ -590,6 +592,7 @@ actor SystemSampler {
         var renderer: Double?
         var tiler: Double?
         var allocatedMemory: UInt64?
+        var clientTimes: [Int32: UInt64] = [:]
         var service = IOIteratorNext(iterator)
 
         while service != 0 {
@@ -612,14 +615,93 @@ actor SystemSampler {
             if let bytes = value["Alloc system memory"] as? NSNumber {
                 allocatedMemory = max(allocatedMemory ?? 0, bytes.uint64Value)
             }
+            collectGPUClientTimes(from: service, into: &clientTimes)
         }
 
         return GPUUsage(
             utilizationPercent: utilization,
             rendererPercent: renderer,
             tilerPercent: tiler,
-            allocatedMemoryBytes: allocatedMemory
+            allocatedMemoryBytes: allocatedMemory,
+            clients: gpuClients(from: clientTimes, at: date)
         )
+    }
+
+    private func collectGPUClientTimes(
+        from accelerator: io_registry_entry_t,
+        into result: inout [Int32: UInt64]
+    ) {
+        var iterator: io_iterator_t = 0
+        guard IORegistryEntryCreateIterator(
+            accelerator,
+            kIOServicePlane,
+            IOOptionBits(kIORegistryIterateRecursively),
+            &iterator
+        ) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+
+        var entry = IOIteratorNext(iterator)
+        while entry != 0 {
+            defer {
+                IOObjectRelease(entry)
+                entry = IOIteratorNext(iterator)
+            }
+            guard let creator = IORegistryEntryCreateCFProperty(
+                entry,
+                "IOUserClientCreator" as CFString,
+                kCFAllocatorDefault,
+                0
+            )?.takeRetainedValue() as? String,
+                let pid = gpuClientPID(from: creator),
+                let usages = IORegistryEntryCreateCFProperty(
+                    entry,
+                    "AppUsage" as CFString,
+                    kCFAllocatorDefault,
+                    0
+                )?.takeRetainedValue() as? [[String: Any]]
+            else { continue }
+
+            let total = usages.reduce(UInt64(0)) { partial, usage in
+                partial + ((usage["accumulatedGPUTime"] as? NSNumber)?.uint64Value ?? 0)
+            }
+            result[pid, default: 0] += total
+        }
+    }
+
+    private func gpuClientPID(from creator: String) -> Int32? {
+        guard creator.hasPrefix("pid ") else { return nil }
+        let start = creator.index(creator.startIndex, offsetBy: 4)
+        let end = creator[start...].firstIndex(of: ",") ?? creator.endIndex
+        return Int32(creator[start ..< end].trimmingCharacters(in: .whitespaces))
+    }
+
+    private func gpuClients(from times: [Int32: UInt64], at date: Date) -> [GPUClientUsage] {
+        let elapsed = previousGPUClientDate.map { date.timeIntervalSince($0) } ?? 0
+        defer {
+            previousGPUClientTimes = times
+            previousGPUClientDate = date
+        }
+
+        return times.compactMap { pid, current -> GPUClientUsage? in
+            guard let previous = previousGPUClientTimes[pid], current >= previous else { return nil }
+            let utilization = elapsed > 0
+                ? min(100, Double(current - previous) / (elapsed * 1_000_000_000) * 100)
+                : 0
+            let process = cachedProcesses.first { $0.pid == pid }
+            let name = process?.name ?? processMetadata[pid]?.name ?? loadProcessMetadata(pid: pid).name
+            return GPUClientUsage(
+                pid: pid,
+                name: name,
+                memoryBytes: process?.memoryBytes ?? 0,
+                utilizationPercent: max(0, utilization)
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.utilizationPercent == rhs.utilizationPercent {
+                return lhs.memoryBytes > rhs.memoryBytes
+            }
+            return lhs.utilizationPercent > rhs.utilizationPercent
+        }
     }
 
     private func sampleDockerStatus() -> DockerStatus {
