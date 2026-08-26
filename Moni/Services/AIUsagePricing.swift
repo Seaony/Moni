@@ -223,14 +223,8 @@ enum AIUsagePricing {
                     : longContextPrice(input: 1, output: 6)
             }
             if let exact = codexPrices[normalized] { return exact }
-            if normalized.contains("/") { return nil }
-            if normalized.contains("gpt-5") { return codexPrices["gpt-5.5"] }
         case .claude:
             if let exact = claudePrices[normalized] { return exact }
-            if normalized.contains("fable") { return claudePrices["claude-fable-5"] }
-            if normalized.contains("opus") { return claudePrices["claude-opus-5"] }
-            if normalized.contains("sonnet") { return claudePrices["claude-sonnet-5"] }
-            if normalized.contains("haiku") { return claudePrices["claude-haiku-4-5"] }
         }
         return nil
     }
