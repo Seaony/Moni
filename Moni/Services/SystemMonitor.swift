@@ -10,6 +10,7 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var uploadHistory: [Double] = []
 
     private let sampler = SystemSampler()
+    private let alertMonitor = AlertMonitor()
     private var timer: AnyCancellable?
     private var samplingInterval: TimeInterval
 
@@ -38,6 +39,7 @@ final class SystemMonitor: ObservableObject {
 
     func refresh() {
         snapshot = sampler.sample()
+        alertMonitor.evaluate(snapshot)
         append(snapshot.cpu.total, to: &cpuHistory)
         append(snapshot.memory.usedPercent, to: &memoryHistory)
         append(snapshot.network.downloadBytesPerSecond, to: &downloadHistory)
@@ -51,4 +53,3 @@ final class SystemMonitor: ObservableObject {
         }
     }
 }
-

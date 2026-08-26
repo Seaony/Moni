@@ -8,6 +8,16 @@ enum PreferenceKey {
     static let samplingInterval = "samplingInterval"
     static let showDockIcon = "showDockIcon"
 
+    static let cpuAlertEnabled = "cpuAlertEnabled"
+    static let cpuAlertThreshold = "cpuAlertThreshold"
+    static let memoryAlertEnabled = "memoryAlertEnabled"
+    static let memoryAlertThreshold = "memoryAlertThreshold"
+    static let diskAlertEnabled = "diskAlertEnabled"
+    static let diskAlertThreshold = "diskAlertThreshold"
+    static let notificationAlerts = "notificationAlerts"
+    static let alertSounds = "alertSounds"
+    static let repeatAlerts = "repeatAlerts"
+
     static let showHost = "showHost"
     static let showCPU = "showCPU"
     static let showMemory = "showMemory"

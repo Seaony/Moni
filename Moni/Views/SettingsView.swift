@@ -1,9 +1,10 @@
 import AppKit
 import ServiceManagement
 import SwiftUI
+import UserNotifications
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, menuBar, modules, about
+    case general, menuBar, alerts, modules, about
 
     var id: String { rawValue }
 
@@ -11,6 +12,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "General"
         case .menuBar: "Menu Bar"
+        case .alerts: "Alerts"
         case .modules: "Modules"
         case .about: "About"
         }
@@ -20,6 +22,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape"
         case .menuBar: "menubar.rectangle"
+        case .alerts: "bell"
         case .modules: "square.grid.2x2"
         case .about: "info.circle"
         }
@@ -61,11 +64,85 @@ struct SettingsView: View {
                 switch section {
                 case .general: GeneralSettings()
                 case .menuBar: MenuBarSettings()
+                case .alerts: AlertSettings()
                 case .modules: ModuleSettings()
                 case .about: AboutSettings()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+}
+
+private struct AlertSettings: View {
+    @AppStorage(PreferenceKey.cpuAlertEnabled) private var cpuEnabled = false
+    @AppStorage(PreferenceKey.cpuAlertThreshold) private var cpuThreshold = 85.0
+    @AppStorage(PreferenceKey.memoryAlertEnabled) private var memoryEnabled = false
+    @AppStorage(PreferenceKey.memoryAlertThreshold) private var memoryThreshold = 90.0
+    @AppStorage(PreferenceKey.diskAlertEnabled) private var diskEnabled = false
+    @AppStorage(PreferenceKey.diskAlertThreshold) private var diskThreshold = 90.0
+    @AppStorage(PreferenceKey.notificationAlerts) private var notificationAlerts = false
+    @AppStorage(PreferenceKey.alertSounds) private var alertSounds = true
+    @AppStorage(PreferenceKey.repeatAlerts) private var repeatAlerts = false
+    @State private var notificationError: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                DetailPanel("Thresholds") {
+                    thresholdRow("CPU usage", enabled: $cpuEnabled, value: $cpuThreshold)
+                    Divider()
+                    thresholdRow("Memory usage", enabled: $memoryEnabled, value: $memoryThreshold)
+                    Divider()
+                    thresholdRow("System disk usage", enabled: $diskEnabled, value: $diskThreshold)
+                    Text("Temperature alerts are unavailable because macOS does not expose sensor values through a public API.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                DetailPanel("Delivery") {
+                    Toggle("Show system notifications", isOn: Binding(
+                        get: { notificationAlerts },
+                        set: updateNotifications
+                    ))
+                    Toggle("Play alert sound", isOn: $alertSounds)
+                        .disabled(!notificationAlerts)
+                    Toggle("Repeat every 5 minutes while above threshold", isOn: $repeatAlerts)
+                    if let notificationError {
+                        Text(notificationError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+        }
+    }
+
+    private func thresholdRow(_ title: String, enabled: Binding<Bool>, value: Binding<Double>) -> some View {
+        HStack {
+            Toggle(title, isOn: enabled)
+            Spacer()
+            Stepper(value: value, in: 50...99, step: 1) {
+                Text("\(Int(value.wrappedValue))%")
+                    .monospacedDigit()
+                    .frame(width: 42, alignment: .trailing)
+            }
+            .disabled(!enabled.wrappedValue)
+        }
+    }
+
+    private func updateNotifications(_ isEnabled: Bool) {
+        guard isEnabled else {
+            notificationAlerts = false
+            notificationError = nil
+            return
+        }
+
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            Task { @MainActor in
+                notificationAlerts = granted
+                notificationError = error?.localizedDescription ?? (granted ? nil : "Notification permission was not granted.")
+            }
         }
     }
 }
