@@ -458,3 +458,70 @@ struct GPUSmallWidgetView: View {
         ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
     }
 }
+
+struct UptimeSmallWidget: Widget {
+    var body: some WidgetConfiguration {
+        moniWidgetConfiguration(
+            kind: .uptimeSmall,
+            displayName: "Uptime",
+            description: "查看开机时长和系统负载。",
+            family: .systemSmall
+        )
+    }
+}
+
+struct UptimeSmallWidgetView: View {
+    let snapshot: WidgetSystemSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WidgetHeader(title: "Uptime", symbol: "clock", color: WidgetTheme.yellow, trailing: startDate.formatted(.dateTime.month(.abbreviated).day()))
+            Text(uptime)
+                .font(.system(size: 34, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .padding(.top, 9)
+            Text("since last reboot")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(WidgetTheme.secondary)
+            Spacer(minLength: 7)
+            VStack(spacing: 6) {
+                loadRow("1 m", value: snapshot.loadAverages[safe: 0])
+                loadRow("5 m", value: snapshot.loadAverages[safe: 1])
+                loadRow("15 m", value: snapshot.loadAverages[safe: 2])
+            }
+        }
+        .padding(16)
+    }
+
+    private var startDate: Date { snapshot.date.addingTimeInterval(-snapshot.uptime) }
+
+    private var uptime: String {
+        let days = Int(snapshot.uptime) / 86_400
+        let hours = (Int(snapshot.uptime) % 86_400) / 3_600
+        return days > 0 ? "\(days)d \(hours)h" : "\(hours)h"
+    }
+
+    private func loadRow(_ label: String, value: Double?) -> some View {
+        HStack(spacing: 7) {
+            Text(label).foregroundStyle(WidgetTheme.tertiary).frame(width: 24, alignment: .leading)
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(WidgetTheme.track)
+                    Capsule().fill(WidgetTheme.yellow).frame(width: geometry.size.width * min(1, (value ?? 0) / 10))
+                }
+            }
+            .frame(height: 4)
+            Text(value.map { String(format: "%.2f", $0) } ?? "—")
+                .fontWeight(.bold)
+                .monospacedDigit()
+                .frame(width: 30, alignment: .trailing)
+        }
+        .font(.system(size: 9.5))
+    }
+}
+
+private extension Collection {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
