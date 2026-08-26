@@ -144,6 +144,16 @@ actor AIUsageScanner {
         let events: [ClaudeEvent]
     }
 
+    private struct GeminiFileSignature: Equatable {
+        let database: FileSignature
+        let writeAheadLog: FileSignature?
+    }
+
+    private struct GeminiCacheEntry {
+        let signature: GeminiFileSignature
+        let session: GeminiSession?
+    }
+
     private struct ClaudeEvent {
         let path: String
         let sessionID: String
@@ -185,6 +195,21 @@ actor AIUsageScanner {
         var rootWire: URL?
     }
 
+    private struct GeminiSession {
+        let id: String
+        let rank: Int
+        let updatedAt: Date
+        let modifiedAt: Date
+        let events: [UsageEvent]
+    }
+
+    private struct ProtobufField {
+        let number: Int
+        let wireType: Int
+        let varint: UInt64?
+        let data: Data?
+    }
+
     private let fileManager = FileManager.default
     private let homeDirectory: URL
     private let calendar: Calendar
@@ -196,6 +221,7 @@ actor AIUsageScanner {
     private let fallbackFormatter = ISO8601DateFormatter()
     private var codexCache: [String: CodexCacheEntry] = [:]
     private var claudeCache: [String: ClaudeCacheEntry] = [:]
+    private var geminiCache: [String: GeminiCacheEntry] = [:]
     private let recordNeedles = [
         Data(#""token_count""#.utf8),
         Data(#""turn_context""#.utf8),
@@ -241,6 +267,7 @@ actor AIUsageScanner {
         let qwen = scanQwen(start: start, end: end, daily: &daily)
         let openCode = scanOpenCode(start: start, end: end, daily: &daily)
         let kimi = scanKimi(start: start, end: end, daily: &daily)
+        let gemini = scanGemini(start: start, end: end, daily: &daily)
         var quotas = includeQuotas ? await AIQuotaFetcher.fetchAll(homeDirectory: homeDirectory) : [:]
         if includeQuotas, quotas["Codex"]?.windows.isEmpty != false, let localQuota = codex.quota {
             quotas["Codex"] = localQuota
@@ -251,6 +278,7 @@ actor AIUsageScanner {
             provider("Qwen Code", totals: qwen, quota: nil),
             provider("OpenCode", totals: openCode, quota: nil),
             provider("Kimi Code", totals: kimi, quota: nil),
+            provider("Gemini CLI", totals: gemini, quota: nil),
         ].filter { $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty }
         let lastDay = calendar.date(byAdding: .day, value: -1, to: end) ?? start
         return AIUsageSummary(
@@ -833,6 +861,8 @@ actor AIUsageScanner {
             provider = .codex
         } else if normalized.contains("qwen") {
             provider = .qwen
+        } else if normalized.contains("gemini") || normalized.hasPrefix("google/") {
+            provider = .gemini
         } else {
             provider = nil
         }
@@ -1033,6 +1063,411 @@ actor AIUsageScanner {
             cacheWrite1h: 0,
             costUSD: nil
         )
+    }
+
+    private func scanGemini(start: Date, end: Date, daily: inout [Date: DailyBucket]) -> Totals {
+        let files = geminiSessionFiles()
+        let paths = Set(files.map(\.path))
+        geminiCache = geminiCache.filter { paths.contains($0.key) }
+        var canonical: [String: GeminiSession] = [:]
+        for url in files {
+            guard let signature = geminiFileSignature(url) else { continue }
+            let session: GeminiSession?
+            if let cached = geminiCache[url.path], cached.signature == signature {
+                session = cached.session
+            } else {
+                session = geminiSession(url)
+                geminiCache[url.path] = GeminiCacheEntry(signature: signature, session: session)
+            }
+            guard let session else { continue }
+            if let current = canonical[session.id], !geminiSession(session, outranks: current) {
+                continue
+            }
+            canonical[session.id] = session
+        }
+
+        var totals = Totals()
+        for session in canonical.values {
+            var countedSession = false
+            for event in session.events where event.date >= start && event.date < end {
+                totals.add(event)
+                addDaily(event, to: &daily)
+                countedSession = true
+            }
+            if countedSession { totals.sessions += 1 }
+        }
+        return totals
+    }
+
+    private func geminiSession(_ candidate: GeminiSession, outranks current: GeminiSession) -> Bool {
+        if candidate.rank != current.rank { return candidate.rank > current.rank }
+        if candidate.updatedAt != current.updatedAt { return candidate.updatedAt > current.updatedAt }
+        return candidate.modifiedAt > current.modifiedAt
+    }
+
+    private func geminiSession(_ url: URL) -> GeminiSession? {
+        if url.pathExtension == "db" { return antigravitySession(url) }
+        guard let modifiedAt = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate
+        else { return nil }
+
+        var metadata: [String: Any] = [:]
+        var messages: [String: [String: Any]] = [:]
+        var order: [String] = []
+        let rank = url.pathExtension == "jsonl" ? 2 : 1
+
+        if rank == 1 {
+            guard let data = try? Data(contentsOf: url), let record = json(data) else { return nil }
+            metadata = record
+            geminiApplyMessages(record["messages"], to: &messages, order: &order)
+        } else {
+            enumerateLines(in: url) { line in
+                guard let record = json(line) else { return }
+                if let rewindID = string(record["$rewindTo"]) {
+                    if let index = order.firstIndex(of: rewindID) {
+                        for id in order[index...] { messages.removeValue(forKey: id) }
+                        order.removeSubrange(index...)
+                    } else {
+                        messages.removeAll()
+                        order.removeAll()
+                    }
+                    return
+                }
+                if let id = string(record["id"]), !id.isEmpty {
+                    geminiApplyMessage(record, id: id, to: &messages, order: &order)
+                    return
+                }
+                if let updates = record["$set"] as? [String: Any] {
+                    if updates["messages"] is [Any] {
+                        messages.removeAll()
+                        order.removeAll()
+                        geminiApplyMessages(updates["messages"], to: &messages, order: &order)
+                    }
+                    metadata.merge(updates) { _, replacement in replacement }
+                    return
+                }
+                if let pushed = record["$push"] as? [String: Any] {
+                    geminiApplyMessages(pushed["messages"], to: &messages, order: &order)
+                    return
+                }
+                if let sessionID = string(record["sessionId"]), !sessionID.isEmpty {
+                    metadata.merge(record) { _, replacement in replacement }
+                    geminiApplyMessages(record["messages"], to: &messages, order: &order)
+                }
+            }
+        }
+
+        let events = order.compactMap { id in
+            messages[id].flatMap(geminiUsageEvent)
+        }
+        let sessionID = string(metadata["sessionId"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return GeminiSession(
+            id: sessionID.flatMap { $0.isEmpty ? nil : $0 }
+                ?? url.deletingPathExtension().lastPathComponent,
+            rank: rank,
+            updatedAt: flexibleDate(metadata["lastUpdated"])
+                ?? events.map(\.date).max()
+                ?? .distantPast,
+            modifiedAt: modifiedAt,
+            events: events
+        )
+    }
+
+    private func geminiApplyMessages(
+        _ value: Any?,
+        to messages: inout [String: [String: Any]],
+        order: inout [String]
+    ) {
+        let values: [[String: Any]]
+        if let message = value as? [String: Any] {
+            values = [message]
+        } else {
+            values = value as? [[String: Any]] ?? []
+        }
+        for message in values {
+            guard let id = string(message["id"]), !id.isEmpty else { continue }
+            geminiApplyMessage(message, id: id, to: &messages, order: &order)
+        }
+    }
+
+    private func geminiApplyMessage(
+        _ message: [String: Any],
+        id: String,
+        to messages: inout [String: [String: Any]],
+        order: inout [String]
+    ) {
+        if messages[id] == nil { order.append(id) }
+        messages[id] = message
+    }
+
+    private func geminiUsageEvent(_ message: [String: Any]) -> UsageEvent? {
+        guard string(message["type"]) == "gemini",
+            let timestamp = flexibleDate(message["timestamp"]),
+            let values = message["tokens"] as? [String: Any]
+        else { return nil }
+        let inputTotal = uint(values["input"])
+        let cacheRead = min(inputTotal, uint(values["cached"]))
+        let input = inputTotal - cacheRead
+        let output = uint(values["output"])
+        let reasoning = uint(values["thoughts"])
+        guard input + cacheRead + output + reasoning > 0 else { return nil }
+        return geminiUsage(
+            date: timestamp,
+            rawModel: string(message["model"]) ?? "unknown",
+            input: input,
+            cacheRead: cacheRead,
+            output: output,
+            reasoning: reasoning
+        )
+    }
+
+    private func geminiUsage(
+        date: Date,
+        rawModel: String,
+        input: UInt64,
+        cacheRead: UInt64,
+        output: UInt64,
+        reasoning: UInt64
+    ) -> UsageEvent {
+        let model = AIUsagePricing.normalize(rawModel, provider: .gemini)
+        return UsageEvent(
+            date: date,
+            model: model,
+            tokens: TokenValues(
+                input: input,
+                cacheRead: cacheRead,
+                output: output,
+                reasoning: reasoning
+            ),
+            cacheWrite1h: 0,
+            costUSD: AIUsagePricing.estimatedCostUSD(
+                provider: .gemini,
+                model: model,
+                date: date,
+                inputTokens: input,
+                cacheReadTokens: cacheRead,
+                cacheWriteTokens: 0,
+                outputTokens: output + reasoning
+            ),
+            reasoningCountsSeparately: true
+        )
+    }
+
+    private func antigravitySession(_ url: URL) -> GeminiSession? {
+        guard let modifiedAt = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate
+        else { return nil }
+
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+            let database
+        else {
+            if let database { sqlite3_close_v2(database) }
+            return nil
+        }
+        defer { sqlite3_close_v2(database) }
+        sqlite3_busy_timeout(database, 1_000)
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT idx, data FROM gen_metadata ORDER BY idx ASC",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK, let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+
+        var events: [UsageEvent] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let byteCount = Int(sqlite3_column_bytes(statement, 1))
+            guard byteCount > 0, let blob = sqlite3_column_blob(statement, 1) else { continue }
+            let payload = Data(bytes: blob, count: byteCount)
+            for field in protobufFields(payload)
+            where field.number == 1 && field.wireType == 2 {
+                guard let data = field.data, let step = antigravityGeneration(data) else { continue }
+                events.append(step)
+            }
+        }
+        guard !events.isEmpty else { return nil }
+        return GeminiSession(
+            id: url.deletingPathExtension().lastPathComponent,
+            rank: 3,
+            updatedAt: events.map(\.date).max() ?? .distantPast,
+            modifiedAt: modifiedAt,
+            events: events
+        )
+    }
+
+    private func antigravityGeneration(_ data: Data) -> UsageEvent? {
+        var model = "unknown"
+        var input: UInt64 = 0
+        var output: UInt64 = 0
+        var cacheRead: UInt64 = 0
+        var reasoning: UInt64 = 0
+        var timestamp: UInt64?
+
+        for field in protobufFields(data) {
+            if field.number == 19, field.wireType == 2, let bytes = field.data,
+                let decoded = String(data: bytes, encoding: .utf8), geminiModelIsValid(decoded)
+            {
+                model = decoded
+            } else if field.number == 4, field.wireType == 2, let bytes = field.data {
+                for tokenField in protobufFields(bytes) where tokenField.wireType == 0 {
+                    switch tokenField.number {
+                    case 2: input = tokenField.varint ?? 0
+                    case 3: output = tokenField.varint ?? 0
+                    case 5: cacheRead = tokenField.varint ?? 0
+                    case 9: reasoning = tokenField.varint ?? 0
+                    default: break
+                    }
+                }
+            } else if field.number == 9, field.wireType == 2, let bytes = field.data {
+                for timeField in protobufFields(bytes)
+                where timeField.number == 4 && timeField.wireType == 2 {
+                    guard let nested = timeField.data else { continue }
+                    timestamp = protobufFields(nested).first {
+                        $0.number == 1 && $0.wireType == 0
+                    }?.varint
+                }
+            }
+        }
+
+        let maximum: UInt64 = 100_000_000
+        guard let timestamp,
+            timestamp >= 1_577_836_800,
+            timestamp <= 1 << 34,
+            max(input, output, cacheRead, reasoning) <= maximum,
+            input + output + cacheRead + reasoning > 0
+        else { return nil }
+        return geminiUsage(
+            date: Date(timeIntervalSince1970: Double(timestamp)),
+            rawModel: model,
+            input: input,
+            cacheRead: cacheRead,
+            output: output,
+            reasoning: reasoning
+        )
+    }
+
+    private func geminiModelIsValid(_ model: String) -> Bool {
+        !model.isEmpty && model.count <= 120 && model.unicodeScalars.allSatisfy {
+            !CharacterSet.controlCharacters.contains($0)
+        }
+    }
+
+    private func protobufFields(_ data: Data) -> [ProtobufField] {
+        let bytes = [UInt8](data)
+        var offset = 0
+        var fields: [ProtobufField] = []
+        while offset < bytes.count {
+            guard let key = protobufVarint(bytes, offset: &offset) else { break }
+            let number = Int(key >> 3)
+            let wireType = Int(key & 0x7)
+            guard number > 0 else { break }
+            switch wireType {
+            case 0:
+                guard let value = protobufVarint(bytes, offset: &offset) else { return fields }
+                fields.append(ProtobufField(number: number, wireType: wireType, varint: value, data: nil))
+            case 2:
+                guard let rawLength = protobufVarint(bytes, offset: &offset),
+                    rawLength <= UInt64(bytes.count - offset)
+                else { return fields }
+                let length = Int(rawLength)
+                let end = offset + length
+                fields.append(
+                    ProtobufField(
+                        number: number,
+                        wireType: wireType,
+                        varint: nil,
+                        data: Data(bytes[offset..<end])
+                    ))
+                offset = end
+            case 1, 5:
+                let width = wireType == 1 ? 8 : 4
+                guard offset + width <= bytes.count else { return fields }
+                let end = offset + width
+                fields.append(
+                    ProtobufField(
+                        number: number,
+                        wireType: wireType,
+                        varint: nil,
+                        data: Data(bytes[offset..<end])
+                    ))
+                offset = end
+            default:
+                return fields
+            }
+        }
+        return fields
+    }
+
+    private func protobufVarint(_ bytes: [UInt8], offset: inout Int) -> UInt64? {
+        var value: UInt64 = 0
+        var shift = 0
+        for _ in 0..<10 {
+            guard offset < bytes.count else { return nil }
+            let byte = bytes[offset]
+            offset += 1
+            let payload = UInt64(byte & 0x7f)
+            if shift == 63, payload > 1 { return nil }
+            value |= payload << shift
+            if byte & 0x80 == 0 { return value }
+            shift += 7
+        }
+        return nil
+    }
+
+    private func geminiSessionFiles() -> [URL] {
+        var files: [URL] = []
+        var seen: Set<String> = []
+        for root in geminiRoots() {
+            guard let enumerator = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for case let url as URL in enumerator {
+                let name = url.lastPathComponent
+                let isDatabase = url.pathExtension == "db" && name != "conversation_summaries.db"
+                let isSessionJSON = url.pathExtension == "json" && name.hasPrefix("session-")
+                let isSessionJSONL = url.pathExtension == "jsonl"
+                    && (name.hasPrefix("session-") || url.path.contains("/chats/"))
+                guard isDatabase || isSessionJSON || isSessionJSONL,
+                    (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+                else { continue }
+                let standardized = url.standardizedFileURL
+                if seen.insert(standardized.path).inserted { files.append(standardized) }
+            }
+        }
+        return files.sorted { $0.path < $1.path }
+    }
+
+    private func geminiFileSignature(_ url: URL) -> GeminiFileSignature? {
+        guard let database = fileSignature(url) else { return nil }
+        let writeAheadLog = url.pathExtension == "db"
+            ? fileSignature(URL(fileURLWithPath: url.path + "-wal"))
+            : nil
+        return GeminiFileSignature(database: database, writeAheadLog: writeAheadLog)
+    }
+
+    private func geminiRoots() -> [URL] {
+        var roots = environmentPaths("TOKEI_GEMINI_DIR")
+        roots.append(contentsOf: [
+            homeDirectory.appending(path: ".gemini/tmp"),
+            homeDirectory.appending(path: ".gemini/antigravity-cli/conversations"),
+            homeDirectory.appending(path: ".gemini/antigravity/conversations"),
+            homeDirectory.appending(path: ".gemini/antigravity-ide/conversations"),
+            homeDirectory.appending(path: ".gemini/gemini-cli/conversations"),
+        ])
+        roots.append(contentsOf: environmentPaths("TOKEI_ANTIGRAVITY_DIR"))
+        var seen: Set<String> = []
+        return roots.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    private func environmentPaths(_ key: String) -> [URL] {
+        guard let value = ProcessInfo.processInfo.environment[key] else { return [] }
+        return value.split(separator: ":").compactMap { qwenAbsoluteURL(String($0)) }
     }
 
     private func parseClaudeFile(_ url: URL) -> [ClaudeEvent] {

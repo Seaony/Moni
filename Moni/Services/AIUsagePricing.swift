@@ -4,6 +4,7 @@ enum AIUsageProvider: Sendable {
     case codex
     case claude
     case qwen
+    case gemini
 }
 
 enum AIUsagePricing {
@@ -128,6 +129,33 @@ enum AIUsagePricing {
         "qwen3.7-plus": Price(input: 0.39, cacheRead: 0.078, cacheWrite: 0.49, output: 1.16),
     ]
 
+    private nonisolated static let geminiPrices: [String: Price] = [
+        "gemini-3.5-flash": Price(input: 1.5, cacheRead: 0.15, output: 9),
+        "gemini-3.5-flash-lite": Price(input: 0.3, cacheRead: 0.03, output: 2.5),
+        "gemini-3.1-flash-lite": Price(input: 0.25, cacheRead: 0.025, output: 1.5),
+        "gemini-3.1-pro-preview": Price(
+            input: 2,
+            cacheRead: 0.2,
+            output: 12,
+            threshold: 200_000,
+            longInput: 4,
+            longCacheRead: 0.4,
+            longOutput: 18
+        ),
+        "gemini-3-flash-preview": Price(input: 0.5, cacheRead: 0.05, output: 3),
+        "gemini-2.5-pro": Price(
+            input: 1.25,
+            cacheRead: 0.125,
+            output: 10,
+            threshold: 200_000,
+            longInput: 2.5,
+            longCacheRead: 0.25,
+            longOutput: 15
+        ),
+        "gemini-2.5-flash": Price(input: 0.3, cacheRead: 0.03, output: 2.5),
+        "gemini-2.5-flash-lite": Price(input: 0.1, cacheRead: 0.01, output: 0.4),
+    ]
+
     nonisolated static func normalize(_ model: String, provider: AIUsageProvider) -> String {
         var value = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch provider {
@@ -139,6 +167,10 @@ enum AIUsagePricing {
             value.removeFirst("anthropic.".count)
         case .qwen where value.hasPrefix("qwen/"):
             value.removeFirst("qwen/".count)
+        case .gemini where value.hasPrefix("google/"):
+            value.removeFirst("google/".count)
+        case .gemini where value.hasPrefix("models/"):
+            value.removeFirst("models/".count)
         default:
             break
         }
@@ -250,6 +282,20 @@ enum AIUsagePricing {
             if let exact = claudePrices[normalized] { return exact }
         case .qwen:
             if let exact = qwenPrices[normalized] { return exact }
+        case .gemini:
+            if normalized == "gemini-3.7-flash" {
+                return date < Date(timeIntervalSince1970: 1_798_761_600)
+                    ? Price(input: 0.75, cacheRead: 0.075, output: 3.75)
+                    : Price(input: 1.5, cacheRead: 0.15, output: 7.5)
+            }
+            if normalized == "gemini-3.6-flash" {
+                let promotionalStart = Date(timeIntervalSince1970: 1_786_579_200)
+                let promotionalEnd = Date(timeIntervalSince1970: 1_798_761_600)
+                return date >= promotionalStart && date < promotionalEnd
+                    ? Price(input: 0.75, cacheRead: 0.075, output: 3.75)
+                    : Price(input: 1.5, cacheRead: 0.15, output: 7.5)
+            }
+            if let exact = geminiPrices[normalized] { return exact }
         }
         return nil
     }
