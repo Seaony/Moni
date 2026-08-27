@@ -153,10 +153,21 @@ private struct MenuBarWindowPositioner: NSViewRepresentable {
     }
 }
 
+@MainActor
+private final class MenuBarWindowAnchor {
+    static let shared = MenuBarWindowAnchor()
+
+    var centerX: CGFloat?
+    var topY: CGFloat?
+    var visibleFrame: NSRect?
+}
+
 private final class MenuBarWindowPositioningView: NSView {
     var onVisibilityChange: (Bool) -> Void
 
     private var observers: [NSObjectProtocol] = []
+    private let anchor = MenuBarWindowAnchor.shared
+    private var isApplyingOrigin = false
 
     init(onVisibilityChange: @escaping (Bool) -> Void) {
         self.onVisibilityChange = onVisibilityChange
@@ -185,7 +196,9 @@ private final class MenuBarWindowPositioningView: NSView {
             ) { [weak self] _ in
                 guard let self else { return }
                 onVisibilityChange(true)
-                centerWindowBelowMenuBarClick()
+                updateAnchorFromMenuBarClick()
+                captureAnchorIfNeeded()
+                restoreAnchoredOrigin()
             }
         )
         observers.append(
@@ -197,12 +210,33 @@ private final class MenuBarWindowPositioningView: NSView {
                 self?.onVisibilityChange(false)
             }
         )
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didResizeNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.restoreAnchoredOrigin()
+            }
+        )
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didMoveNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.restoreAnchoredOrigin()
+            }
+        )
 
         // The window can exist before it is ever shown; only an on-screen window
         // counts, and `didBecomeKey` covers the moment it is actually opened.
         onVisibilityChange(window.isVisible)
         DispatchQueue.main.async { [weak self] in
-            self?.centerWindowBelowMenuBarClick()
+            guard let self else { return }
+            updateAnchorFromMenuBarClick()
+            captureAnchorIfNeeded()
+            restoreAnchoredOrigin()
         }
     }
 
@@ -215,7 +249,7 @@ private final class MenuBarWindowPositioningView: NSView {
         observers.removeAll()
     }
 
-    private func centerWindowBelowMenuBarClick() {
+    private func updateAnchorFromMenuBarClick() {
         guard let window, window.isVisible else { return }
 
         let clickLocation = NSEvent.mouseLocation
@@ -224,11 +258,54 @@ private final class MenuBarWindowPositioningView: NSView {
         }
         guard clickLocation.y >= screen.frame.maxY - NSStatusBar.system.thickness - 8 else { return }
 
-        let visibleFrame = screen.visibleFrame
-        let centeredX = clickLocation.x - window.frame.width / 2
-        let availableMaxX = max(visibleFrame.minX, visibleFrame.maxX - window.frame.width)
-        let clampedX = min(max(centeredX, visibleFrame.minX), availableMaxX)
-        window.setFrameOrigin(NSPoint(x: clampedX, y: window.frame.origin.y))
+        anchor.centerX = clickLocation.x
+        anchor.topY = window.frame.maxY
+        anchor.visibleFrame = screen.visibleFrame
+    }
+
+    private func captureAnchorIfNeeded() {
+        guard let window, window.isVisible else { return }
+        if anchor.centerX == nil {
+            anchor.centerX = window.frame.midX
+        }
+        if anchor.topY == nil {
+            anchor.topY = window.frame.maxY
+        }
+        if anchor.visibleFrame == nil {
+            anchor.visibleFrame = window.screen?.visibleFrame
+        }
+    }
+
+    private func restoreAnchoredOrigin() {
+        guard !isApplyingOrigin,
+              let window,
+              window.isVisible,
+              let centerX = anchor.centerX,
+              let topY = anchor.topY,
+              let visibleFrame = anchor.visibleFrame
+        else {
+            return
+        }
+
+        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - window.frame.width)
+        let originX = min(
+            max(centerX - window.frame.width / 2, visibleFrame.minX),
+            maximumX
+        )
+        let maximumY = max(visibleFrame.minY, visibleFrame.maxY - window.frame.height)
+        let originY = min(
+            max(topY - window.frame.height, visibleFrame.minY),
+            maximumY
+        )
+        guard abs(window.frame.minX - originX) > 0.5
+                || abs(window.frame.minY - originY) > 0.5
+        else {
+            return
+        }
+
+        isApplyingOrigin = true
+        window.setFrameOrigin(NSPoint(x: originX, y: originY))
+        isApplyingOrigin = false
     }
 }
 

@@ -2,12 +2,12 @@ import SwiftUI
 
 struct AIUsageView: View {
     @EnvironmentObject private var store: AIUsageStore
-    @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.month.rawValue
+    @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.last30Days.rawValue
     @AppStorage(PreferenceKey.disabledAIProviders) private var disabledProviderValue = ""
     let onManageProviders: () -> Void
 
     private var range: AIUsageRange {
-        AIUsageRange(rawValue: rangeValue) ?? .month
+        AIUsageRange(rawValue: rangeValue) ?? .last30Days
     }
 
     var body: some View {
@@ -17,13 +17,21 @@ struct AIUsageView: View {
                 usagePanel
 
                 if !visibleProviders.isEmpty {
-                    LazyVGrid(
-                        columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible())],
-                        spacing: 12
-                    ) {
-                        ForEach(visibleProviders) { provider in
-                            providerPanel(provider)
-                                .transition(MoniMotion.itemTransition)
+                    VStack(spacing: 12) {
+                        ForEach(Array(providerRows.enumerated()), id: \.offset) { _, row in
+                            HStack(alignment: .top, spacing: 12) {
+                                ForEach(row) { provider in
+                                    providerPanel(provider)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                                        .transition(MoniMotion.itemTransition)
+                                }
+
+                                if row.count == 1 {
+                                    Color.clear
+                                        .frame(maxWidth: .infinity, maxHeight: 0)
+                                }
+                            }
+                            .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 } else if !store.isLoading {
@@ -63,13 +71,19 @@ struct AIUsageView: View {
             )
         }
         .onChange(of: rangeValue) { _, value in
-            store.refresh(range: AIUsageRange(rawValue: value) ?? .month, includeQuotas: true)
+            store.refresh(range: AIUsageRange(rawValue: value) ?? .last30Days, includeQuotas: true)
         }
     }
 
     private var visibleProviders: [AIProviderUsage] {
         let disabled = Set(disabledProviderValue.split(separator: ",").map(String.init))
         return store.summary.providers.filter { !disabled.contains($0.provider) }
+    }
+
+    private var providerRows: [[AIProviderUsage]] {
+        stride(from: 0, to: visibleProviders.count, by: 2).map { start in
+            Array(visibleProviders[start..<min(start + 2, visibleProviders.count)])
+        }
     }
 
     private var rangePicker: some View {
@@ -124,7 +138,10 @@ struct AIUsageView: View {
                 )
             }
 
-            DailyUsageChart(values: store.summary.daily)
+            DailyUsageChart(
+                values: store.summary.daily,
+                maximumDayCount: chartDayLimit
+            )
                 .frame(height: 92)
 
             HStack {
@@ -202,6 +219,8 @@ struct AIUsageView: View {
                     Spacer(minLength: 0)
                 }
             }
+
+            Spacer(minLength: 0)
 
             HStack(spacing: 8) {
                 Text("Top model")
@@ -290,11 +309,22 @@ struct AIUsageView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var chartDayLimit: Int? {
+        switch range {
+        case .last30Days: 30
+        case .last90Days: 90
+        case .all: nil
+        }
+    }
+
     private var chartStartLabel: String {
         switch range {
-        case .today: "00:00"
-        case .year: "Jan"
-        default: "-14 d"
+        case .last30Days: "-30 d"
+        case .last90Days: "-90 d"
+        case .all:
+            store.summary.daily.first?.date.formatted(
+                .dateTime.year().month(.abbreviated).day()
+            ) ?? "All"
         }
     }
 
@@ -353,14 +383,29 @@ struct DailyUsageChart: View {
     @State private var hoveredDayID: DailyAIUsage.ID?
 
     let values: [DailyAIUsage]
+    let maximumDayCount: Int?
+    let tooltipAvoidsPointer: Bool
+
+    init(
+        values: [DailyAIUsage],
+        maximumDayCount: Int? = 14,
+        tooltipAvoidsPointer: Bool = false
+    ) {
+        self.values = values
+        self.maximumDayCount = maximumDayCount
+        self.tooltipAvoidsPointer = tooltipAvoidsPointer
+    }
 
     var body: some View {
         GeometryReader { geometry in
-            let recent = Array(values.suffix(14))
+            let recent = displayedValues
             let maximum = max(1, recent.map(\.tokens).max() ?? 1)
-            let spacing: CGFloat = 6
+            let spacing = min(
+                6,
+                geometry.size.width / CGFloat(max(1, recent.count)) * 0.35
+            )
             let barWidth = max(
-                4,
+                0.1,
                 (geometry.size.width - spacing * CGFloat(max(0, recent.count - 1)))
                     / CGFloat(max(1, recent.count))
             )
@@ -413,8 +458,13 @@ struct DailyUsageChart: View {
         .accessibilityLabel("Daily token usage")
     }
 
+    private var displayedValues: [DailyAIUsage] {
+        guard let maximumDayCount else { return values }
+        return Array(values.suffix(maximumDayCount))
+    }
+
     private var hoveredDay: DailyAIUsage? {
-        values.suffix(14).first { $0.id == hoveredDayID }
+        displayedValues.first { $0.id == hoveredDayID }
     }
 
     private func usageBar(
@@ -458,7 +508,9 @@ struct DailyUsageChart: View {
     }
 
     private func usageTooltip(_ day: DailyAIUsage) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let providers = providerBreakdown(for: day)
+
+        return VStack(alignment: .leading, spacing: 3) {
             Text(day.date.formatted(date: .abbreviated, time: .omitted))
                 .font(.system(size: 10.5, weight: .semibold))
                 .foregroundStyle(MoniPalette.foregroundSecondary)
@@ -470,16 +522,100 @@ struct DailyUsageChart: View {
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
                 .monospacedDigit()
+
+            if !providers.isEmpty {
+                Divider()
+                    .padding(.vertical, 2)
+
+                ForEach(providers, id: \.name) { provider in
+                    HStack(spacing: 10) {
+                        HStack(spacing: 5) {
+                            providerIcon(provider.name)
+                            Text(provider.name)
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
+                        }
+                        Spacer(minLength: 12)
+                        Text(
+                            "\(provider.usage.tokens.formatted(.number.notation(.compactName))) · "
+                                + "≈ \(currency(provider.usage.costUSD))"
+                        )
+                        .fontWeight(.semibold)
+                        .foregroundStyle(MoniPalette.foreground)
+                        .monospacedDigit()
+                    }
+                    .font(.system(size: 10.5))
+                }
+            }
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
+        .frame(minWidth: 188)
         .background(MoniPalette.controlHover)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+                .strokeBorder(MoniPalette.panelLine.opacity(0.42), lineWidth: 0.5)
         }
-        .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
+        .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
+    }
+
+    private func providerBreakdown(
+        for day: DailyAIUsage
+    ) -> [(name: String, usage: DailyAIProviderUsage)] {
+        (day.providers ?? [:])
+            .filter { $0.value.tokens > 0 || $0.value.costUSD > 0 }
+            .sorted { lhs, rhs in
+                if lhs.value.tokens != rhs.value.tokens {
+                    return lhs.value.tokens > rhs.value.tokens
+                }
+                return lhs.key.localizedCaseInsensitiveCompare(rhs.key) == .orderedAscending
+            }
+            .map { (name: $0.key, usage: $0.value) }
+    }
+
+    @ViewBuilder
+    private func providerIcon(_ provider: String) -> some View {
+        if let iconName = providerIconName(provider) {
+            Image(iconName)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(providerColor(provider))
+                .frame(width: 11, height: 11)
+        } else {
+            Image(systemName: "sparkles")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(MoniPalette.foregroundSecondary)
+                .frame(width: 11, height: 11)
+        }
+    }
+
+    private func providerIconName(_ provider: String) -> String? {
+        switch provider {
+        case "Claude": "ProviderIcon-claude"
+        case "Codex": "ProviderIcon-codex"
+        case "Gemini CLI": "ProviderIcon-gemini"
+        case "Qwen Code": "ProviderIcon-alibaba"
+        case "Kimi Code": "ProviderIcon-kimi"
+        case "DeepSeek Harness": "ProviderIcon-deepseek"
+        case "OpenCode": "ProviderIcon-opencode"
+        case "GitHub Copilot": "ProviderIcon-copilot"
+        case "Grok": "ProviderIcon-grok"
+        default: nil
+        }
+    }
+
+    private func providerColor(_ provider: String) -> Color {
+        switch provider {
+        case "Codex": MoniPalette.cyan
+        case "Claude": MoniPalette.claude
+        case "Qwen Code": MoniPalette.purple
+        case "Gemini CLI": MoniPalette.blue
+        case "Kimi Code": MoniPalette.yellow
+        case "DeepSeek Harness": MoniPalette.indigo
+        case "OpenCode": MoniPalette.green
+        default: MoniPalette.foregroundSecondary
+        }
     }
 
     private func tooltipX(
@@ -488,8 +624,16 @@ struct DailyUsageChart: View {
         spacing: CGFloat,
         chartWidth: CGFloat
     ) -> CGFloat {
-        let center = CGFloat(index) * (barWidth + spacing) + barWidth / 2
-        return min(max(center, 72), max(72, chartWidth - 72))
+        let tooltipHalfWidth: CGFloat = 100
+        let barCenter = CGFloat(index) * (barWidth + spacing) + barWidth / 2
+        if tooltipAvoidsPointer {
+            let pointerClearance: CGFloat = 14
+            return barCenter + pointerClearance + tooltipHalfWidth
+        }
+        return min(
+            max(barCenter, tooltipHalfWidth),
+            max(tooltipHalfWidth, chartWidth - tooltipHalfWidth)
+        )
     }
 
     private func tooltipY(

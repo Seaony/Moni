@@ -1,4 +1,5 @@
 import Darwin
+import CoreGraphics
 import CoreWLAN
 import Foundation
 import IOKit
@@ -38,6 +39,7 @@ actor SystemSampler {
         let coreCount: Int?
         let metalSupport: String?
         let mainDisplayResolution: String?
+        let mainDisplayDiagonalInches: Double?
         let mainDisplayRefreshRateHertz: Double?
     }
 
@@ -683,6 +685,7 @@ actor SystemSampler {
                 batteryTemperatureCelsius: telemetry.batteryTemperatureCelsius,
                 cycleCount: telemetry.cycleCount,
                 batteryHealth: telemetry.batteryHealth,
+                batteryHealthPercent: telemetry.batteryHealthPercent,
                 voltageVolts: telemetry.voltageVolts,
                 currentAmps: telemetry.currentAmps,
                 systemPowerWatts: telemetry.systemPowerWatts,
@@ -715,6 +718,7 @@ actor SystemSampler {
             batteryTemperatureCelsius: telemetry.batteryTemperatureCelsius,
             cycleCount: telemetry.cycleCount,
             batteryHealth: telemetry.batteryHealth,
+            batteryHealthPercent: telemetry.batteryHealthPercent,
             voltageVolts: telemetry.voltageVolts,
             currentAmps: telemetry.currentAmps,
             systemPowerWatts: telemetry.systemPowerWatts,
@@ -845,6 +849,15 @@ actor SystemSampler {
         let batteryHealth = (values["PermanentFailureStatus"] as? NSNumber).map {
             $0.intValue == 0 ? "Normal" : "Service recommended"
         }
+        let rawMaximumCapacity = (values["AppleRawMaxCapacity"] as? NSNumber)?.doubleValue
+        let designCapacity = (values["DesignCapacity"] as? NSNumber)?.doubleValue
+        let batteryHealthPercent: Double? = if let rawMaximumCapacity,
+                                               let designCapacity,
+                                               designCapacity > 0 {
+            min(rawMaximumCapacity / designCapacity * 100, 100)
+        } else {
+            nil
+        }
         let voltage = (values["Voltage"] as? NSNumber).map { $0.doubleValue / 1_000 }
         let current = (values["InstantAmperage"] as? NSNumber).map { $0.doubleValue / 1_000 }
         let powerTelemetry = values["PowerTelemetryData"] as? [String: Any]
@@ -855,6 +868,7 @@ actor SystemSampler {
             batteryTemperatureCelsius: temperature,
             cycleCount: cycleCount,
             batteryHealth: batteryHealth,
+            batteryHealthPercent: batteryHealthPercent,
             voltageVolts: voltage,
             currentAmps: current,
             systemPowerWatts: systemPower
@@ -873,6 +887,7 @@ actor SystemSampler {
                 hasUnifiedMemory: device.hasUnifiedMemory,
                 unifiedMemoryBytes: device.hasUnifiedMemory ? ProcessInfo.processInfo.physicalMemory : nil,
                 mainDisplayResolution: metadata?.name == device.name ? metadata?.mainDisplayResolution : nil,
+                mainDisplayDiagonalInches: metadata?.name == device.name ? metadata?.mainDisplayDiagonalInches : nil,
                 mainDisplayRefreshRateHertz: metadata?.name == device.name ? metadata?.mainDisplayRefreshRateHertz : nil
             )
         }
@@ -905,6 +920,8 @@ actor SystemSampler {
             let mainDisplay = displays.first { $0["spdisplays_main"] as? String == "spdisplays_yes" }
                 ?? displays.first
             let resolution = mainDisplay?["_spdisplays_pixels"] as? String
+            let displaySize = CGDisplayScreenSize(CGMainDisplayID())
+            let diagonalInches = Double(hypot(displaySize.width, displaySize.height)) / 25.4
             let refreshRate = (mainDisplay?["_spdisplays_resolution"] as? String).flatMap(refreshRate(from:))
             return GPUHardwareMetadata(
                 name: name,
@@ -912,6 +929,7 @@ actor SystemSampler {
                 coreCount: coreCount,
                 metalSupport: metalSupport,
                 mainDisplayResolution: resolution,
+                mainDisplayDiagonalInches: diagonalInches > 0 ? diagonalInches : nil,
                 mainDisplayRefreshRateHertz: refreshRate
             )
         } catch {
@@ -1177,7 +1195,7 @@ actor SystemSampler {
             }
         }
         return HostIdentity(
-            name: ProcessInfo.processInfo.hostName,
+            name: SCDynamicStoreCopyComputerName(nil, nil) as String? ?? ProcessInfo.processInfo.hostName,
             model: sysctlString("hw.model") ?? "Mac",
             chip: sysctlString("machdep.cpu.brand_string") ?? "Apple Silicon",
             operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,

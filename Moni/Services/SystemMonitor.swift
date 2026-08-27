@@ -217,6 +217,18 @@ final class SystemMonitor: ObservableObject {
             }
     }
 
+    func historyDates(_ metric: SystemHistoryMetric, duration: TimeInterval) -> [Date] {
+        let source = duration <= 60 ? recentHistory : minuteHistory
+        let referenceDate = source.last?.date ?? snapshot.date
+        let cutoff = referenceDate.addingTimeInterval(-duration)
+        return source.lazy
+            .filter { $0.date >= cutoff }
+            .compactMap { sample in
+                if case .gpu = metric, sample.gpu == nil { return nil }
+                return sample.date
+            }
+    }
+
     private func apply(_ snapshot: SystemSnapshot) {
         appendHistory(snapshot)
         self.snapshot = snapshot

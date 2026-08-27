@@ -3,11 +3,12 @@ import SwiftUI
 struct PrimaryDetailView: View {
     let section: MonitorSection
     @Binding var selection: MonitorSection
+    let onHostContentHeightChange: (CGFloat) -> Void
 
     var body: some View {
         switch section {
         case .host:
-            HostDetailView()
+            HostDetailView(onContentHeightChange: onHostContentHeightChange)
         case .cpu:
             CPUDetailView(selection: $selection)
         case .memory:
@@ -40,7 +41,7 @@ struct DetailPanel<Content: View>: View {
             content
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(MoniPalette.card)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
@@ -53,6 +54,7 @@ struct DetailPanel<Content: View>: View {
 private struct HostDetailView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var historyRange = "1m"
+    let onContentHeightChange: (CGFloat) -> Void
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
     private var rootVolume: VolumeUsage? { snapshot.volumes.first { $0.mountPath == "/" } }
@@ -115,14 +117,25 @@ private struct HostDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
-                    Sparkline(
-                        values: monitor.history(.loadAverage, duration: historyDuration(historyRange)),
-                        color: .secondary,
-                        showsFill: false,
-                        lineWidth: 1.8
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "Load",
+                                values: monitor.history(.loadAverage, duration: historyDuration(historyRange)),
+                                color: MoniPalette.blue,
+                                showsFill: true,
+                                formatValue: { String(format: "%.2f", $0) }
+                            )
+                        ],
+                        dates: monitor.historyDates(.loadAverage, duration: historyDuration(historyRange))
                     )
                     .frame(height: 110)
                 }
+            }
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                ceil(proxy.size.height)
+            } action: { height in
+                onContentHeightChange(height)
             }
         }
     }
@@ -168,9 +181,17 @@ private struct CPUDetailView: View {
                             .monospacedDigit()
                             .moniNumericTransition(snapshot.cpu.total)
                     }
-                    Sparkline(
-                        values: monitor.history(.cpu, duration: historyDuration(historyRange)),
-                        color: MoniPalette.pink
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "CPU",
+                                values: monitor.history(.cpu, duration: historyDuration(historyRange)),
+                                color: MoniPalette.pink,
+                                showsFill: true,
+                                formatValue: percent
+                            )
+                        ],
+                        dates: monitor.historyDates(.cpu, duration: historyDuration(historyRange))
                     )
                     .frame(height: 160)
                     HStack {
@@ -214,6 +235,7 @@ private struct CPUDetailView: View {
                     }
                     .frame(width: 390)
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 DetailPanel("Top CPU consumers") {
                     processHeader(action: { selection = .processes })
@@ -259,9 +281,17 @@ private struct MemoryDetailView: View {
                             .monospacedDigit()
                             .moniNumericTransition(snapshot.memory.usedPercent)
                     }
-                    Sparkline(
-                        values: monitor.history(.memory, duration: historyDuration(historyRange)),
-                        color: MoniPalette.blue
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "Memory",
+                                values: monitor.history(.memory, duration: historyDuration(historyRange)),
+                                color: MoniPalette.blue,
+                                showsFill: true,
+                                formatValue: percent
+                            )
+                        ],
+                        dates: monitor.historyDates(.memory, duration: historyDuration(historyRange))
                     )
                     .frame(height: 160)
                     HStack {
@@ -308,6 +338,7 @@ private struct MemoryDetailView: View {
                         }
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 DetailPanel("Top memory consumers") {
                     processHeader(action: { selection = .processes })

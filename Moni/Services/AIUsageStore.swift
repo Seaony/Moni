@@ -75,7 +75,7 @@ final class AIUsageStore: ObservableObject {
 
     static func storedRange() -> AIUsageRange {
         AIUsageRange(rawValue: UserDefaults.standard.string(forKey: PreferenceKey.aiUsageRange) ?? "")
-            ?? .month
+            ?? .last30Days
     }
 
     func loadDashboardIfNeeded(

@@ -11,6 +11,8 @@ struct MetricCard<Content: View>: View {
     let color: Color
     var trailing: String?
     var trailingSymbol: String?
+    var trailingHelp: String?
+    var allowsContentOverflow: Bool
     @ViewBuilder let content: Content
 
     init(
@@ -19,6 +21,8 @@ struct MetricCard<Content: View>: View {
         color: Color,
         trailing: String? = nil,
         trailingSymbol: String? = nil,
+        trailingHelp: String? = nil,
+        allowsContentOverflow: Bool = false,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
@@ -26,11 +30,15 @@ struct MetricCard<Content: View>: View {
         self.color = color
         self.trailing = trailing
         self.trailingSymbol = trailingSymbol
+        self.trailingHelp = trailingHelp
+        self.allowsContentOverflow = allowsContentOverflow
         self.content = content()
     }
 
+    @ViewBuilder
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let card = VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: symbol)
                     .resizable()
@@ -41,9 +49,16 @@ struct MetricCard<Content: View>: View {
                     .fontWeight(.bold)
                 Spacer(minLength: 4)
                 if let trailing {
-                    Text(trailing)
-                        .foregroundStyle(.secondary)
-                        .moniNumericTransition(trailing)
+                    if let trailingHelp {
+                        Text(trailing)
+                            .foregroundStyle(.secondary)
+                            .moniNumericTransition(trailing)
+                            .help(trailingHelp)
+                    } else {
+                        Text(trailing)
+                            .foregroundStyle(.secondary)
+                            .moniNumericTransition(trailing)
+                    }
                 }
                 if let trailingSymbol {
                     Image(systemName: trailingSymbol)
@@ -66,14 +81,21 @@ struct MetricCard<Content: View>: View {
             maxHeight: .infinity,
             alignment: .topLeading
         )
-        .background(isHovered ? MoniPalette.cardHover : MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background {
+            shape.fill(isHovered ? MoniPalette.cardHover : MoniPalette.card)
+        }
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            shape
                 .strokeBorder(MoniPalette.line, lineWidth: 1)
         }
         .onHover { isHovered = $0 }
         .animation(reduceMotion ? nil : MoniMotion.press, value: isHovered)
+
+        if allowsContentOverflow {
+            card
+        } else {
+            card.clipShape(shape)
+        }
     }
 
     private var rowHeight: CGFloat {
@@ -85,6 +107,7 @@ struct MetricRow: View {
     let label: String
     let value: String
     var color: Color = .secondary
+    var helpText: String? = nil
 
     var body: some View {
         HStack(spacing: 6) {
@@ -94,10 +117,18 @@ struct MetricRow: View {
             Text(label)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
-            Text(value)
-                .fontWeight(.semibold)
-                .monospacedDigit()
-                .moniNumericTransition(value)
+            if let helpText {
+                Text(value)
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+                    .moniNumericTransition(value)
+                    .help(helpText)
+            } else {
+                Text(value)
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+                    .moniNumericTransition(value)
+            }
         }
         .font(.system(size: 12))
     }

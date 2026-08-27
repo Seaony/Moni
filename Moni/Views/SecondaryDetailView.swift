@@ -46,7 +46,18 @@ private struct GPUDetailView: View {
                         Text(monitor.snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
                             .font(.system(size: 30, weight: .bold, design: .rounded))
                     }
-                    Sparkline(values: monitor.history(.gpu, duration: secondaryHistoryDuration(historyRange)), color: MoniPalette.green)
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "GPU",
+                                values: monitor.history(.gpu, duration: secondaryHistoryDuration(historyRange)),
+                                color: MoniPalette.green,
+                                showsFill: true,
+                                formatValue: percent
+                            )
+                        ],
+                        dates: monitor.historyDates(.gpu, duration: secondaryHistoryDuration(historyRange))
+                    )
                         .frame(height: 160)
                     rangeFooter(historyRange)
                 }
@@ -83,6 +94,7 @@ private struct GPUDetailView: View {
                         }
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 DetailPanel("GPU clients") {
                     if monitor.snapshot.gpu.clients.isEmpty {
@@ -179,10 +191,24 @@ private struct NetworkDetailView: View {
                     }
                     .font(.system(size: 20, weight: .bold))
                     .monospacedDigit()
-                    ZStack {
-                        Sparkline(values: monitor.history(.download, duration: secondaryHistoryDuration(historyRange)), color: MoniPalette.cyan)
-                        Sparkline(values: monitor.history(.upload, duration: secondaryHistoryDuration(historyRange)), color: MoniPalette.orange)
-                    }
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "Download",
+                                values: monitor.history(.download, duration: secondaryHistoryDuration(historyRange)),
+                                color: MoniPalette.cyan,
+                                showsFill: true,
+                                formatValue: rate
+                            ),
+                            InteractiveSparklineSeries(
+                                name: "Upload",
+                                values: monitor.history(.upload, duration: secondaryHistoryDuration(historyRange)),
+                                color: MoniPalette.orange,
+                                formatValue: rate
+                            )
+                        ],
+                        dates: monitor.historyDates(.download, duration: secondaryHistoryDuration(historyRange))
+                    )
                     .frame(height: 160)
                     rangeFooter(historyRange)
                 }
@@ -221,6 +247,7 @@ private struct NetworkDetailView: View {
                         }
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 DetailPanel("Active connections") {
                     HStack(spacing: 10) {
@@ -383,7 +410,18 @@ private struct StorageDetailView: View {
                             .foregroundStyle(MoniPalette.orange)
                     }
                     .font(.system(size: 15, weight: .bold))
-                    Sparkline(values: monitor.diskReadHistory, color: MoniPalette.cyan)
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "Read",
+                                values: monitor.diskReadHistory,
+                                color: MoniPalette.cyan,
+                                showsFill: true,
+                                formatValue: rate
+                            )
+                        ],
+                        dates: monitor.recentHistoryDates
+                    )
                         .frame(height: 120)
                 }
 
@@ -448,6 +486,7 @@ private struct StorageDetailView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .task {
@@ -520,10 +559,24 @@ private struct PowerDetailView: View {
                             Text(power.cpuTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "—")
                                 .font(.system(size: 22, weight: .bold))
                         }
-                        ZStack {
-                            Sparkline(values: monitor.cpuTemperatureHistory, color: MoniPalette.orange)
-                            Sparkline(values: monitor.gpuTemperatureHistory, color: MoniPalette.green, showsFill: false)
-                        }
+                        InteractiveSparkline(
+                            series: [
+                                InteractiveSparklineSeries(
+                                    name: "CPU",
+                                    values: monitor.cpuTemperatureHistory,
+                                    color: MoniPalette.orange,
+                                    showsFill: true,
+                                    formatValue: { String(format: "%.1f°C", $0) }
+                                ),
+                                InteractiveSparklineSeries(
+                                    name: "GPU",
+                                    values: monitor.gpuTemperatureHistory,
+                                    color: MoniPalette.green,
+                                    formatValue: { String(format: "%.1f°C", $0) }
+                                )
+                            ],
+                            dates: monitor.cpuTemperatureHistoryDates
+                        )
                             .frame(height: 108)
                         if power.fans.isEmpty {
                             secondaryStat("Fans", "No fan data")
@@ -536,6 +589,7 @@ private struct PowerDetailView: View {
                         }
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 DetailPanel("Temperature sensors") {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {

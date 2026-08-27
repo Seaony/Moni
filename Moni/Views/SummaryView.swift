@@ -104,47 +104,152 @@ struct SummaryView: View {
                 if cardSize(.host).columns >= 2 {
                     HStack(alignment: .top, spacing: 32) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(snapshot.host.model)
+                            Text("\(hostOperatingSystemLabel) · \(hostChipLabel)")
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                                .help("Current macOS release installed on this Mac.")
                             Text(formatUptime(snapshot.host.uptime))
                                 .font(.system(size: 34, weight: .bold, design: .rounded))
                                 .monospacedDigit()
                                 .moniNumericTransition(Int(snapshot.host.uptime))
+                                .help("Time since this Mac last started.")
                             Text("Uptime")
                                 .foregroundStyle(.secondary)
+                                .help("Time since this Mac last started.")
                         }
-                        VStack(spacing: 12) {
-                            MetricRow(label: "Load", value: snapshot.host.loadAverages.map { String(format: "%.2f", $0) }.joined(separator: " · "), color: MoniPalette.orange)
-                            MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple)
+                        VStack(spacing: 9) {
+                            hostHardwareGrid
+                            hostLoadRow
+                            MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple, helpText: "Number of processes currently reported by macOS.")
                         }
                         .frame(maxWidth: .infinity)
                     }
                 } else {
-                    Text(snapshot.host.model)
+                    Text("\(hostOperatingSystemLabel) · \(hostChipLabel)")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                    Text(formatUptime(snapshot.host.uptime))
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .moniNumericTransition(Int(snapshot.host.uptime))
-                    Text("Uptime")
-                        .foregroundStyle(.secondary)
-                    MetricRow(label: "Load", value: snapshot.host.loadAverages.map { String(format: "%.2f", $0) }.joined(separator: " · "), color: MoniPalette.orange)
-                    MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .help("Current macOS release installed on this Mac.")
+                    HStack(alignment: .bottom, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(formatUptime(snapshot.host.uptime))
+                                .font(.system(size: 34, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .moniNumericTransition(Int(snapshot.host.uptime))
+                                .help("Time since this Mac last started.")
+                            Text("Uptime")
+                                .foregroundStyle(.secondary)
+                        }
+                        .help("Time since this Mac last started.")
+                        Spacer(minLength: 8)
+                        hostHardwareGrid
+                    }
+                    hostLoadRow
+                    MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple, helpText: "Number of processes currently reported by macOS.")
                 }
             }
         }
     }
 
+    private var hostHardwareGrid: some View {
+        VStack(spacing: 7) {
+            HStack(spacing: 14) {
+                hostHardwareStat("Display", hostDisplaySize, help: "Physical diagonal size of the main display.")
+                hostHardwareStat("Battery", hostBatteryHealth, help: "Estimated battery health based on maximum capacity compared with design capacity.")
+            }
+            HStack(spacing: 14) {
+                hostHardwareStat("Memory", bytes(snapshot.memory.totalBytes), help: "Total physical unified memory installed in this Mac.")
+                hostHardwareStat("Storage", hostStorageCapacity, help: "Total capacity of the startup volume.")
+            }
+        }
+    }
+
+    private func hostHardwareStat(_ label: String, _ value: String, help: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 13.5, weight: .bold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .help(help)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var hostLoadRow: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(MoniPalette.orange)
+                .frame(width: 7, height: 7)
+            Text("Load")
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            ForEach(Array(snapshot.host.loadAverages.enumerated()), id: \.offset) { index, value in
+                if index > 0 {
+                    Text("·")
+                }
+                Text(String(format: "%.2f", value))
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+                    .moniNumericTransition(value)
+                    .help(hostLoadHelp(index))
+            }
+        }
+        .font(.system(size: 12))
+    }
+
+    private func hostLoadHelp(_ index: Int) -> String {
+        let period = ["1 minute", "5 minutes", "15 minutes"][index]
+        return "Average number of runnable or waiting tasks over the last \(period)."
+    }
+
+    private var hostStorageCapacity: String {
+        guard let rootVolume = snapshot.volumes.first(where: { $0.mountPath == "/" }),
+              rootVolume.totalBytes > 0 else { return "—" }
+        return bytes(UInt64(rootVolume.totalBytes))
+    }
+
+    private var hostDisplaySize: String {
+        snapshot.gpuDevices.first?.mainDisplayDiagonalInches
+            .map { "\(Int($0.rounded()))″" } ?? "—"
+    }
+
+    private var hostBatteryHealth: String {
+        snapshot.power.batteryHealthPercent.map { "\(Int($0.rounded()))%" } ?? "—"
+    }
+
+    private var hostOperatingSystemLabel: String {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let versionNumber = "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        let releaseName = version.majorVersion == 26 ? "Tahoe" : "macOS"
+        return "\(releaseName) \(versionNumber)"
+    }
+
+    private var hostChipLabel: String {
+        snapshot.host.chip.replacingOccurrences(of: "Apple ", with: "")
+    }
+
     private var cpuCard: some View {
         cardButton(.cpu) {
-            MetricCard(title: "CPU", symbol: MonitorSection.cpu.symbol, color: MoniPalette.pink, trailing: "\(snapshot.host.processorCount) cores") {
+            MetricCard(
+                title: "CPU",
+                symbol: MonitorSection.cpu.symbol,
+                color: MoniPalette.pink,
+                trailing: "\(snapshot.host.processorCount) cores",
+                trailingHelp: "Number of logical CPU cores available to macOS."
+            ) {
                 HStack(alignment: .bottom, spacing: 12) {
                     Text(percent(snapshot.cpu.total))
                         .font(.system(size: 36, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .moniNumericTransition(snapshot.cpu.total)
+                        .help("Total CPU time currently used across all cores.")
                     InteractiveSparkline(
                         series: [
                             InteractiveSparklineSeries(
@@ -160,10 +265,10 @@ struct SummaryView: View {
                         .frame(height: chartHeight(for: cardSize(.cpu), compact: 66))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    compactCardStat("User", percent(snapshot.cpu.user), color: MoniPalette.pink)
-                    compactCardStat("System", percent(snapshot.cpu.system), color: MoniPalette.orange)
-                    compactCardStat("Nice", percent(snapshot.cpu.nice), color: MoniPalette.yellow)
-                    compactCardStat("Idle", percent(snapshot.cpu.idle), color: MoniPalette.green)
+                    compactCardStat("User", percent(snapshot.cpu.user), color: MoniPalette.pink, help: "CPU time used by apps and other user-space processes.")
+                    compactCardStat("System", percent(snapshot.cpu.system), color: MoniPalette.orange, help: "CPU time used by the macOS kernel and system services.")
+                    compactCardStat("Nice", percent(snapshot.cpu.nice), color: MoniPalette.yellow, help: "CPU time used by lower-priority processes.")
+                    compactCardStat("Idle", percent(snapshot.cpu.idle), color: MoniPalette.green, help: "CPU capacity that is currently unused.")
                 }
             }
         }
@@ -178,7 +283,14 @@ struct SummaryView: View {
                             .font(.system(size: 36, weight: .bold, design: .rounded))
                             .monospacedDigit()
                             .moniNumericTransition(snapshot.memory.usedPercent)
-                        Text("\(bytes(snapshot.memory.usedBytes)) / \(bytes(snapshot.memory.totalBytes))")
+                            .help("Percentage of physical memory currently in use.")
+                        HStack(spacing: 3) {
+                            Text(bytes(snapshot.memory.usedBytes))
+                                .help("Physical memory currently in use.")
+                            Text("/")
+                            Text(bytes(snapshot.memory.totalBytes))
+                                .help("Total physical memory installed in this Mac.")
+                        }
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -197,16 +309,16 @@ struct SummaryView: View {
                         .frame(height: chartHeight(for: cardSize(.memory), compact: 66))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    compactCardStat("Used", bytes(snapshot.memory.usedBytes), color: MoniPalette.blue)
-                    compactCardStat("Free", bytes(snapshot.memory.freeBytes), color: MoniPalette.green)
-                    compactCardStat("Cached", bytes(snapshot.memory.cachedBytes), color: MoniPalette.cyan)
-                    compactCardStat("Wired", bytes(snapshot.memory.wiredBytes), color: MoniPalette.orange)
+                    compactCardStat("Used", bytes(snapshot.memory.usedBytes), color: MoniPalette.blue, help: "Physical memory currently occupied by apps, the system, and caches.")
+                    compactCardStat("Free", bytes(snapshot.memory.freeBytes), color: MoniPalette.green, help: "Physical memory that is immediately unused.")
+                    compactCardStat("Cached", bytes(snapshot.memory.cachedBytes), color: MoniPalette.cyan, help: "Memory holding reusable file data that macOS can reclaim when needed.")
+                    compactCardStat("Wired", bytes(snapshot.memory.wiredBytes), color: MoniPalette.orange, help: "Memory reserved by the kernel that cannot be compressed or paged out.")
                 }
             }
         }
     }
 
-    private func compactCardStat(_ label: String, _ value: String, color: Color) -> some View {
+    private func compactCardStat(_ label: String, _ value: String, color: Color, help: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 5) {
                 Circle()
@@ -218,6 +330,7 @@ struct SummaryView: View {
             Text(value)
                 .fontWeight(.bold)
                 .monospacedDigit()
+                .help(help)
         }
         .font(.system(size: 11.5))
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -228,13 +341,20 @@ struct SummaryView: View {
         let isWide = size.columns >= 2
 
         return cardButton(.gpu) {
-            MetricCard(title: "GPU", symbol: MonitorSection.gpu.symbol, color: MoniPalette.green, trailing: "\(snapshot.gpuDevices.count) device\(snapshot.gpuDevices.count == 1 ? "" : "s")") {
+            MetricCard(
+                title: "GPU",
+                symbol: MonitorSection.gpu.symbol,
+                color: MoniPalette.green,
+                trailing: "\(snapshot.gpuDevices.count) device\(snapshot.gpuDevices.count == 1 ? "" : "s")",
+                trailingHelp: "Number of GPU devices detected by macOS."
+            ) {
                 HStack(alignment: .bottom, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Utilization")
                             .foregroundStyle(.secondary)
                         Text(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
                             .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .help("Current overall GPU utilization reported by macOS.")
                         Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
                             .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
@@ -259,10 +379,10 @@ struct SummaryView: View {
                     columns: Array(repeating: GridItem(.flexible()), count: isWide ? 3 : 2),
                     spacing: 8
                 ) {
-                    compactCardStat("Renderer", snapshot.gpu.rendererPercent.map(percent) ?? "—", color: MoniPalette.green)
-                    compactCardStat("Tiler", snapshot.gpu.tilerPercent.map(percent) ?? "—", color: MoniPalette.cyan)
+                    compactCardStat("Renderer", snapshot.gpu.rendererPercent.map(percent) ?? "—", color: MoniPalette.green, help: "Share of GPU renderer capacity currently in use.")
+                    compactCardStat("Tiler", snapshot.gpu.tilerPercent.map(percent) ?? "—", color: MoniPalette.cyan, help: "Share of GPU tiler capacity currently in use.")
                     if isWide {
-                        compactCardStat("Allocated", snapshot.gpu.allocatedMemoryBytes.map(bytes) ?? "—", color: MoniPalette.blue)
+                        compactCardStat("Allocated", snapshot.gpu.allocatedMemoryBytes.map(bytes) ?? "—", color: MoniPalette.blue, help: "Unified memory currently allocated to GPU workloads.")
                     }
                 }
             }
@@ -279,15 +399,19 @@ struct SummaryView: View {
                         Label("Download", systemImage: "arrow.down")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(MoniPalette.cyan)
+                            .help("Current incoming network transfer rate.")
                         Text(rate(snapshot.network.downloadBytesPerSecond))
                             .font(.system(size: 23, weight: .bold, design: .rounded))
                             .moniNumericTransition(snapshot.network.downloadBytesPerSecond)
+                            .help("Current incoming network transfer rate.")
                         Label("Upload", systemImage: "arrow.up")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(MoniPalette.orange)
+                            .help("Current outgoing network transfer rate.")
                         Text(rate(snapshot.network.uploadBytesPerSecond))
                             .font(.system(size: 23, weight: .bold, design: .rounded))
                             .moniNumericTransition(snapshot.network.uploadBytesPerSecond)
+                            .help("Current outgoing network transfer rate.")
                     }
                     InteractiveSparkline(
                         series: [
@@ -311,8 +435,8 @@ struct SummaryView: View {
                     .frame(height: chartHeight(for: size, compact: 72))
                 }
                 HStack(spacing: 16) {
-                    networkTotal("Received", bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan)
-                    networkTotal("Sent", bytes(snapshot.network.totalSentBytes), color: MoniPalette.orange)
+                    networkTotal("Received", bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan, help: "Total data received across network interfaces since the counters started.")
+                    networkTotal("Sent", bytes(snapshot.network.totalSentBytes), color: MoniPalette.orange, help: "Total data sent across network interfaces since the counters started.")
                 }
                 HStack(spacing: 6) {
                     Circle()
@@ -321,16 +445,18 @@ struct SummaryView: View {
                     Text(primaryNetworkLabel)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .help("Primary network interface and physical Wi-Fi mode.")
                     Spacer(minLength: 4)
                     Text("\(snapshot.network.interfaces.filter(\.isActive).count) active")
                         .foregroundStyle(.tertiary)
+                        .help("Number of network interfaces currently marked active.")
                 }
                 .font(.system(size: 11.5))
             }
         }
     }
 
-    private func networkTotal(_ label: String, _ value: String, color: Color) -> some View {
+    private func networkTotal(_ label: String, _ value: String, color: Color, help: String) -> some View {
         HStack(spacing: 5) {
             Circle()
                 .fill(color)
@@ -340,6 +466,7 @@ struct SummaryView: View {
             Text(value)
                 .fontWeight(.bold)
                 .monospacedDigit()
+                .help(help)
         }
         .font(.system(size: 11.5))
     }
@@ -354,7 +481,13 @@ struct SummaryView: View {
         let size = cardSize(.storage)
 
         return cardButton(.storage) {
-            MetricCard(title: "Storage", symbol: MonitorSection.storage.symbol, color: MoniPalette.orange, trailing: "\(snapshot.volumes.count) volumes") {
+            MetricCard(
+                title: "Storage",
+                symbol: MonitorSection.storage.symbol,
+                color: MoniPalette.orange,
+                trailing: "\(snapshot.volumes.count) volumes",
+                trailingHelp: "Number of currently mounted storage volumes."
+            ) {
                 if snapshot.volumes.isEmpty {
                     Text("No mounted volumes")
                         .foregroundStyle(.secondary)
@@ -368,8 +501,8 @@ struct SummaryView: View {
                         }
                     }
                     HStack(spacing: 16) {
-                        networkTotal("Read", rate(snapshot.diskActivity.readBytesPerSecond), color: MoniPalette.cyan)
-                        networkTotal("Write", rate(snapshot.diskActivity.writeBytesPerSecond), color: MoniPalette.orange)
+                        networkTotal("Read", rate(snapshot.diskActivity.readBytesPerSecond), color: MoniPalette.cyan, help: "Current rate of data being read from storage devices.")
+                        networkTotal("Write", rate(snapshot.diskActivity.writeBytesPerSecond), color: MoniPalette.orange, help: "Current rate of data being written to storage devices.")
                     }
                 }
             }
@@ -387,11 +520,19 @@ struct SummaryView: View {
                     .fontWeight(.bold)
                     .foregroundStyle(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.green)
                     .moniNumericTransition(volume.usedPercent)
+                    .help("Percentage of \(volume.mountPath) currently used.")
             }
             ProgressView(value: volume.usedPercent, total: 100)
                 .tint(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
                 .moniAnimation(MoniMotion.data, value: volume.usedPercent)
-            Text("\(bytes(UInt64(volume.usedBytes))) / \(bytes(UInt64(volume.totalBytes))) used")
+            HStack(spacing: 3) {
+                Text(bytes(UInt64(volume.usedBytes)))
+                    .help("Storage currently used on \(volume.mountPath).")
+                Text("/")
+                Text(bytes(UInt64(volume.totalBytes)))
+                    .help("Total storage capacity of \(volume.mountPath).")
+                Text("used")
+            }
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -404,7 +545,13 @@ struct SummaryView: View {
         let itemCount = max(4, size.columns * size.rows * 4)
 
         return cardButton(.processes) {
-            MetricCard(title: "Processes", symbol: MonitorSection.processes.symbol, color: MoniPalette.purple, trailing: snapshot.processes.count.formatted()) {
+            MetricCard(
+                title: "Processes",
+                symbol: MonitorSection.processes.symbol,
+                color: MoniPalette.purple,
+                trailing: snapshot.processes.count.formatted(),
+                trailingHelp: "Number of processes currently reported by macOS."
+            ) {
                 LazyVGrid(
                     columns: Array(
                         repeating: GridItem(.flexible(), spacing: 18, alignment: .leading),
@@ -435,13 +582,16 @@ struct SummaryView: View {
                     Text("PID \(process.pid)")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                        .help("Process identifier assigned by macOS.")
                 }
                 Spacer(minLength: 4)
                 Text("\(percent(process.cpuPercent)) CPU")
                     .monospacedDigit()
+                    .help("Current CPU share used by \(process.name).")
                 Text("\(percent(memoryPercent)) MEM")
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                    .help("Share of total physical memory used by \(process.name).")
             }
             HStack(spacing: 6) {
                 ProgressView(value: min(100, process.cpuPercent), total: 100)
@@ -465,15 +615,23 @@ struct SummaryView: View {
                             .foregroundStyle(.secondary)
                         Text(snapshot.power.batteryPercent.map(percent) ?? "No Battery")
                             .font(.system(size: 32, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                             .moniNumericTransition(snapshot.power.batteryPercent)
+                            .help("Current battery charge level. “No Battery” is shown on desktop Macs.")
                     }
+                    .layoutPriority(1)
                     Spacer()
                     VStack(alignment: .leading, spacing: 3) {
                         Text("CPU die")
                             .foregroundStyle(.secondary)
                         Text(snapshot.power.cpuTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "No Data")
                             .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .help("Temperature reported by the CPU die sensor.")
                     }
+                    .layoutPriority(1)
                     InteractiveSparkline(
                         series: [
                             InteractiveSparklineSeries(
@@ -493,16 +651,21 @@ struct SummaryView: View {
                     columns: Array(repeating: GridItem(.flexible()), count: isWide ? 4 : 2),
                     spacing: 10
                 ) {
-                    powerStat("Fan", snapshot.power.fans.first.map { String(format: "%.0f rpm", $0.revolutionsPerMinute) } ?? "—")
-                    powerStat("Cycles", snapshot.power.cycleCount.map(String.init) ?? "—")
-                    powerStat("Power draw", snapshot.power.systemPowerWatts.map { String(format: "%.1f W", $0) } ?? "—")
-                    powerStat("Health", snapshot.power.batteryHealth ?? "—", color: batteryHealthColor)
+                    powerStat("Fan", snapshot.power.fans.first.map { String(format: "%.0f rpm", $0.revolutionsPerMinute) } ?? "—", help: "Rotation speed of the first detected cooling fan.")
+                    powerStat("Cycles", snapshot.power.cycleCount.map(String.init) ?? "—", help: "Number of completed battery charge cycles.")
+                    powerStat("Power draw", snapshot.power.systemPowerWatts.map { String(format: "%.1f W", $0) } ?? "—", help: "Estimated electrical power currently consumed by the system.")
+                    powerStat("Health", snapshot.power.batteryHealth ?? "—", color: batteryHealthColor, help: "Battery condition reported by macOS.")
                 }
             }
         }
     }
 
-    private func powerStat(_ label: String, _ value: String, color: Color = MoniPalette.foreground) -> some View {
+    private func powerStat(
+        _ label: String,
+        _ value: String,
+        color: Color = MoniPalette.foreground,
+        help: String
+    ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
                 .foregroundStyle(.secondary)
@@ -511,6 +674,7 @@ struct SummaryView: View {
                 .foregroundStyle(color)
                 .monospacedDigit()
                 .lineLimit(1)
+                .help(help)
         }
         .font(.system(size: 12))
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -532,7 +696,8 @@ struct SummaryView: View {
                 color: color,
                 trailing: docker.isRunning
                     ? "\(docker.runningContainerCount)/\(docker.containers.count) up"
-                    : nil
+                    : nil,
+                trailingHelp: "Running Docker containers compared with all detected containers."
             ) {
                 if cardSize(.docker).columns >= 2 {
                     HStack(alignment: .top, spacing: 32) {
@@ -546,7 +711,8 @@ struct SummaryView: View {
                             MetricRow(
                                 label: "Engine",
                                 value: docker.isRunning ? "Connected" : "Unavailable",
-                                color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red
+                                color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red,
+                                helpText: "Whether Moni can currently communicate with the local Docker engine."
                             )
                             Text(docker.statusReason)
                                 .font(.system(size: 11))
@@ -564,7 +730,8 @@ struct SummaryView: View {
                     MetricRow(
                         label: "Engine",
                         value: docker.isRunning ? "Connected" : "Unavailable",
-                        color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red
+                        color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red,
+                        helpText: "Whether Moni can currently communicate with the local Docker engine."
                     )
                     Text(docker.statusReason)
                         .font(.system(size: 11))
@@ -585,7 +752,9 @@ struct SummaryView: View {
                 color: MoniPalette.indigo,
                 trailing: "\(visibleAIProviders.count) Account"
                     + (visibleAIProviders.count == 1 ? "" : "s"),
-                trailingSymbol: "chevron.right"
+                trailingSymbol: "chevron.right",
+                trailingHelp: "Number of enabled usage-provider accounts detected from local data.",
+                allowsContentOverflow: true
             ) {
                 if visibleAIProviders.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -605,11 +774,12 @@ struct SummaryView: View {
                         }
                     }
                     Spacer()
-                    MetricRow(label: "Providers", value: "0", color: MoniPalette.indigo)
+                    MetricRow(label: "Providers", value: "0", color: MoniPalette.indigo, helpText: "Number of enabled usage providers detected from local logs.")
                 } else if size.columns >= 2 {
                     HStack(alignment: .top, spacing: 16) {
                         aiUsageOverview
                             .frame(width: size.columns == 3 ? 190 : 150)
+                            .zIndex(1)
                         aiUsageProviderStrip
                     }
                     .frame(maxHeight: .infinity)
@@ -639,25 +809,33 @@ struct SummaryView: View {
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .moniNumericTransition(todayTokens)
-            Text(aiUsageSubtitle(todayCost: todayCost))
-                .font(.system(size: 13.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .padding(.top, 4)
-            DailyUsageChart(values: aiUsage.summary.daily)
+                .help("Total tokens recorded today across all enabled providers.")
+            HStack(spacing: 3) {
+                Text("≈")
+                Text(currency(todayCost))
+                    .monospacedDigit()
+                    .help("Estimated API-list-price cost of all tokens recorded today.")
+                Text("today ·")
+                Text("\(compactTokens(aiUsage.summary.totalTokens)) tokens")
+                    .monospacedDigit()
+                    .help("Total tokens recorded in the rolling dashboard window.")
+                Text("· \(AIUsageStore.dashboardWindowDays)d")
+                    .monospacedDigit()
+                    .help("Length of the rolling dashboard window in days.")
+            }
+            .font(.system(size: 11.5))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .padding(.top, 4)
+            DailyUsageChart(
+                values: aiUsage.summary.daily,
+                tooltipAvoidsPointer: true
+            )
                 .frame(minHeight: 40, maxHeight: .infinity)
                 .padding(.top, 14)
         }
         .frame(maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    /// The card always reads the rolling dashboard window, so the AI screen's
-    /// picker can never empty it out.
-    private func aiUsageSubtitle(todayCost: Double) -> String {
-        "≈ \(currency(todayCost)) today · "
-            + "\(compactTokens(aiUsage.summary.totalTokens)) tokens "
-            + "in \(AIUsageStore.dashboardWindowDays)d"
     }
 
     private var aiUsageProviderStrip: some View {
@@ -698,16 +876,19 @@ struct SummaryView: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
+                    .help("Detected subscription plan for this provider.")
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(compactTokens(todayUsage?.tokens ?? 0))
                     .font(.system(size: 21, weight: .bold, design: .rounded))
                     .monospacedDigit()
+                    .help("Tokens recorded today for this provider.")
                 Text(currency(todayUsage?.costUSD ?? 0))
                     .font(.system(size: 12.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help("Estimated API-list-price cost of this provider’s tokens recorded today.")
             }
             .padding(.top, 8)
 
@@ -720,6 +901,7 @@ struct SummaryView: View {
                         .fontWeight(.bold)
                         .foregroundStyle(color)
                         .monospacedDigit()
+                        .help("Estimated percentage remaining in this provider-reported quota window.")
                 }
                 .font(.system(size: 11.5))
                 .padding(.top, 12)
@@ -742,6 +924,7 @@ struct SummaryView: View {
                     Text("\(provider.requestCount.formatted()) requests")
                         .fontWeight(.semibold)
                         .monospacedDigit()
+                        .help("Number of requests recorded locally for this provider.")
                 }
                 .font(.system(size: 11.5))
                 .padding(.top, 12)
@@ -753,6 +936,7 @@ struct SummaryView: View {
                 Text(quotaResetLabel(quota))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
+                    .help("Time remaining until this provider reports that the quota window resets.")
                 Spacer(minLength: 4)
                 Text(
                     showsWeeklyLimit

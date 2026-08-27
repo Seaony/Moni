@@ -1,23 +1,17 @@
 import Foundation
 
 nonisolated enum AIUsageRange: String, CaseIterable, Codable, Identifiable, Sendable {
-    case today
-    case yesterday
-    case week
-    case lastWeek
-    case month
-    case year
+    case last30Days
+    case last90Days
+    case all
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .today: "Today"
-        case .yesterday: "Yesterday"
-        case .week: "This week"
-        case .lastWeek: "Last week"
-        case .month: "This month"
-        case .year: "This year"
+        case .last30Days: "Last 30 days"
+        case .last90Days: "Last 90 days"
+        case .all: "All"
         }
     }
 
@@ -26,24 +20,14 @@ nonisolated enum AIUsageRange: String, CaseIterable, Codable, Identifiable, Send
         let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? date
 
         switch self {
-        case .today:
-            return DateInterval(start: today, end: tomorrow)
-        case .yesterday:
-            let start = calendar.date(byAdding: .day, value: -1, to: today) ?? today
-            return DateInterval(start: start, end: today)
-        case .week:
-            let start = calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? today
+        case .last30Days:
+            let start = calendar.date(byAdding: .day, value: -29, to: today) ?? today
             return DateInterval(start: start, end: tomorrow)
-        case .lastWeek:
-            let thisWeek = calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? today
-            let start = calendar.date(byAdding: .weekOfYear, value: -1, to: thisWeek) ?? thisWeek
-            return DateInterval(start: start, end: thisWeek)
-        case .month:
-            let start = calendar.dateInterval(of: .month, for: date)?.start ?? today
+        case .last90Days:
+            let start = calendar.date(byAdding: .day, value: -89, to: today) ?? today
             return DateInterval(start: start, end: tomorrow)
-        case .year:
-            let start = calendar.dateInterval(of: .year, for: date)?.start ?? today
-            return DateInterval(start: start, end: tomorrow)
+        case .all:
+            return DateInterval(start: .distantPast, end: tomorrow)
         }
     }
 }

@@ -180,7 +180,7 @@ private struct SettingsSwitch: View {
 
 private struct AIUsageSettings: View {
     @EnvironmentObject private var store: AIUsageStore
-    @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.month.rawValue
+    @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.last30Days.rawValue
     @AppStorage(PreferenceKey.disabledAIProviders) private var disabledProviderValue = ""
 
     private static let knownProviders = [
@@ -189,7 +189,7 @@ private struct AIUsageSettings: View {
     ]
 
     private var range: AIUsageRange {
-        AIUsageRange(rawValue: rangeValue) ?? .month
+        AIUsageRange(rawValue: rangeValue) ?? .last30Days
     }
 
     private var detectedProviders: [AIProviderUsage] {
@@ -271,7 +271,7 @@ private struct AIUsageSettings: View {
             }
         }
         .onChange(of: rangeValue) { _, value in
-            store.refresh(range: AIUsageRange(rawValue: value) ?? .month, includeQuotas: true)
+            store.refresh(range: AIUsageRange(rawValue: value) ?? .last30Days, includeQuotas: true)
         }
         .task {
             store.loadIfNeeded(range: range, includeQuotas: true)

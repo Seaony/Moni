@@ -4,8 +4,10 @@ private enum DashboardSizing {
     static let designWidth: CGFloat = 900
     static let designHeight: CGFloat = 850
     static let interfaceScale: CGFloat = 1.0
+    static let toolbarContentSpacing: CGFloat = 10
+    static let contentTopPadding: CGFloat = 14
+    static let contentBottomPadding: CGFloat = 18
     static let renderedWidth = designWidth * interfaceScale
-    static let renderedHeight = designHeight * interfaceScale
 }
 
 enum MonitorSection: String, CaseIterable, Identifiable {
@@ -71,21 +73,35 @@ struct ContentView: View {
     @State private var selection: MonitorSection = .summary
     @State private var hoveredSection: MonitorSection?
     @State private var settingsSection: SettingsSection = .general
+    @State private var hostContentHeight: CGFloat?
+    @State private var toolbarHeight: CGFloat = 0
+    @State private var statusBarHeight: CGFloat = 0
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
     @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 10) {
+            VStack(spacing: DashboardSizing.toolbarContentSpacing) {
                 toolbar
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height
+                    } action: { height in
+                        toolbarHeight = height
+                    }
 
                 ZStack(alignment: .topLeading) {
                     Group {
                         if selection == .summary {
                             SummaryView(selection: animatedSelection)
                         } else if [.host, .cpu, .memory, .processes].contains(selection) {
-                            PrimaryDetailView(section: selection, selection: animatedSelection)
+                            PrimaryDetailView(
+                                section: selection,
+                                selection: animatedSelection,
+                                onHostContentHeightChange: { height in
+                                    hostContentHeight = height
+                                }
+                            )
                         } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
                             SecondaryDetailView(section: selection, selection: animatedSelection)
                         } else if selection == .ai {
@@ -105,16 +121,22 @@ struct ContentView: View {
                     .transition(reduceMotion ? .identity : MoniMotion.pageTransition)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .moniAnimation(MoniMotion.navigation, value: selection)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 14)
-            .padding(.bottom, 18)
+            .padding(.top, DashboardSizing.contentTopPadding)
+            .padding(.bottom, DashboardSizing.contentBottomPadding)
 
             statusBar
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { height in
+                    statusBarHeight = height
+                }
         }
         .frame(
             width: DashboardSizing.designWidth,
-            height: DashboardSizing.designHeight,
+            height: windowHeight,
             alignment: .topLeading
         )
         .foregroundStyle(MoniPalette.foreground)
@@ -134,10 +156,28 @@ struct ContentView: View {
         .scaleEffect(DashboardSizing.interfaceScale, anchor: .topLeading)
         .frame(
             width: DashboardSizing.renderedWidth,
-            height: DashboardSizing.renderedHeight,
+            height: windowHeight * DashboardSizing.interfaceScale,
             alignment: .topLeading
         )
         .clipped()
+    }
+
+    private var windowHeight: CGFloat {
+        guard selection == .host,
+              let hostContentHeight,
+              toolbarHeight > 0,
+              statusBarHeight > 0
+        else {
+            return DashboardSizing.designHeight
+        }
+
+        let fittedHeight = DashboardSizing.contentTopPadding
+            + toolbarHeight
+            + DashboardSizing.toolbarContentSpacing
+            + hostContentHeight
+            + DashboardSizing.contentBottomPadding
+            + statusBarHeight
+        return min(DashboardSizing.designHeight, ceil(fittedHeight))
     }
 
     private var preferredColorScheme: ColorScheme? {
@@ -154,13 +194,7 @@ struct ContentView: View {
 
     private func select(_ section: MonitorSection) {
         guard section != selection else { return }
-        if reduceMotion {
-            selection = section
-        } else {
-            withAnimation(MoniMotion.navigation) {
-                selection = section
-            }
-        }
+        selection = section
     }
 
     private var toolbar: some View {

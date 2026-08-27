@@ -231,6 +231,7 @@ struct PowerUsage: Sendable {
     var batteryTemperatureCelsius: Double?
     var cycleCount: Int?
     var batteryHealth: String?
+    var batteryHealthPercent: Double?
     var voltageVolts: Double?
     var currentAmps: Double?
     var systemPowerWatts: Double?
@@ -251,6 +252,7 @@ struct PowerUsage: Sendable {
         batteryTemperatureCelsius: Double? = nil,
         cycleCount: Int? = nil,
         batteryHealth: String? = nil,
+        batteryHealthPercent: Double? = nil,
         voltageVolts: Double? = nil,
         currentAmps: Double? = nil,
         systemPowerWatts: Double? = nil,
@@ -270,6 +272,7 @@ struct PowerUsage: Sendable {
         self.batteryTemperatureCelsius = batteryTemperatureCelsius
         self.cycleCount = cycleCount
         self.batteryHealth = batteryHealth
+        self.batteryHealthPercent = batteryHealthPercent
         self.voltageVolts = voltageVolts
         self.currentAmps = currentAmps
         self.systemPowerWatts = systemPowerWatts
@@ -293,6 +296,7 @@ struct GPUDeviceInfo: Identifiable, Sendable {
     let hasUnifiedMemory: Bool
     let unifiedMemoryBytes: UInt64?
     let mainDisplayResolution: String?
+    let mainDisplayDiagonalInches: Double?
     let mainDisplayRefreshRateHertz: Double?
 
     var id: UInt64 { registryID }

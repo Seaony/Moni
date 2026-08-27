@@ -288,7 +288,8 @@ actor AIUsageScanner {
             start: interval.start,
             end: interval.end,
             includeQuotas: includeQuotas,
-            now: now
+            now: now,
+            fillsEmptyDaysFromStart: range != .all
         )
     }
 
@@ -296,7 +297,8 @@ actor AIUsageScanner {
         start: Date,
         end: Date,
         includeQuotas: Bool,
-        now: Date
+        now: Date,
+        fillsEmptyDaysFromStart: Bool = true
     ) async -> AIUsageSummary {
         loadPersistentCachesIfNeeded()
         var daily: [Date: DailyBucket] = [:]
@@ -327,9 +329,12 @@ actor AIUsageScanner {
         ].filter { $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty }
         let providers = coreProviders + detectedProviders
         let lastDay = calendar.date(byAdding: .day, value: -1, to: end) ?? start
+        let firstDay = fillsEmptyDaysFromStart
+            ? start
+            : daily.keys.min() ?? calendar.startOfDay(for: now)
         let summary = AIUsageSummary(
             providers: providers,
-            daily: dailyUsage(from: start, through: lastDay, buckets: daily),
+            daily: dailyUsage(from: firstDay, through: lastDay, buckets: daily),
             scannedAt: now,
             quotaScannedAt: nil
         )
