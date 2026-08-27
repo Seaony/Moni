@@ -13,6 +13,7 @@ struct MoniApp: App {
     @StateObject private var monitor = SystemMonitor()
     @StateObject private var aiUsage = AIUsageStore()
     @StateObject private var updates = UpdateController()
+    @AppStorage(PreferenceKey.appLanguage) private var appLanguage = AppLanguage.english.rawValue
 
     var body: some Scene {
         MenuBarExtra {
@@ -34,7 +35,7 @@ struct MoniApp: App {
                 CheckForUpdatesCommand(updateController: updates)
             }
             CommandGroup(after: .newItem) {
-                Button("Refresh") {
+                Button(MoniLocalization.string("Refresh", language: selectedLanguage)) {
                     monitor.refresh(forceSlowMetrics: true)
                     monitor.loadNetworkExternalDetailsIfNeeded(force: true)
                     aiUsage.refreshCurrent(
@@ -46,6 +47,10 @@ struct MoniApp: App {
             }
         }
     }
+
+    private var selectedLanguage: AppLanguage {
+        AppLanguage(rawValue: appLanguage) ?? .english
+    }
 }
 
 private struct MenuBarStatusLabel: View {
@@ -55,9 +60,11 @@ private struct MenuBarStatusLabel: View {
     @AppStorage(PreferenceKey.menuBarMetric) private var menuBarMetric = MenuBarMetric.cpu.rawValue
     @AppStorage(PreferenceKey.menuBarItems) private var menuBarItems = "cpu,memory"
     @AppStorage(PreferenceKey.menuBarDisplayStyle) private var menuBarDisplayStyle = MenuBarDisplayStyle.valueOnly.rawValue
+    @AppStorage(PreferenceKey.appLanguage) private var appLanguage = AppLanguage.english.rawValue
 
     var body: some View {
         menuBarContent
+            .environment(\.locale, selectedLanguage.locale)
             .monospacedDigit()
             .fixedSize(horizontal: true, vertical: false)
             .accessibilityLabel(accessibilityLabel)
@@ -73,6 +80,10 @@ private struct MenuBarStatusLabel: View {
 
     private var selectedMetric: MenuBarMetric {
         MenuBarMetric(rawValue: menuBarMetric) ?? .cpu
+    }
+
+    private var selectedLanguage: AppLanguage {
+        AppLanguage(rawValue: appLanguage) ?? .english
     }
 
     private var selectedMetrics: [MenuBarMetric] {
@@ -120,7 +131,7 @@ private struct MenuBarStatusLabel: View {
 
     private var accessibilityLabel: String {
         visibleMetrics
-            .map { "\($0.title) \(menuBarValue($0))" }
+            .map { "\(MoniLocalization.string($0.title, language: selectedLanguage)) \(menuBarValue($0))" }
             .joined(separator: ", ")
     }
 
@@ -487,7 +498,7 @@ private struct CheckForUpdatesCommand: View {
     @ObservedObject var updateController: UpdateController
 
     var body: some View {
-        Button("Check for Updates…") {
+        Button(MoniLocalization.string("Check for Updates…")) {
             updateController.checkForUpdates()
         }
         .disabled(!updateController.canCheckForUpdates)

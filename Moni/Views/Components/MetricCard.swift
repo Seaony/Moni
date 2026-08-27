@@ -45,17 +45,17 @@ struct MetricCard<Content: View>: View {
                     .scaledToFit()
                     .frame(width: 14, height: 14)
                     .frame(width: 16, height: 16)
-                Text(title)
+                Text(MoniLocalization.string(title))
                     .fontWeight(.bold)
                 Spacer(minLength: 4)
                 if let trailing {
                     if let trailingHelp {
-                        Text(trailing)
+                        Text(MoniLocalization.string(trailing))
                             .foregroundStyle(.secondary)
                             .moniNumericTransition(trailing)
-                            .help(trailingHelp)
+                            .help(MoniLocalization.string(trailingHelp))
                     } else {
-                        Text(trailing)
+                        Text(MoniLocalization.string(trailing))
                             .foregroundStyle(.secondary)
                             .moniNumericTransition(trailing)
                     }
@@ -114,17 +114,17 @@ struct MetricRow: View {
             Circle()
                 .fill(color)
                 .frame(width: 7, height: 7)
-            Text(label)
+            Text(MoniLocalization.string(label))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
             if let helpText {
-                Text(value)
+                Text(MoniLocalization.string(value))
                     .fontWeight(.semibold)
                     .monospacedDigit()
                     .moniNumericTransition(value)
-                    .help(helpText)
+                    .help(MoniLocalization.string(helpText))
             } else {
-                Text(value)
+                Text(MoniLocalization.string(value))
                     .fontWeight(.semibold)
                     .monospacedDigit()
                     .moniNumericTransition(value)

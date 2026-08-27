@@ -6,7 +6,7 @@ struct SystemOverviewLargeWidget: Widget {
         moniWidgetConfiguration(
             kind: .systemOverviewLarge,
             displayName: "System Overview",
-            description: "集中查看 CPU、内存、网络、存储与高占用进程。",
+            description: "Shows CPU, memory, network, storage, and busy processes.",
             family: .systemLarge
         )
     }
@@ -96,7 +96,7 @@ struct AIUsageLargeWidget: Widget {
         moniWidgetConfiguration(
             kind: .aiUsageLarge,
             displayName: "AI Usage Details",
-            description: "查看 AI 总用量、成本趋势和各服务额度。",
+            description: "Shows AI usage, cost trends, and provider quotas.",
             family: .systemLarge
         )
     }
@@ -107,12 +107,17 @@ struct AIUsageLargeWidgetView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            WidgetHeader(title: "AI Usage", symbol: "sparkles", color: WidgetTheme.indigo, trailing: "This month · \(snapshot.providers.count) accounts")
+            WidgetHeader(
+                title: "AI Usage",
+                symbol: "sparkles",
+                color: WidgetTheme.indigo,
+                trailing: MoniLocalization.format("%@ · %@ accounts", MoniLocalization.string("This month"), snapshot.providers.count.formatted())
+            )
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(snapshot.estimatedCostUSD?.formatted(.currency(code: "USD").precision(.fractionLength(0))) ?? "—")
                     .font(.system(size: 34, weight: .heavy, design: .rounded))
                     .monospacedDigit()
-                Text(compact(snapshot.totalTokens) + " tokens")
+                Text(MoniLocalization.format("%@ tokens", compact(snapshot.totalTokens)))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(WidgetTheme.secondary)
             }
@@ -155,7 +160,7 @@ struct AIUsageLargeWidgetView: View {
                     }
                 }
                 .frame(height: 4)
-                Text(quota.map { "\(Int($0.remainingPercent.rounded()))% left" } ?? "No quota")
+                Text(quota.map { MoniLocalization.format("%@%% left", Int($0.remainingPercent.rounded()).formatted()) } ?? MoniLocalization.string("No quota"))
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(quota == nil ? WidgetTheme.tertiary : color)
                     .frame(width: 56, alignment: .trailing)
@@ -180,7 +185,7 @@ struct GPUThermalsLargeWidget: Widget {
         moniWidgetConfiguration(
             kind: .gpuThermalsLarge,
             displayName: "GPU & Thermals",
-            description: "查看 GPU 引擎负载、趋势、功耗与温度。",
+            description: "Shows GPU engine load, trends, power, and temperature.",
             family: .systemLarge
         )
     }
@@ -210,7 +215,7 @@ struct GPUThermalsLargeWidgetView: View {
                 Text(snapshot.gpu.utilizationPercent.map { "\(Int($0.rounded()))%" } ?? "—")
                     .font(.system(size: 34, weight: .heavy, design: .rounded))
                     .monospacedDigit()
-                Text(snapshot.gpu.powerWatts.map { String(format: "utilization · %.1f W", $0) } ?? "utilization")
+                Text(snapshot.gpu.powerWatts.map { MoniLocalization.format("utilization · %.1f W", $0) } ?? MoniLocalization.string("utilization"))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(WidgetTheme.secondary)
             }
@@ -250,7 +255,7 @@ struct GPUThermalsLargeWidgetView: View {
 
     private func thermalTile(_ label: String, _ value: Double?) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(MoniLocalization.string(label)).foregroundStyle(WidgetTheme.tertiary)
             Text(value.map { "\(Int($0.rounded()))°" } ?? "—")
                 .font(.system(size: 17, weight: .heavy, design: .rounded))
                 .monospacedDigit()
@@ -267,7 +272,7 @@ struct NetworkDetailLargeWidget: Widget {
         moniWidgetConfiguration(
             kind: .networkDetailLarge,
             displayName: "Network Detail",
-            description: "查看网络速率趋势、接口、延迟与公网地址。",
+            description: "Shows network trends, interfaces, latency, and public address.",
             family: .systemLarge
         )
     }
@@ -300,7 +305,7 @@ struct NetworkDetailLargeWidgetView: View {
                             .foregroundStyle(WidgetTheme.secondary)
                             .lineLimit(1)
                         Spacer(minLength: 4)
-                        Text(interface.isActive ? "Active" : "Inactive")
+                        Text(MoniLocalization.string(interface.isActive ? "Active" : "Inactive"))
                             .fontWeight(.bold)
                             .foregroundStyle(interface.isActive ? WidgetTheme.green : WidgetTheme.tertiary)
                     }
@@ -324,7 +329,7 @@ struct NetworkDetailLargeWidgetView: View {
 
     private func detailTile(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(MoniLocalization.string(label)).foregroundStyle(WidgetTheme.tertiary)
             Text(value).font(.system(size: 16, weight: .heavy, design: .rounded)).monospacedDigit().lineLimit(1)
         }
         .font(.system(size: 9.5))
@@ -339,7 +344,7 @@ struct ActivityMonitorLargeWidget: Widget {
         moniWidgetConfiguration(
             kind: .activityMonitorLarge,
             displayName: "Activity Monitor",
-            description: "查看 CPU 占用最高的进程及其内存使用。",
+            description: "Shows top CPU processes and their memory use.",
             family: .systemLarge
         )
     }
@@ -407,7 +412,7 @@ struct StorageBreakdownLargeWidget: Widget {
         moniWidgetConfiguration(
             kind: .storageBreakdownLarge,
             displayName: "Storage Breakdown",
-            description: "查看系统磁盘占用与主要目录分布。",
+            description: "Shows system disk usage and the largest folders.",
             family: .systemLarge
         )
     }
@@ -420,12 +425,17 @@ struct StorageBreakdownLargeWidgetView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            WidgetHeader(title: "Storage Breakdown", symbol: "internaldrive", color: WidgetTheme.orange, trailing: snapshot.volume.map { bytes($0.totalBytes) + " total" })
+            WidgetHeader(
+                title: "Storage Breakdown",
+                symbol: "internaldrive",
+                color: WidgetTheme.orange,
+                trailing: snapshot.volume.map { MoniLocalization.format("%@ total", bytes($0.totalBytes)) }
+            )
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(snapshot.volume.map { bytes($0.totalBytes - $0.availableBytes) } ?? "—")
                     .font(.system(size: 31, weight: .heavy, design: .rounded))
                     .monospacedDigit()
-                Text(snapshot.volume.map { "\(Int($0.usedPercent.rounded()))% used" } ?? "Unavailable")
+                Text(snapshot.volume.map { MoniLocalization.format("%@%% used", Int($0.usedPercent.rounded()).formatted()) } ?? MoniLocalization.string("Unavailable"))
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle((snapshot.volume?.usedPercent ?? 0) >= 90 ? WidgetTheme.red : WidgetTheme.secondary)
             }
@@ -482,7 +492,7 @@ struct StorageBreakdownLargeWidgetView: View {
 
     private func detailTile(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(MoniLocalization.string(label)).foregroundStyle(WidgetTheme.tertiary)
             Text(value).font(.system(size: 16, weight: .heavy, design: .rounded)).lineLimit(1)
         }
         .font(.system(size: 9.5))

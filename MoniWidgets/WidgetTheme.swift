@@ -27,11 +27,11 @@ struct WidgetHeader: View {
         HStack(spacing: 6) {
             Image(systemName: symbol)
                 .font(.system(size: 11, weight: .semibold))
-            Text(title)
+            Text(MoniLocalization.string(title))
                 .font(.system(size: 12.5, weight: .bold))
             Spacer(minLength: 4)
             if let trailing {
-                Text(trailing)
+                Text(MoniLocalization.string(trailing))
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(WidgetTheme.tertiary)
                     .lineLimit(1)

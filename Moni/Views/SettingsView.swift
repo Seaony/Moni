@@ -2,6 +2,7 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 import UserNotifications
+import WidgetKit
 
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general, menuBar, alerts, aiUsage, modules, about
@@ -9,7 +10,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var title: String {
-        switch self {
+        let key: String = switch self {
         case .general: "General"
         case .menuBar: "Menu Bar"
         case .alerts: "Alerts"
@@ -17,6 +18,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .modules: "Modules"
         case .about: "About"
         }
+        return MoniLocalization.string(key)
     }
 
     var symbol: String {
@@ -111,14 +113,20 @@ struct SettingsView: View {
 private struct SettingsChoiceButton: View {
     let title: String
     let selected: Bool
+    var systemImage: String?
     var expand = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(selected ? Color.white : MoniPalette.foregroundSecondary)
+            HStack(spacing: 6) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                }
+                Text(MoniLocalization.string(title))
+            }
+            .font(.system(size: 12.5, weight: .semibold))
+            .foregroundStyle(selected ? Color.white : MoniPalette.foregroundSecondary)
                 .frame(maxWidth: expand ? .infinity : nil)
                 .padding(.horizontal, 13)
                 .padding(.vertical, 7)
@@ -140,17 +148,16 @@ private struct SettingsToggleRow: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
+                    Text(MoniLocalization.string(title))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(MoniPalette.foreground)
-                    Text(hint)
+                    Text(MoniLocalization.string(hint))
                         .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
                 }
                 Spacer(minLength: 12)
                 SettingsSwitch(isOn: isOn)
             }
-            .padding(.horizontal, 10)
             .padding(.vertical, 9)
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
@@ -297,7 +304,7 @@ private struct AIUsageSettings: View {
                     Text(displayName(providerName))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(isDetected ? MoniPalette.foreground : Color.secondary.opacity(0.55))
-                    Text(usage.map(providerSource) ?? (isProviderEnabled(providerName) ? "Not detected" : "Turned off"))
+                    Text(MoniLocalization.string(usage.map(providerSource) ?? (isProviderEnabled(providerName) ? "Not detected" : "Turned off")))
                         .font(.system(size: 12))
                         .foregroundStyle(isDetected ? Color.secondary.opacity(0.65) : Color.secondary.opacity(0.4))
                         .lineLimit(1)
@@ -474,9 +481,9 @@ private struct AlertSettings: View {
     ) -> some View {
         VStack(spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(title)
+                Text(MoniLocalization.string(title))
                     .font(.system(size: 13, weight: .semibold))
-                Text(hint)
+                Text(MoniLocalization.string(hint))
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
                 Spacer()
@@ -552,6 +559,7 @@ private struct AlertSettings: View {
 
 private struct GeneralSettings: View {
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(PreferenceKey.appLanguage) private var appLanguage = AppLanguage.english.rawValue
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
     @AppStorage(PreferenceKey.windowZoom) private var windowZoom = 1.0
@@ -561,26 +569,65 @@ private struct GeneralSettings: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
     @State private var notificationError: String?
+    @State private var pendingWindowZoom: Double?
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
+                DetailPanel("Language") {
+                    HStack(spacing: 6) {
+                        ForEach(AppLanguage.allCases) { language in
+                            SettingsChoiceButton(
+                                title: language.title,
+                                selected: selectedLanguage == language,
+                                systemImage: language == .english ? "character.book.closed" : "character.book.closed.zh",
+                                expand: true
+                            ) {
+                                appLanguage = language.rawValue
+                                MoniLocalization.setLanguage(language)
+                                WidgetCenter.shared.reloadAllTimelines()
+                            }
+                        }
+                    }
+                    Text("Changes the language across Moni, the menu bar, notifications, and widgets.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                }
+
                 DetailPanel("Appearance") {
                     HStack(spacing: 6) {
-                        SettingsChoiceButton(title: "Dark", selected: storedAppearance == .dark, expand: true) {
+                        SettingsChoiceButton(
+                            title: "System",
+                            selected: storedAppearance == .system,
+                            systemImage: "circle.lefthalf.filled",
+                            expand: true
+                        ) {
+                            appearance = AppAppearance.system.rawValue
+                        }
+                        SettingsChoiceButton(
+                            title: "Dark",
+                            selected: storedAppearance == .dark,
+                            systemImage: "moon.fill",
+                            expand: true
+                        ) {
                             appearance = AppAppearance.dark.rawValue
                         }
-                        SettingsChoiceButton(title: "Light", selected: storedAppearance == .light, expand: true) {
+                        SettingsChoiceButton(
+                            title: "Light",
+                            selected: storedAppearance == .light,
+                            systemImage: "sun.max.fill",
+                            expand: true
+                        ) {
                             appearance = AppAppearance.light.rawValue
-                        }
-                        SettingsChoiceButton(title: "Auto", selected: storedAppearance == .system, expand: true) {
-                            appearance = AppAppearance.system.rawValue
                         }
                     }
                     Text(
                         storedAppearance == .system
-                            ? "Auto follows the macOS appearance, currently \(colorScheme == .dark ? "dark" : "light")."
-                            : "Light mode follows the same palette with inverted surfaces."
+                            ? MoniLocalization.format(
+                                "System follows the macOS appearance, currently %@.",
+                                MoniLocalization.string(colorScheme == .dark ? "dark" : "light")
+                            )
+                            : MoniLocalization.string("Light mode follows the same palette with inverted surfaces.")
                     )
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
@@ -608,20 +655,33 @@ private struct GeneralSettings: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(.tertiary)
 
-                        Slider(value: $windowZoom, in: 0.5...1.5, step: 0.1)
+                        Slider(
+                            value: Binding(
+                                get: { pendingWindowZoom ?? windowZoom },
+                                set: { pendingWindowZoom = $0 }
+                            ),
+                            in: 0.5...1.5,
+                            step: 0.1,
+                            onEditingChanged: { isEditing in
+                                guard !isEditing, let pendingWindowZoom else { return }
+                                windowZoom = pendingWindowZoom
+                                self.pendingWindowZoom = nil
+                            }
+                        )
 
-                        Text(String(format: "%.1f×", windowZoom))
+                        Text(String(format: "%.1f×", pendingWindowZoom ?? windowZoom))
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
                             .monospacedDigit()
                             .frame(width: 38, alignment: .trailing)
 
                         Button("Reset") {
+                            pendingWindowZoom = nil
                             windowZoom = 1.0
                         }
                         .buttonStyle(MoniPressButtonStyle())
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(windowZoom == 1.0 ? MoniPalette.foregroundTertiary : MoniPalette.blue)
-                        .disabled(windowZoom == 1.0)
+                        .foregroundStyle((pendingWindowZoom ?? windowZoom) == 1.0 ? MoniPalette.foregroundTertiary : MoniPalette.blue)
+                        .disabled((pendingWindowZoom ?? windowZoom) == 1.0)
                     }
                     Text("Scales the entire pop-up window. The default size is 1.0×.")
                         .font(.system(size: 12))
@@ -675,6 +735,10 @@ private struct GeneralSettings: View {
 
     private var storedAppearance: AppAppearance {
         AppAppearance(rawValue: appearance) ?? .system
+    }
+
+    private var selectedLanguage: AppLanguage {
+        AppLanguage(rawValue: appLanguage) ?? .english
     }
 
     private func settingsError(_ message: String) -> some View {
@@ -1018,10 +1082,10 @@ private struct ModuleSettings: View {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
                     .fill(color)
                     .frame(width: 9, height: 9)
-                Text(title)
+                Text(MoniLocalization.string(title))
                     .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 12)
-                Text(note)
+                Text(MoniLocalization.string(note))
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -1044,7 +1108,8 @@ private struct ModuleSettings: View {
     }
 
     private func count(_ value: Int, singular: String) -> String {
-        "\(value.formatted()) \(singular)\(value == 1 ? "" : "s")"
+        let unit = MoniLocalization.string(singular + (value == 1 ? "" : "s"))
+        return MoniLocalization.format("%@ %@", value.formatted(), unit)
     }
 }
 
@@ -1132,7 +1197,7 @@ private struct AboutSettings: View {
 
     private func aboutButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
+            Text(MoniLocalization.string(title))
                 .font(.system(size: 12.5))
                 .foregroundStyle(MoniPalette.foreground)
                 .padding(.horizontal, 14)
@@ -1146,7 +1211,7 @@ private struct AboutSettings: View {
 
     private func shortcut(_ title: String, _ keys: String) -> some View {
         HStack {
-            Text(title)
+            Text(MoniLocalization.string(title))
                 .foregroundStyle(MoniPalette.foregroundSecondary)
             Spacer()
             Text(keys)

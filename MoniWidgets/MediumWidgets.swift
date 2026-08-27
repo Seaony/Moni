@@ -6,7 +6,7 @@ struct NetworkMediumWidget: Widget {
         moniWidgetConfiguration(
             kind: .networkMedium,
             displayName: "Network",
-            description: "查看实时下载、上传速率与网络趋势。",
+            description: "Shows live download and upload rates with network trends.",
             family: .systemMedium
         )
     }
@@ -65,7 +65,7 @@ struct AIUsageMediumWidget: Widget {
         moniWidgetConfiguration(
             kind: .aiUsageMedium,
             displayName: "AI Usage",
-            description: "查看 AI 总成本、Token 和各服务周额度。",
+            description: "Shows total AI cost, tokens, and provider quotas.",
             family: .systemMedium
         )
     }
@@ -82,7 +82,7 @@ struct AIUsageMediumWidgetView: View {
                     Text(snapshot.estimatedCostUSD?.formatted(.currency(code: "USD").precision(.fractionLength(0))) ?? "—")
                         .font(.system(size: 27, weight: .heavy, design: .rounded))
                         .monospacedDigit()
-                    Text(compact(snapshot.totalTokens) + " tokens")
+                    Text(MoniLocalization.format("%@ tokens", compact(snapshot.totalTokens)))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(WidgetTheme.secondary)
                     Spacer(minLength: 4)
@@ -143,7 +143,7 @@ struct TopProcessesMediumWidget: Widget {
         moniWidgetConfiguration(
             kind: .topProcessesMedium,
             displayName: "Top Processes",
-            description: "查看 CPU 使用率最高的进程。",
+            description: "Shows the processes using the most CPU.",
             family: .systemMedium
         )
     }
@@ -200,7 +200,7 @@ struct SensorsMediumWidget: Widget {
         moniWidgetConfiguration(
             kind: .sensorsMedium,
             displayName: "Sensors",
-            description: "查看处理器、图形处理器、电池等温度传感器。",
+            description: "Shows CPU, GPU, battery, and other temperature sensors.",
             family: .systemMedium
         )
     }
@@ -256,7 +256,7 @@ struct MemoryMediumWidget: Widget {
         moniWidgetConfiguration(
             kind: .memoryMedium,
             displayName: "Memory Details",
-            description: "查看活跃、联动、压缩与空闲内存的分布。",
+            description: "Shows active, wired, compressed, and free memory.",
             family: .systemMedium
         )
     }
@@ -315,7 +315,7 @@ struct MemoryMediumWidgetView: View {
             }
             .padding(.top, 8)
             Spacer(minLength: 4)
-            Text("Swap \(bytes(snapshot.memory.swapUsedBytes))   Page ins \(snapshot.memory.pageIns.formatted())")
+            Text(MoniLocalization.format("Swap %@   Page ins %@", bytes(snapshot.memory.swapUsedBytes), snapshot.memory.pageIns.formatted()))
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(WidgetTheme.secondary)
         }
@@ -341,7 +341,7 @@ struct DiskActivityMediumWidget: Widget {
         moniWidgetConfiguration(
             kind: .diskActivityMedium,
             displayName: "Disk Activity",
-            description: "查看磁盘读写速率、IOPS 与健康状态。",
+            description: "Shows disk transfer rates, IOPS, and health.",
             family: .systemMedium
         )
     }
@@ -387,7 +387,7 @@ struct DiskActivityMediumWidgetView: View {
 
     private func metric(_ label: String, _ value: Double, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(label).foregroundStyle(color).fontWeight(.bold)
+            Text(MoniLocalization.string(label)).foregroundStyle(color).fontWeight(.bold)
             Text(ByteCountFormatter.string(fromByteCount: Int64(max(0, value)), countStyle: .decimal) + "/s")
                 .font(.system(size: 20, weight: .heavy, design: .rounded))
                 .monospacedDigit()
@@ -401,7 +401,7 @@ struct ContainersMediumWidget: Widget {
         moniWidgetConfiguration(
             kind: .containersMedium,
             displayName: "Containers",
-            description: "查看本机容器引擎及连接状态。",
+            description: "Shows the local container engine and connection status.",
             family: .systemMedium
         )
     }
@@ -421,9 +421,9 @@ struct ContainersMediumWidgetView: View {
             WidgetHeader(title: "Containers", symbol: "shippingbox", color: WidgetTheme.blue, trailing: headerDetail)
             HStack(spacing: 14) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(snapshot.docker.isRunning ? "Running" : snapshot.docker.isInstalled ? "Stopped" : "Not Found")
+                    Text(MoniLocalization.string(snapshot.docker.isRunning ? "Running" : snapshot.docker.isInstalled ? "Stopped" : "Not Found"))
                         .font(.system(size: 28, weight: .heavy, design: .rounded))
-                    Text(snapshot.docker.isRunning ? "engine connected" : "engine unavailable")
+                    Text(MoniLocalization.string(snapshot.docker.isRunning ? "engine connected" : "engine unavailable"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(WidgetTheme.secondary)
                 }
@@ -458,7 +458,7 @@ struct ContainersMediumWidgetView: View {
 
     private func statusTile(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(MoniLocalization.string(label)).foregroundStyle(WidgetTheme.tertiary)
             Text(value).fontWeight(.bold).lineLimit(1)
         }
         .font(.system(size: 10.5))
@@ -474,7 +474,7 @@ struct AlertsMediumWidget: Widget {
         moniWidgetConfiguration(
             kind: .alertsMedium,
             displayName: "Alerts",
-            description: "查看当前 CPU、内存与磁盘用量告警。",
+            description: "Shows current CPU, memory, and disk usage alerts.",
             family: .systemMedium
         )
     }
@@ -527,7 +527,7 @@ struct BatteryHistoryMediumWidget: Widget {
         moniWidgetConfiguration(
             kind: .batteryHistoryMedium,
             displayName: "Battery History",
-            description: "查看电池电量趋势、健康状态与循环次数。",
+            description: "Shows battery charge history, health, and cycle count.",
             family: .systemMedium
         )
     }
@@ -543,7 +543,7 @@ struct BatteryHistoryMediumWidgetView: View {
                 Text(snapshot.power.batteryPercent.map { "\(Int($0.rounded()))%" } ?? "—")
                     .font(.system(size: 27, weight: .heavy, design: .rounded))
                     .monospacedDigit()
-                Text(snapshot.power.isCharging ? "Charging" : "On battery")
+                Text(MoniLocalization.string(snapshot.power.isCharging ? "Charging" : "On battery"))
                     .font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(snapshot.power.isCharging ? WidgetTheme.green : WidgetTheme.secondary)
             }
@@ -563,8 +563,8 @@ struct BatteryHistoryMediumWidgetView: View {
 
     private func detail(_ label: String, _ value: String) -> some View {
         HStack(spacing: 4) {
-            Text(label).foregroundStyle(WidgetTheme.secondary)
-            Text(value).fontWeight(.bold).monospacedDigit()
+            Text(MoniLocalization.string(label)).foregroundStyle(WidgetTheme.secondary)
+            Text(MoniLocalization.string(value)).fontWeight(.bold).monospacedDigit()
         }
         .font(.system(size: 9.5))
     }

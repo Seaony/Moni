@@ -176,7 +176,7 @@ struct AIUsageView: View {
                 Text(provider.provider == "Claude" ? "Claude Code" : provider.provider)
                     .font(.system(size: 15, weight: .bold))
                 Spacer()
-                Text(provider.planName ?? "Local logs")
+                Text(MoniLocalization.string(provider.planName ?? "Local logs"))
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 9)
@@ -189,7 +189,10 @@ struct AIUsageView: View {
                 Text(tokens(provider.totalTokens))
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .moniNumericTransition(provider.totalTokens)
-                Text("tokens · \(provider.estimatedCostUSD.map(currency) ?? "unpriced")")
+                Text(MoniLocalization.format(
+                    "tokens · %@",
+                    provider.estimatedCostUSD.map(currency) ?? MoniLocalization.string("unpriced")
+                ))
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -225,7 +228,7 @@ struct AIUsageView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "exclamationmark.circle")
                         .foregroundStyle(MoniPalette.orange)
-                    Text(message)
+                    Text(MoniLocalization.string(message))
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
@@ -240,7 +243,7 @@ struct AIUsageView: View {
                     .lineLimit(1)
                     .help("Time remaining until this provider reports that the weekly quota resets.")
                 Spacer()
-                Text(weeklyLimit.map(weeklyLimitLabel) ?? "Estimating…")
+                Text(MoniLocalization.string(weeklyLimit.map(weeklyLimitLabel) ?? "Estimating…"))
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -262,7 +265,7 @@ struct AIUsageView: View {
                 Text(window.label)
                     .font(.system(size: 12.5, weight: .semibold))
                 Spacer()
-                Text("\(Int(window.remainingPercent.rounded()))% left")
+                Text(MoniLocalization.format("%@%% left", String(Int(window.remainingPercent.rounded()))))
                     .font(.system(size: 12.5, weight: .bold))
                     .foregroundStyle(color)
                     .monospacedDigit()
@@ -295,20 +298,20 @@ struct AIUsageView: View {
     }
 
     private func compactDuration(minutes: Int) -> String {
-        if minutes >= 1_440 { return "\(minutes / 1_440)d" }
-        if minutes >= 60 { return "\(minutes / 60)h" }
-        return "\(minutes)m"
+        if minutes >= 1_440 { return MoniLocalization.format("%@d", String(minutes / 1_440)) }
+        if minutes >= 60 { return MoniLocalization.format("%@h", String(minutes / 60)) }
+        return MoniLocalization.format("%@m", String(minutes))
     }
 
     private func quotaResetLabel(_ quota: AIQuotaWindow?) -> String {
-        guard let quota else { return "Reset unavailable" }
+        guard let quota else { return MoniLocalization.string("Reset unavailable") }
         if let resetsAt = quota.resetsAt {
-            return "resets in \(resetDuration(until: resetsAt))"
+            return MoniLocalization.format("resets in %@", resetDuration(until: resetsAt))
         }
         if let minutes = quota.windowMinutes {
-            return "\(compactDuration(minutes: minutes)) window"
+            return MoniLocalization.format("%@ window", compactDuration(minutes: minutes))
         }
-        return "Reset unavailable"
+        return MoniLocalization.string("Reset unavailable")
     }
 
     private func isWeeklyQuota(_ quota: AIQuotaWindow) -> Bool {
@@ -333,12 +336,12 @@ struct AIUsageView: View {
         let amount = value.formatted(
             .number.grouping(.automatic).precision(.fractionLength(value < 100 ? 1 : 0))
         )
-        return "≈ $\(amount) weekly"
+        return MoniLocalization.format("≈ $%@ weekly", amount)
     }
 
     private func totalStat(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
+            Text(MoniLocalization.string(title))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
             Text(value)
@@ -354,7 +357,7 @@ struct AIUsageView: View {
 
     private func providerStat(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).foregroundStyle(.secondary)
+            Text(MoniLocalization.string(title)).foregroundStyle(.secondary)
             Text(value).fontWeight(.bold).monospacedDigit()
         }
         .font(.system(size: 12.5))

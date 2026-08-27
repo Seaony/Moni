@@ -33,7 +33,7 @@ struct DetailPanel<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let title {
-                Text(title.uppercased())
+                Text(MoniLocalization.string(title).uppercased())
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .tracking(0.7)
@@ -85,7 +85,7 @@ private struct HostDetailView: View {
                     ) {
                         ForEach(hostStatistics, id: \.0) { key, value in
                             HStack(spacing: 8) {
-                                Text(key)
+                                Text(MoniLocalization.string(key))
                                     .foregroundStyle(.secondary)
                                 Spacer(minLength: 6)
                                 Text(value)
@@ -195,7 +195,7 @@ private struct CPUDetailView: View {
                     )
                     .frame(height: 160)
                     HStack {
-                        Text(historyRange == "1m" ? "-1 min" : historyRange == "1h" ? "-1 hour" : "-24 hours")
+                        Text(MoniLocalization.string(historyRange == "1m" ? "-1 min" : historyRange == "1h" ? "-1 hour" : "-24 hours"))
                         Spacer()
                         Text("now")
                     }
@@ -271,7 +271,7 @@ private struct MemoryDetailView: View {
                         Text("Memory")
                             .font(.system(size: 17, weight: .bold))
                             .foregroundStyle(MoniPalette.blue)
-                        Text(bytes(snapshot.memory.totalBytes) + " unified memory")
+                        Text(MoniLocalization.format("%@ unified memory", bytes(snapshot.memory.totalBytes)))
                             .font(.system(size: 12.5))
                             .foregroundStyle(.tertiary)
                         Spacer(minLength: 12)
@@ -295,7 +295,7 @@ private struct MemoryDetailView: View {
                     )
                     .frame(height: 160)
                     HStack {
-                        Text(historyRange == "1m" ? "-1 min" : historyRange == "1h" ? "-1 hour" : "-24 hours")
+                        Text(MoniLocalization.string(historyRange == "1m" ? "-1 min" : historyRange == "1h" ? "-1 hour" : "-24 hours"))
                         Spacer()
                         Text("now")
                     }
@@ -499,7 +499,7 @@ private struct ProcessesDetailView: View {
                 isAscending = value == .name
             }
         } label: {
-            Text(title + (sort == value ? (isAscending ? " ↑" : " ↓") : ""))
+            Text(MoniLocalization.string(title) + (sort == value ? (isAscending ? " ↑" : " ↓") : ""))
                 .frame(maxWidth: .infinity, alignment: value == .name ? .leading : .trailing)
                 .contentShape(Rectangle())
         }
@@ -595,7 +595,7 @@ private func consumerRow(
 
 private func detailStat(_ key: String, _ value: String) -> some View {
     VStack(alignment: .leading, spacing: 3) {
-        Text(key)
+        Text(MoniLocalization.string(key))
             .foregroundStyle(.secondary)
         Text(value)
             .fontWeight(.bold)

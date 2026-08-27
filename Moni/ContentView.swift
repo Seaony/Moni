@@ -1,4 +1,5 @@
 import SwiftUI
+import WidgetKit
 
 private enum DashboardSizing {
     static let designWidth: CGFloat = 900
@@ -20,7 +21,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var title: String {
-        switch self {
+        let key: String = switch self {
         case .summary: "Summary"
         case .host: "Host"
         case .cpu: "CPU"
@@ -35,6 +36,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .disks: "Disk Browser"
         case .settings: "Settings"
         }
+        return MoniLocalization.string(key)
     }
 
     var symbol: String {
@@ -83,6 +85,7 @@ struct ContentView: View {
     @State private var statusBarHeight: CGFloat = 0
     @State private var hoveredStatusBarAction: StatusBarAction?
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
+    @AppStorage(PreferenceKey.appLanguage) private var appLanguage = AppLanguage.english.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
     @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
     @AppStorage(PreferenceKey.windowZoom) private var windowZoom = 1.0
@@ -150,9 +153,19 @@ struct ContentView: View {
         .tint(MoniPalette.blue)
         .background(MoniPalette.panel)
         .preferredColorScheme(preferredColorScheme)
+        .environment(\.locale, selectedLanguage.locale)
         .onAppear {
+            MoniLocalization.setLanguage(selectedLanguage)
+            applyAppearance(appearance)
             monitor.setSamplingInterval(samplingInterval)
             NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
+        }
+        .onChange(of: appearance) { _, value in
+            applyAppearance(value)
+        }
+        .onChange(of: appLanguage) { _, _ in
+            MoniLocalization.setLanguage(selectedLanguage)
+            WidgetCenter.shared.reloadAllTimelines()
         }
         .onChange(of: samplingInterval) { _, value in
             monitor.setSamplingInterval(value)
@@ -171,6 +184,10 @@ struct ContentView: View {
 
     private var renderedScale: CGFloat {
         CGFloat(windowZoom)
+    }
+
+    private var selectedLanguage: AppLanguage {
+        AppLanguage(rawValue: appLanguage) ?? .english
     }
 
     private var windowHeight: CGFloat {
@@ -196,6 +213,17 @@ struct ContentView: View {
         case .system: nil
         case .light: .light
         case .dark: .dark
+        }
+    }
+
+    private func applyAppearance(_ value: String) {
+        switch AppAppearance(rawValue: value) ?? .system {
+        case .system:
+            NSApp.appearance = nil
+        case .light:
+            NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            NSApp.appearance = NSAppearance(named: .darkAqua)
         }
     }
 
@@ -230,7 +258,7 @@ struct ContentView: View {
                             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
                     .buttonStyle(MoniPressButtonStyle())
-                    .help(section.title)
+                    .help(MoniLocalization.string(section.title))
                     .onHover { isHovered in
                         if isHovered {
                             hoveredSection = section
@@ -261,7 +289,7 @@ struct ContentView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(MoniPressButtonStyle())
-            .help("Settings")
+            .help(MoniLocalization.string("Settings"))
             .keyboardShortcut(",", modifiers: .command)
         }
     }
@@ -315,7 +343,7 @@ struct ContentView: View {
     ) -> some View {
         Button(action: perform) {
             HStack(spacing: 4) {
-                Text(title)
+                Text(MoniLocalization.string(title))
                 Text(shortcut)
                     .foregroundStyle(MoniPalette.foregroundQuaternary)
             }
@@ -347,7 +375,7 @@ struct ContentView: View {
 
     private var statusText: String {
         var parts = [
-            "Sampling every \(formattedSamplingInterval)",
+            MoniLocalization.format("Sampling every %@", formattedSamplingInterval),
             "\(Int(monitor.snapshot.cpu.total.rounded()))% CPU",
             "\(Int(monitor.snapshot.memory.usedPercent.rounded()))% MEM"
         ]

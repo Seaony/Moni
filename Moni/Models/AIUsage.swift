@@ -8,11 +8,12 @@ nonisolated enum AIUsageRange: String, CaseIterable, Codable, Identifiable, Send
     var id: String { rawValue }
 
     var title: String {
-        switch self {
+        let key: String = switch self {
         case .last30Days: "Last 30 days"
         case .last90Days: "Last 90 days"
         case .all: "All"
         }
+        return MoniLocalization.string(key)
     }
 
     nonisolated func interval(containing date: Date, calendar: Calendar = .current) -> DateInterval {

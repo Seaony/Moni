@@ -169,7 +169,7 @@ struct SummaryView: View {
 
     private func hostHardwareStat(_ label: String, _ value: String, help: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label)
+            Text(MoniLocalization.string(label))
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
             Text(value)
@@ -177,7 +177,7 @@ struct SummaryView: View {
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-                .help(help)
+                .help(MoniLocalization.string(help))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -205,8 +205,8 @@ struct SummaryView: View {
     }
 
     private func hostLoadHelp(_ index: Int) -> String {
-        let period = ["1 minute", "5 minutes", "15 minutes"][index]
-        return "Average number of runnable or waiting tasks over the last \(period)."
+        let period = MoniLocalization.string(["1 minute", "5 minutes", "15 minutes"][index])
+        return MoniLocalization.format("Average number of runnable or waiting tasks over the last %@.", period)
     }
 
     private var hostStorageCapacity: String {
@@ -326,13 +326,13 @@ struct SummaryView: View {
                 Circle()
                     .fill(color)
                     .frame(width: 6, height: 6)
-                Text(label)
+                Text(MoniLocalization.string(label))
                     .foregroundStyle(.secondary)
             }
             Text(value)
                 .fontWeight(.bold)
                 .monospacedDigit()
-                .help(help)
+                .help(MoniLocalization.string(help))
         }
         .font(.system(size: 11.5))
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -354,7 +354,7 @@ struct SummaryView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Utilization")
                             .foregroundStyle(.secondary)
-                        Text(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
+                        Text(MoniLocalization.string(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data"))
                             .font(.system(size: 30, weight: .bold, design: .rounded))
                             .help("Current overall GPU utilization reported by macOS.")
                         Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
@@ -467,12 +467,12 @@ struct SummaryView: View {
             Circle()
                 .fill(color)
                 .frame(width: 6, height: 6)
-            Text(label)
+            Text(MoniLocalization.string(label))
                 .foregroundStyle(.secondary)
             Text(value)
                 .fontWeight(.bold)
                 .monospacedDigit()
-                .help(help)
+                .help(MoniLocalization.string(help))
         }
         .font(.system(size: 11.5))
     }
@@ -620,7 +620,7 @@ struct SummaryView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Battery")
                             .foregroundStyle(.secondary)
-                        Text(snapshot.power.batteryPercent.map(percent) ?? "No Battery")
+                        Text(MoniLocalization.string(snapshot.power.batteryPercent.map(percent) ?? "No Battery"))
                             .font(.system(size: 32, weight: .bold, design: .rounded))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
@@ -664,14 +664,14 @@ struct SummaryView: View {
         help: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label)
+            Text(MoniLocalization.string(label))
                 .foregroundStyle(.secondary)
             Text(value)
                 .fontWeight(.bold)
                 .foregroundStyle(color)
                 .monospacedDigit()
                 .lineLimit(1)
-                .help(help)
+                .help(MoniLocalization.string(help))
         }
         .font(.system(size: 12))
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -699,9 +699,9 @@ struct SummaryView: View {
                 if cardSize(.docker).columns >= 2 {
                     HStack(alignment: .top, spacing: 32) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(docker.statusTitle)
+                            Text(MoniLocalization.string(docker.statusTitle))
                                 .font(.system(size: 30, weight: .bold, design: .rounded))
-                            Text(docker.installation ?? "No supported installation")
+                            Text(MoniLocalization.string(docker.installation ?? "No supported installation"))
                                 .foregroundStyle(.secondary)
                         }
                         VStack(alignment: .leading, spacing: 10) {
@@ -711,7 +711,7 @@ struct SummaryView: View {
                                 color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red,
                                 helpText: "Whether Moni can currently communicate with the local Docker engine."
                             )
-                            Text(docker.statusReason)
+                            Text(MoniLocalization.string(docker.statusReason))
                                 .font(.system(size: 11))
                                 .foregroundStyle(.tertiary)
                                 .lineLimit(3)
@@ -719,9 +719,9 @@ struct SummaryView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
-                    Text(docker.statusTitle)
+                    Text(MoniLocalization.string(docker.statusTitle))
                         .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text(docker.installation ?? "No supported installation")
+                    Text(MoniLocalization.string(docker.installation ?? "No supported installation"))
                         .foregroundStyle(.secondary)
                     Spacer()
                     MetricRow(
@@ -730,7 +730,7 @@ struct SummaryView: View {
                         color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red,
                         helpText: "Whether Moni can currently communicate with the local Docker engine."
                     )
-                    Text(docker.statusReason)
+                    Text(MoniLocalization.string(docker.statusReason))
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .lineLimit(2)
@@ -747,20 +747,19 @@ struct SummaryView: View {
                 title: "AI Usage",
                 symbol: MonitorSection.ai.symbol,
                 color: MoniPalette.indigo,
-                trailing: "\(visibleAIProviders.count) Account"
-                    + (visibleAIProviders.count == 1 ? "" : "s"),
+                trailing: MoniLocalization.format("%@ accounts", String(visibleAIProviders.count)),
                 trailingSymbol: "chevron.right",
                 trailingHelp: "Number of enabled usage-provider accounts detected from local data.",
                 allowsContentOverflow: true
             ) {
                 if visibleAIProviders.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(aiUsage.isLoading ? "Scanning" : "No Usage")
+                        Text(MoniLocalization.string(aiUsage.isLoading ? "Scanning" : "No Usage"))
                             .font(.system(size: 30, weight: .bold, design: .rounded))
                         Text(
-                            aiUsage.isLoading
+                            MoniLocalization.string(aiUsage.isLoading
                                 ? "Reading local Codex and Claude usage logs…"
-                                : "No Codex or Claude token usage was found in this period."
+                                : "No Codex or Claude token usage was found in this period.")
                         )
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -879,7 +878,7 @@ struct SummaryView: View {
                     .font(.system(size: 13.5, weight: .bold))
                     .lineLimit(1)
                 Spacer(minLength: 6)
-                Text(planName)
+                Text(MoniLocalization.string(planName))
                     .font(.system(size: 11.5))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -901,7 +900,7 @@ struct SummaryView: View {
 
             if let quota {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("\(quota.label) left")
+                    Text(MoniLocalization.format("%@ left", MoniLocalization.string(quota.label)))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Text("\(Int(quota.remainingPercent.rounded()))%")
@@ -928,7 +927,7 @@ struct SummaryView: View {
                     Text("Local usage")
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(provider.requestCount.formatted()) requests")
+                    Text(MoniLocalization.format("%@ requests", provider.requestCount.formatted()))
                         .fontWeight(.semibold)
                         .monospacedDigit()
                         .help("Number of requests recorded locally for this provider.")
@@ -982,14 +981,14 @@ struct SummaryView: View {
     }
 
     private func quotaResetLabel(_ quota: AIQuotaWindow?) -> String {
-        guard let quota else { return "Local logs" }
+        guard let quota else { return MoniLocalization.string("Local logs") }
         if let resetsAt = quota.resetsAt {
-            return "resets in \(resetDuration(until: resetsAt))"
+            return MoniLocalization.format("resets in %@", resetDuration(until: resetsAt))
         }
         if let minutes = quota.windowMinutes {
-            return "\(compactDuration(minutes: minutes)) window"
+            return MoniLocalization.format("%@ window", compactDuration(minutes: minutes))
         }
-        return "Reset unavailable"
+        return MoniLocalization.string("Reset unavailable")
     }
 
     private func isWeeklyQuota(_ quota: AIQuotaWindow) -> Bool {
@@ -1014,12 +1013,12 @@ struct SummaryView: View {
         let amount = value.formatted(
             .number.grouping(.automatic).precision(.fractionLength(value < 100 ? 1 : 0))
         )
-        return "≈ $\(amount) weekly"
+        return MoniLocalization.format("≈ $%@ weekly", amount)
     }
 
     private var powerSourceTitle: String? {
-        if snapshot.power.isCharging { return "Charging" }
-        if snapshot.power.isExternalPowerConnected { return "AC Power" }
+        if snapshot.power.isCharging { return MoniLocalization.string("Charging") }
+        if snapshot.power.isExternalPowerConnected { return MoniLocalization.string("AC Power") }
         return nil
     }
 
@@ -1205,20 +1204,20 @@ struct SummaryView: View {
         let days = seconds / 86_400
         let hours = seconds % 86_400 / 3_600
         let minutes = seconds % 3_600 / 60
-        if days > 0 { return "\(days)d \(hours)h" }
-        if hours > 0 { return "\(hours)h \(minutes)m" }
-        return "\(minutes)m"
+        if days > 0 { return MoniLocalization.format("%@d %@h", String(days), String(hours)) }
+        if hours > 0 { return MoniLocalization.format("%@h %@m", String(hours), String(minutes)) }
+        return MoniLocalization.format("%@m", String(minutes))
     }
 
     private func compactDuration(minutes: Int) -> String {
-        if minutes >= 1_440 { return "\(minutes / 1_440)d" }
-        if minutes >= 60 { return "\(minutes / 60)h" }
-        return "\(minutes)m"
+        if minutes >= 1_440 { return MoniLocalization.format("%@d", String(minutes / 1_440)) }
+        if minutes >= 60 { return MoniLocalization.format("%@h", String(minutes / 60)) }
+        return MoniLocalization.format("%@m", String(minutes))
     }
 
     private func formatUptime(_ interval: TimeInterval) -> String {
         let days = Int(interval) / 86_400
         let hours = (Int(interval) % 86_400) / 3_600
-        return "\(days)d \(hours)h"
+        return MoniLocalization.format("%@d %@h", String(days), String(hours))
     }
 }

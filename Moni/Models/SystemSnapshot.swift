@@ -367,22 +367,29 @@ struct DockerStatus: Sendable {
     }
 
     var statusTitle: String {
-        if isRunning { return "Running" }
-        if isInstalled { return "Not Running" }
-        return "Not Detected"
+        if isRunning { return MoniLocalization.string("Running") }
+        if isInstalled { return MoniLocalization.string("Not Running") }
+        return MoniLocalization.string("Not Detected")
     }
 
     var statusReason: String {
         if isRunning, let socketPath {
-            return "Local engine connected at \(socketPath)."
+            return MoniLocalization.format("Local engine connected at %@.", socketPath)
         }
         if isInstalled, let socketPath {
-            return "\(installation ?? "Docker") was detected, but the local engine socket at \(socketPath) is not accepting connections."
+            return MoniLocalization.format(
+                "%@ was detected, but the local engine socket at %@ is not accepting connections.",
+                installation ?? "Docker",
+                socketPath
+            )
         }
         if isInstalled {
-            return "\(installation ?? "Docker") is installed, but no supported local engine socket was found."
+            return MoniLocalization.format(
+                "%@ is installed, but no supported local engine socket was found.",
+                installation ?? "Docker"
+            )
         }
-        return "Docker Desktop, OrbStack, and Docker CLI were not found in the supported locations."
+        return MoniLocalization.string("Docker Desktop, OrbStack, and Docker CLI were not found in the supported locations.")
     }
 }
 

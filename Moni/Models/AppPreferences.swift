@@ -1,6 +1,7 @@
 import Foundation
 
 enum PreferenceKey {
+    static let appLanguage = MoniLocalization.preferenceKey
     static let appearance = "appearance"
     static let compactMenuBar = "compactMenuBar"
     static let menuBarItems = "menuBarItems"
@@ -40,7 +41,7 @@ enum SummaryGridDensity: String, CaseIterable, Identifiable {
     case compact, comfortable, spacious
 
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String { MoniLocalization.string(rawValue.capitalized) }
 
     var rowHeight: CGFloat {
         switch self {
@@ -63,7 +64,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     case system, light, dark
 
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String { MoniLocalization.string(rawValue.capitalized) }
 }
 
 enum MenuBarMetric: String, CaseIterable, Identifiable {
@@ -72,7 +73,7 @@ enum MenuBarMetric: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var title: String {
-        switch self {
+        let key: String = switch self {
         case .cpu: "CPU"
         case .memory: "Memory"
         case .network: "Network"
@@ -81,6 +82,7 @@ enum MenuBarMetric: String, CaseIterable, Identifiable {
         case .temperature: "Temp"
         case .aiUsage: "AI Usage"
         }
+        return MoniLocalization.string(key)
     }
 
     var symbol: String {
@@ -102,10 +104,11 @@ enum MenuBarDisplayStyle: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var title: String {
-        switch self {
+        let key: String = switch self {
         case .valueOnly: "Value only"
         case .graphOnly: "Graph only"
         case .graphAndValue: "Graph + value"
         }
+        return MoniLocalization.string(key)
     }
 }

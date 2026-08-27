@@ -17,14 +17,14 @@ final class AlertMonitor {
         let alertsEnabled = defaults.bool(forKey: PreferenceKey.notificationAlerts)
         evaluate(
             id: "cpu",
-            title: "CPU usage is high",
+            title: MoniLocalization.string("CPU usage is high"),
             value: snapshot.cpu.total,
             enabled: alertsEnabled,
             threshold: threshold(PreferenceKey.cpuAlertThreshold, fallback: 85)
         )
         evaluate(
             id: "memory",
-            title: "Memory usage is high",
+            title: MoniLocalization.string("Memory usage is high"),
             value: snapshot.memory.usedPercent,
             enabled: alertsEnabled,
             threshold: threshold(PreferenceKey.memoryAlertThreshold, fallback: 90)
@@ -32,7 +32,7 @@ final class AlertMonitor {
         if let temperature = snapshot.power.cpuTemperatureCelsius {
             evaluate(
                 id: "temperature",
-                title: "CPU temperature is high",
+                title: MoniLocalization.string("CPU temperature is high"),
                 value: temperature,
                 enabled: alertsEnabled,
                 threshold: threshold(PreferenceKey.temperatureAlertThreshold, fallback: 80),
@@ -41,7 +41,7 @@ final class AlertMonitor {
         }
         evaluate(
             id: "disk",
-            title: "System disk is nearly full",
+            title: MoniLocalization.string("System disk is nearly full"),
             value: snapshot.volumes.first { $0.mountPath == "/" }?.usedPercent ?? 0,
             enabled: alertsEnabled,
             threshold: threshold(PreferenceKey.diskAlertThreshold, fallback: 90)
@@ -103,7 +103,13 @@ final class AlertMonitor {
 
         let content = UNMutableNotificationContent()
         content.title = title
-        content.body = "Now at \(Int(value.rounded()))\(unit); the configured threshold is \(Int(threshold.rounded()))\(unit)."
+        content.body = MoniLocalization.format(
+            "Now at %@%@; the configured threshold is %@%@.",
+            String(Int(value.rounded())),
+            unit,
+            String(Int(threshold.rounded())),
+            unit
+        )
         if flag(PreferenceKey.alertSounds, fallback: true) {
             content.sound = .default
         }

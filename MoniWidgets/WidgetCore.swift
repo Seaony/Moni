@@ -88,60 +88,71 @@ enum MoniWidgetKind: String {
 struct MoniWidgetView: View {
     let kind: MoniWidgetKind
     let entry: MoniWidgetEntry
+    @AppStorage(
+        MoniLocalization.preferenceKey,
+        store: MoniLocalization.sharedDefaults
+    ) private var appLanguage = AppLanguage.english.rawValue
 
     var body: some View {
-        switch kind {
-        case .cpuSmall:
-            CPUSmallWidgetView(snapshot: entry.system)
-        case .memorySmall:
-            MemorySmallWidgetView(snapshot: entry.system)
-        case .powerSmall:
-            PowerSmallWidgetView(snapshot: entry.system)
-        case .storageSmall:
-            StorageSmallWidgetView(snapshot: entry.system)
-        case .wifiSmall:
-            WiFiSmallWidgetView(snapshot: entry.system)
-        case .processesSmall:
-            ProcessesSmallWidgetView(snapshot: entry.system)
-        case .aiSpendSmall:
-            AISpendSmallWidgetView(snapshot: entry.ai)
-        case .dockerSmall:
-            DockerSmallWidgetView(snapshot: entry.system)
-        case .gpuSmall:
-            GPUSmallWidgetView(snapshot: entry.system)
-        case .uptimeSmall:
-            UptimeSmallWidgetView(snapshot: entry.system)
-        case .networkMedium:
-            NetworkMediumWidgetView(snapshot: entry.system)
-        case .aiUsageMedium:
-            AIUsageMediumWidgetView(snapshot: entry.ai)
-        case .topProcessesMedium:
-            TopProcessesMediumWidgetView(snapshot: entry.system)
-        case .sensorsMedium:
-            SensorsMediumWidgetView(snapshot: entry.system)
-        case .memoryMedium:
-            MemoryMediumWidgetView(snapshot: entry.system)
-        case .diskActivityMedium:
-            DiskActivityMediumWidgetView(snapshot: entry.system)
-        case .containersMedium:
-            ContainersMediumWidgetView(snapshot: entry.system)
-        case .alertsMedium:
-            AlertsMediumWidgetView(snapshot: entry.system)
-        case .batteryHistoryMedium:
-            BatteryHistoryMediumWidgetView(snapshot: entry.system)
-        case .systemOverviewLarge:
-            SystemOverviewLargeWidgetView(snapshot: entry.system)
-        case .aiUsageLarge:
-            AIUsageLargeWidgetView(snapshot: entry.ai)
-        case .gpuThermalsLarge:
-            GPUThermalsLargeWidgetView(snapshot: entry.system)
-        case .networkDetailLarge:
-            NetworkDetailLargeWidgetView(snapshot: entry.system)
-        case .activityMonitorLarge:
-            ActivityMonitorLargeWidgetView(snapshot: entry.system)
-        case .storageBreakdownLarge:
-            StorageBreakdownLargeWidgetView(snapshot: entry.system)
+        Group {
+            switch kind {
+            case .cpuSmall:
+                CPUSmallWidgetView(snapshot: entry.system)
+            case .memorySmall:
+                MemorySmallWidgetView(snapshot: entry.system)
+            case .powerSmall:
+                PowerSmallWidgetView(snapshot: entry.system)
+            case .storageSmall:
+                StorageSmallWidgetView(snapshot: entry.system)
+            case .wifiSmall:
+                WiFiSmallWidgetView(snapshot: entry.system)
+            case .processesSmall:
+                ProcessesSmallWidgetView(snapshot: entry.system)
+            case .aiSpendSmall:
+                AISpendSmallWidgetView(snapshot: entry.ai)
+            case .dockerSmall:
+                DockerSmallWidgetView(snapshot: entry.system)
+            case .gpuSmall:
+                GPUSmallWidgetView(snapshot: entry.system)
+            case .uptimeSmall:
+                UptimeSmallWidgetView(snapshot: entry.system)
+            case .networkMedium:
+                NetworkMediumWidgetView(snapshot: entry.system)
+            case .aiUsageMedium:
+                AIUsageMediumWidgetView(snapshot: entry.ai)
+            case .topProcessesMedium:
+                TopProcessesMediumWidgetView(snapshot: entry.system)
+            case .sensorsMedium:
+                SensorsMediumWidgetView(snapshot: entry.system)
+            case .memoryMedium:
+                MemoryMediumWidgetView(snapshot: entry.system)
+            case .diskActivityMedium:
+                DiskActivityMediumWidgetView(snapshot: entry.system)
+            case .containersMedium:
+                ContainersMediumWidgetView(snapshot: entry.system)
+            case .alertsMedium:
+                AlertsMediumWidgetView(snapshot: entry.system)
+            case .batteryHistoryMedium:
+                BatteryHistoryMediumWidgetView(snapshot: entry.system)
+            case .systemOverviewLarge:
+                SystemOverviewLargeWidgetView(snapshot: entry.system)
+            case .aiUsageLarge:
+                AIUsageLargeWidgetView(snapshot: entry.ai)
+            case .gpuThermalsLarge:
+                GPUThermalsLargeWidgetView(snapshot: entry.system)
+            case .networkDetailLarge:
+                NetworkDetailLargeWidgetView(snapshot: entry.system)
+            case .activityMonitorLarge:
+                ActivityMonitorLargeWidgetView(snapshot: entry.system)
+            case .storageBreakdownLarge:
+                StorageBreakdownLargeWidgetView(snapshot: entry.system)
+            }
         }
+        .environment(\.locale, selectedLanguage.locale)
+    }
+
+    private var selectedLanguage: AppLanguage {
+        AppLanguage(rawValue: appLanguage) ?? .english
     }
 }
 
@@ -167,8 +178,8 @@ func moniWidgetConfiguration(
                 Color(nsColor: .windowBackgroundColor)
             }
     }
-    .configurationDisplayName(displayName)
-    .description(description)
+    .configurationDisplayName(MoniLocalization.string(displayName))
+    .description(MoniLocalization.string(description))
     .supportedFamilies([family])
     .contentMarginsDisabled()
 }

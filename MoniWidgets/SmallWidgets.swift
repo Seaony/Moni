@@ -6,7 +6,7 @@ struct CPUSmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .cpuSmall,
             displayName: "CPU",
-            description: "查看处理器总负载、用户态与系统态占比。",
+            description: "Shows total CPU load and user/system activity.",
             family: .systemSmall
         )
     }
@@ -47,7 +47,7 @@ struct MemorySmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .memorySmall,
             displayName: "Memory",
-            description: "查看内存使用率、容量与占用状态。",
+            description: "Shows memory usage, capacity, and pressure.",
             family: .systemSmall
         )
     }
@@ -86,7 +86,7 @@ struct MemorySmallWidgetView: View {
                 Circle().fill(usageStatus.color).frame(width: 6, height: 6)
                 Text("Usage")
                     .foregroundStyle(WidgetTheme.secondary)
-                Text(usageStatus.label)
+                Text(MoniLocalization.string(usageStatus.label))
                     .foregroundStyle(usageStatus.color)
                     .fontWeight(.bold)
             }
@@ -105,7 +105,7 @@ struct PowerSmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .powerSmall,
             displayName: "Power",
-            description: "查看电池、温度与风扇状态。",
+            description: "Shows battery, temperature, and fan status.",
             family: .systemSmall
         )
     }
@@ -149,7 +149,7 @@ struct PowerSmallWidgetView: View {
 
     private func stat(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(MoniLocalization.string(label)).foregroundStyle(WidgetTheme.tertiary)
             Text(value).fontWeight(.bold).foregroundStyle(WidgetTheme.foreground).monospacedDigit()
         }
         .font(.system(size: 10.5))
@@ -162,7 +162,7 @@ struct StorageSmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .storageSmall,
             displayName: "Storage",
-            description: "查看系统磁盘空间与实时读写速率。",
+            description: "Shows system disk space and live transfer rates.",
             family: .systemSmall
         )
     }
@@ -183,7 +183,7 @@ struct StorageSmallWidgetView: View {
                     Text("\(Int(usedPercent.rounded()))%")
                         .font(.system(size: 25, weight: .heavy, design: .rounded))
                         .monospacedDigit()
-                    Text(snapshot.volume.map { "\(bytes($0.availableBytes)) free" } ?? "Unavailable")
+                    Text(snapshot.volume.map { MoniLocalization.format("%@ free", bytes($0.availableBytes)) } ?? MoniLocalization.string("Unavailable"))
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundStyle(WidgetTheme.tertiary)
                         .minimumScaleFactor(0.7)
@@ -217,7 +217,7 @@ struct WiFiSmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .wifiSmall,
             displayName: "Wi-Fi",
-            description: "查看当前无线网络的信号、信道与连接速率。",
+            description: "Shows Wi-Fi signal, channel, and link speed.",
             family: .systemSmall
         )
     }
@@ -266,7 +266,7 @@ struct WiFiSmallWidgetView: View {
 
     private func stat(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label).foregroundStyle(WidgetTheme.tertiary)
+            Text(MoniLocalization.string(label)).foregroundStyle(WidgetTheme.tertiary)
             Text(value).fontWeight(.bold).monospacedDigit()
         }
         .font(.system(size: 10.5))
@@ -279,7 +279,7 @@ struct ProcessesSmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .processesSmall,
             displayName: "Processes",
-            description: "查看进程与线程总数以及最繁忙的进程。",
+            description: "Shows process and thread totals with the busiest processes.",
             family: .systemSmall
         )
     }
@@ -295,7 +295,7 @@ struct ProcessesSmallWidgetView: View {
                 .font(.system(size: 34, weight: .heavy, design: .rounded))
                 .monospacedDigit()
                 .padding(.top, 9)
-            Text("\(snapshot.threadCount.formatted()) threads")
+            Text(MoniLocalization.format("%@ threads", snapshot.threadCount.formatted()))
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(WidgetTheme.secondary)
             Spacer(minLength: 8)
@@ -324,7 +324,7 @@ struct AISpendSmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .aiSpendSmall,
             displayName: "AI Spend",
-            description: "查看今日 AI 使用成本与 Token 用量。",
+            description: "Shows today's AI cost and token usage.",
             family: .systemSmall
         )
     }
@@ -346,7 +346,7 @@ struct AISpendSmallWidgetView: View {
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
                 .padding(.top, 9)
-            Text(today.map { compact($0.tokens) + " tokens" } ?? "No usage")
+            Text(today.map { MoniLocalization.format("%@ tokens", compact($0.tokens)) } ?? MoniLocalization.string("No usage"))
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(WidgetTheme.secondary)
             Spacer(minLength: 8)
@@ -369,7 +369,7 @@ struct DockerSmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .dockerSmall,
             displayName: "Docker",
-            description: "查看本机 Docker 引擎的可用状态。",
+            description: "Shows local Docker engine availability.",
             family: .systemSmall
         )
     }
@@ -383,9 +383,9 @@ struct DockerSmallWidgetView: View {
     }
 
     private var status: String {
-        if snapshot.docker.isRunning { return "Running" }
-        if snapshot.docker.isInstalled { return "Stopped" }
-        return "Not Found"
+        if snapshot.docker.isRunning { return MoniLocalization.string("Running") }
+        if snapshot.docker.isInstalled { return MoniLocalization.string("Stopped") }
+        return MoniLocalization.string("Not Found")
     }
 
     private var statusColor: Color {
@@ -395,12 +395,12 @@ struct DockerSmallWidgetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             WidgetHeader(title: "Docker", symbol: "shippingbox", color: WidgetTheme.blue, trailing: snapshot.docker.installation)
-            Text(status)
+            Text(MoniLocalization.string(status))
                 .font(.system(size: 31, weight: .heavy, design: .rounded))
                 .minimumScaleFactor(0.65)
                 .lineLimit(1)
                 .padding(.top, 10)
-            Text(snapshot.docker.isRunning ? "engine available" : "engine unavailable")
+            Text(MoniLocalization.string(snapshot.docker.isRunning ? "engine available" : "engine unavailable"))
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(WidgetTheme.secondary)
             Spacer(minLength: 8)
@@ -429,7 +429,7 @@ struct GPUSmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .gpuSmall,
             displayName: "GPU",
-            description: "查看图形处理器利用率、功耗与已分配内存。",
+            description: "Shows GPU utilization, power, and allocated memory.",
             family: .systemSmall
         )
     }
@@ -474,7 +474,7 @@ struct UptimeSmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .uptimeSmall,
             displayName: "Uptime",
-            description: "查看开机时长和系统负载。",
+            description: "Shows uptime and system load.",
             family: .systemSmall
         )
     }
@@ -513,7 +513,7 @@ struct UptimeSmallWidgetView: View {
 
     private func loadRow(_ label: String, value: Double?) -> some View {
         HStack(spacing: 7) {
-            Text(label).foregroundStyle(WidgetTheme.tertiary).frame(width: 24, alignment: .leading)
+            Text(MoniLocalization.string(label)).foregroundStyle(WidgetTheme.tertiary).frame(width: 24, alignment: .leading)
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule().fill(WidgetTheme.track)

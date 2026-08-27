@@ -43,7 +43,7 @@ private struct GPUDetailView: View {
                             .foregroundStyle(.tertiary)
                         Spacer(minLength: 12)
                         SecondaryRangePicker(selection: $historyRange)
-                        Text(monitor.snapshot.gpu.utilizationPercent.map(percent) ?? "No Data")
+                        Text(MoniLocalization.string(monitor.snapshot.gpu.utilizationPercent.map(percent) ?? "No Data"))
                             .font(.system(size: 30, weight: .bold, design: .rounded))
                     }
                     InteractiveSparkline(
@@ -150,9 +150,11 @@ private struct GPUDetailView: View {
     }
 
     private var deviceSubtitle: String {
-        guard let device else { return "No Metal GPU" }
+        guard let device else { return MoniLocalization.string("No Metal GPU") }
         var parts = [device.name]
-        if let coreCount = device.coreCount { parts.append("\(coreCount) cores") }
+        if let coreCount = device.coreCount {
+            parts.append(MoniLocalization.format("%@ cores", coreCount.formatted()))
+        }
         if let metalSupport = device.metalSupport { parts.append(metalSupport) }
         return parts.joined(separator: " · ")
     }
@@ -160,9 +162,9 @@ private struct GPUDetailView: View {
     private var unifiedMemory: String {
         guard let device else { return "—" }
         if let memory = device.unifiedMemoryBytes {
-            return "Unified \(bytes(memory))"
+            return MoniLocalization.format("Unified %@", bytes(memory))
         }
-        return device.hasUnifiedMemory ? "Unified" : "Dedicated"
+        return MoniLocalization.string(device.hasUnifiedMemory ? "Unified" : "Dedicated")
     }
 
     private var refreshRate: String {
@@ -233,7 +235,7 @@ private struct NetworkDetailView: View {
                                     .foregroundStyle(.tertiary)
                                     .lineLimit(1)
                                 Spacer()
-                                Text(interface.isActive ? "Active" : "Inactive")
+                                Text(MoniLocalization.string(interface.isActive ? "Active" : "Inactive"))
                                     .fontWeight(.bold)
                                     .foregroundStyle(interface.isActive ? MoniPalette.green : MoniPalette.foregroundSecondary)
                             }
@@ -321,7 +323,7 @@ private struct NetworkDetailView: View {
     }
 
     private var networkHeader: String {
-        guard let activeInterface else { return "No active interface" }
+        guard let activeInterface else { return MoniLocalization.string("No active interface") }
         var parts = [activeInterface.name]
         if let wifi = network.wifi, wifi.interfaceName == activeInterface.name {
             parts.append(wifi.physicalMode)
@@ -329,7 +331,9 @@ private struct NetworkDetailView: View {
             parts.append(activeInterface.kind)
         }
         if let address = activeInterface.address { parts.append(address) }
-        if let publicIPAddress = monitor.publicIPAddress { parts.append("public \(publicIPAddress)") }
+        if let publicIPAddress = monitor.publicIPAddress {
+            parts.append(MoniLocalization.format("public %@", publicIPAddress))
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -363,13 +367,13 @@ private struct NetworkDetailView: View {
            let networkName = wifi.networkName {
             parts.append(networkName)
         } else if interface.address == nil {
-            parts.append("no address")
+            parts.append(MoniLocalization.string("no address"))
         }
         return parts.joined(separator: " · ")
     }
 
     private var publicIPAddress: String {
-        monitor.publicIPAddress ?? (monitor.isLoadingNetworkExternalDetails ? "Querying…" : "Unavailable")
+        monitor.publicIPAddress ?? MoniLocalization.string(monitor.isLoadingNetworkExternalDetails ? "Querying…" : "Unavailable")
     }
 
     private var ipLookupDuration: String {
@@ -573,7 +577,7 @@ private struct PowerDetailView: View {
                                 .font(.system(size: 12.5)).foregroundStyle(.tertiary)
                         }
                         if let batteryPercent = power.batteryPercent {
-                            Text(power.batteryPercent.map(percent) ?? "No Battery")
+                            Text(MoniLocalization.string(power.batteryPercent.map(percent) ?? "No Battery"))
                                 .font(.system(size: 44, weight: .bold, design: .rounded))
                                 .moniNumericTransition(power.batteryPercent)
                             ProgressView(value: batteryPercent, total: 100).tint(MoniPalette.green)
@@ -593,7 +597,7 @@ private struct PowerDetailView: View {
                     DetailPanel {
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text("Thermals").font(.system(size: 15, weight: .bold)).foregroundStyle(MoniPalette.orange)
-                            Text(power.cpuTemperatureCelsius == nil ? "Waiting for sensors" : "Live HID sensors")
+                            Text(MoniLocalization.string(power.cpuTemperatureCelsius == nil ? "Waiting for sensors" : "Live HID sensors"))
                                 .font(.system(size: 12.5)).foregroundStyle(.tertiary)
                             Spacer()
                             Text(power.cpuTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "—")
@@ -658,15 +662,17 @@ private struct PowerDetailView: View {
     }
 
     private var remainingTime: String {
-        if power.batteryPercent ?? 0 >= 100 { return "Fully charged" }
-        guard let minutes = power.timeRemainingMinutes, minutes > 0 else { return "Calculating remaining time" }
-        return "\(minutes / 60)h \(minutes % 60)m remaining"
+        if power.batteryPercent ?? 0 >= 100 { return MoniLocalization.string("Fully charged") }
+        guard let minutes = power.timeRemainingMinutes, minutes > 0 else {
+            return MoniLocalization.string("Calculating remaining time")
+        }
+        return MoniLocalization.format("%@h %@m remaining", (minutes / 60).formatted(), (minutes % 60).formatted())
     }
 
     private var powerSourceDescription: String {
-        if power.isCharging { return "Charging" }
-        if power.isExternalPowerConnected { return "AC Power" }
-        return "On battery"
+        if power.isCharging { return MoniLocalization.string("Charging") }
+        if power.isExternalPowerConnected { return MoniLocalization.string("AC Power") }
+        return MoniLocalization.string("On battery")
     }
 
     private func sensorStat(_ name: String, _ temperature: Double) -> some View {
@@ -699,7 +705,7 @@ private struct DockerDetailView: View {
             DetailPanel {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text("Docker").font(.system(size: 17, weight: .bold)).foregroundStyle(MoniPalette.blue)
-                    Text(docker.isRunning ? "Daemon reachable" : "Daemon not reachable")
+                    Text(MoniLocalization.string(docker.isRunning ? "Daemon reachable" : "Daemon not reachable"))
                         .font(.system(size: 12.5)).foregroundStyle(.tertiary)
                 }
                 if docker.isRunning {
@@ -709,9 +715,9 @@ private struct DockerDetailView: View {
                         Image(systemName: MonitorSection.docker.symbol)
                             .font(.system(size: 52, weight: .light))
                             .foregroundStyle(MoniPalette.foregroundQuaternary)
-                        Text(docker.statusTitle)
+                        Text(MoniLocalization.string(docker.statusTitle))
                             .font(.system(size: 26, weight: .bold, design: .rounded))
-                        Text(docker.statusReason)
+                        Text(MoniLocalization.string(docker.statusReason))
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -1062,8 +1068,8 @@ private struct SecondaryRangePicker: View {
 
 private func secondaryStat(_ key: String, _ text: String) -> some View {
     VStack(alignment: .leading, spacing: 3) {
-        Text(key).foregroundStyle(.secondary)
-        Text(text).fontWeight(.bold).monospacedDigit().lineLimit(1)
+        Text(MoniLocalization.string(key)).foregroundStyle(.secondary)
+        Text(MoniLocalization.string(text)).fontWeight(.bold).monospacedDigit().lineLimit(1)
     }
     .font(.system(size: 12.5))
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1071,8 +1077,8 @@ private func secondaryStat(_ key: String, _ text: String) -> some View {
 
 private func insetStat(_ key: String, _ text: String) -> some View {
     VStack(alignment: .leading, spacing: 4) {
-        Text(key).font(.system(size: 12)).foregroundStyle(.secondary)
-        Text(text).font(.system(size: 20, weight: .bold)).monospacedDigit()
+        Text(MoniLocalization.string(key)).font(.system(size: 12)).foregroundStyle(.secondary)
+        Text(MoniLocalization.string(text)).font(.system(size: 20, weight: .bold)).monospacedDigit()
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 12)
@@ -1083,9 +1089,9 @@ private func insetStat(_ key: String, _ text: String) -> some View {
 
 private func dockerStat(_ key: String, _ text: String) -> some View {
     HStack(spacing: 8) {
-        Text(key).foregroundStyle(.secondary)
+        Text(MoniLocalization.string(key)).foregroundStyle(.secondary)
         Spacer(minLength: 6)
-        Text(text).fontWeight(.bold).lineLimit(1)
+        Text(MoniLocalization.string(text)).fontWeight(.bold).lineLimit(1)
     }
     .font(.system(size: 12.5))
     .padding(.horizontal, 14)
@@ -1096,7 +1102,7 @@ private func dockerStat(_ key: String, _ text: String) -> some View {
 
 private func rangeFooter(_ range: String) -> some View {
     HStack {
-        Text(range == "1m" ? "-1 min" : range == "1h" ? "-1 hour" : "-24 hours")
+        Text(MoniLocalization.string(range == "1m" ? "-1 min" : range == "1h" ? "-1 hour" : "-24 hours"))
         Spacer()
         Text("now")
     }

@@ -121,16 +121,16 @@ extension WidgetSystemSnapshot {
         let temperatureLimit = threshold(PreferenceKey.temperatureAlertThreshold, fallback: 80)
 
         if snapshot.cpu.total >= cpuLimit {
-            alerts.append(.init(message: "CPU usage is above \(Int(cpuLimit))%", date: snapshot.date, severity: 2))
+            alerts.append(.init(message: MoniLocalization.format("CPU usage is above %@%%", String(Int(cpuLimit))), date: snapshot.date, severity: 2))
         }
         if snapshot.memory.usedPercent >= memoryLimit {
-            alerts.append(.init(message: "Memory usage is above \(Int(memoryLimit))%", date: snapshot.date, severity: 2))
+            alerts.append(.init(message: MoniLocalization.format("Memory usage is above %@%%", String(Int(memoryLimit))), date: snapshot.date, severity: 2))
         }
         if let temperature = snapshot.power.cpuTemperatureCelsius, temperature >= temperatureLimit {
-            alerts.append(.init(message: "CPU temperature is above \(Int(temperatureLimit))°C", date: snapshot.date, severity: 2))
+            alerts.append(.init(message: MoniLocalization.format("CPU temperature is above %@°C", String(Int(temperatureLimit))), date: snapshot.date, severity: 2))
         }
         if let disk = snapshot.volumes.first(where: { $0.mountPath == "/" }), disk.usedPercent >= diskLimit {
-            alerts.append(.init(message: "System disk usage is above \(Int(diskLimit))%", date: snapshot.date, severity: 3))
+            alerts.append(.init(message: MoniLocalization.format("System disk usage is above %@%%", String(Int(diskLimit))), date: snapshot.date, severity: 3))
         }
         return alerts
     }
