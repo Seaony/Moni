@@ -155,13 +155,20 @@ final class SystemMonitor: ObservableObject {
     }
 
     var cpuHistory: [Double] { recentHistory.map(\.cpu) }
+    var recentHistoryDates: [Date] { recentHistory.map(\.date) }
     var memoryHistory: [Double] { recentHistory.map(\.memory) }
     var downloadHistory: [Double] { recentHistory.map(\.download) }
     var uploadHistory: [Double] { recentHistory.map(\.upload) }
     var gpuHistory: [Double] { recentHistory.compactMap(\.gpu) }
+    var gpuHistoryDates: [Date] {
+        recentHistory.compactMap { $0.gpu == nil ? nil : $0.date }
+    }
     var diskReadHistory: [Double] { recentHistory.map(\.diskRead) }
     var diskWriteHistory: [Double] { recentHistory.map(\.diskWrite) }
     var cpuTemperatureHistory: [Double] { recentHistory.compactMap(\.cpuTemperature) }
+    var cpuTemperatureHistoryDates: [Date] {
+        recentHistory.compactMap { $0.cpuTemperature == nil ? nil : $0.date }
+    }
     var gpuTemperatureHistory: [Double] { recentHistory.compactMap(\.gpuTemperature) }
     var batteryHistory: [Double] {
         let referenceDate = minuteHistory.last?.date ?? snapshot.date

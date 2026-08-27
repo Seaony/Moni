@@ -7,6 +7,7 @@ struct SummaryView: View {
     @Binding var selection: MonitorSection
     @AppStorage(PreferenceKey.aiUsageRangeDays) private var aiUsageRangeDays = 30
     @AppStorage(PreferenceKey.summaryCardLayout) private var cardLayoutData = Data()
+    @AppStorage(PreferenceKey.summaryGridDensity) private var gridDensityValue = SummaryGridDensity.comfortable.rawValue
     @AppStorage(PreferenceKey.showHost) private var showHost = true
     @AppStorage(PreferenceKey.showCPU) private var showCPU = true
     @AppStorage(PreferenceKey.showMemory) private var showMemory = true
@@ -15,7 +16,9 @@ struct SummaryView: View {
     @AppStorage(PreferenceKey.showStorage) private var showStorage = true
     @AppStorage(PreferenceKey.showProcesses) private var showProcesses = true
     @AppStorage(PreferenceKey.showPower) private var showPower = true
+    @AppStorage(PreferenceKey.showAI) private var showAI = true
     @AppStorage(PreferenceKey.showDocker) private var showDocker = true
+    @AppStorage(PreferenceKey.disabledAIProviders) private var disabledProviderValue = ""
     @State private var liveCardSizes: [DashboardCardID: DashboardCardSize] = [:]
     @State private var draggingCard: DashboardCardID?
     @State private var cardDragContext = DashboardCardDragContext()
@@ -23,9 +26,18 @@ struct SummaryView: View {
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
 
+    private var gridDensity: SummaryGridDensity {
+        SummaryGridDensity(rawValue: gridDensityValue) ?? .comfortable
+    }
+
+    private var visibleAIProviders: [AIProviderUsage] {
+        let disabled = Set(disabledProviderValue.split(separator: ",").map(String.init))
+        return aiUsage.summary.providers.filter { !disabled.contains($0.provider) }
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            DashboardGridLayout {
+            DashboardGridLayout(rowHeight: gridDensity.rowHeight, spacing: gridDensity.spacing) {
                 ForEach(orderedCards) { card in
                     ResizableDashboardCard(
                         card: card,
@@ -135,7 +147,18 @@ struct SummaryView: View {
                         .font(.system(size: 36, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .moniNumericTransition(snapshot.cpu.total)
-                    Sparkline(values: monitor.cpuHistory, color: MoniPalette.pink)
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "CPU",
+                                values: monitor.cpuHistory,
+                                color: MoniPalette.pink,
+                                showsFill: true,
+                                formatValue: percent
+                            )
+                        ],
+                        dates: monitor.recentHistoryDates
+                    )
                         .frame(height: chartHeight(for: cardSize(.cpu), compact: 66))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
@@ -161,7 +184,18 @@ struct SummaryView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
-                    Sparkline(values: monitor.memoryHistory, color: MoniPalette.blue)
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "Memory",
+                                values: monitor.memoryHistory,
+                                color: MoniPalette.blue,
+                                showsFill: true,
+                                formatValue: percent
+                            )
+                        ],
+                        dates: monitor.recentHistoryDates
+                    )
                         .frame(height: chartHeight(for: cardSize(.memory), compact: 66))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
@@ -208,7 +242,18 @@ struct SummaryView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    Sparkline(values: monitor.gpuHistory, color: MoniPalette.green)
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "GPU",
+                                values: monitor.gpuHistory,
+                                color: MoniPalette.green,
+                                showsFill: true,
+                                formatValue: percent
+                            )
+                        ],
+                        dates: monitor.gpuHistoryDates
+                    )
                         .frame(maxWidth: isWide ? .infinity : 104)
                         .frame(height: chartHeight(for: size, compact: 66))
                 }
@@ -247,10 +292,24 @@ struct SummaryView: View {
                             .font(.system(size: 23, weight: .bold, design: .rounded))
                             .moniNumericTransition(snapshot.network.uploadBytesPerSecond)
                     }
-                    ZStack {
-                        Sparkline(values: monitor.downloadHistory, color: MoniPalette.cyan)
-                        Sparkline(values: monitor.uploadHistory, color: MoniPalette.orange, showsFill: false)
-                    }
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "Download",
+                                values: monitor.downloadHistory,
+                                color: MoniPalette.cyan,
+                                showsFill: true,
+                                formatValue: rate
+                            ),
+                            InteractiveSparklineSeries(
+                                name: "Upload",
+                                values: monitor.uploadHistory,
+                                color: MoniPalette.orange,
+                                formatValue: rate
+                            ),
+                        ],
+                        dates: monitor.recentHistoryDates
+                    )
                     .frame(maxWidth: isWide ? .infinity : 112)
                     .frame(height: chartHeight(for: size, compact: 72))
                 }
@@ -418,7 +477,18 @@ struct SummaryView: View {
                         Text(snapshot.power.cpuTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "No Data")
                             .font(.system(size: 30, weight: .bold, design: .rounded))
                     }
-                    Sparkline(values: monitor.cpuTemperatureHistory, color: MoniPalette.orange)
+                    InteractiveSparkline(
+                        series: [
+                            InteractiveSparklineSeries(
+                                name: "CPU die",
+                                values: monitor.cpuTemperatureHistory,
+                                color: MoniPalette.orange,
+                                showsFill: true,
+                                formatValue: { String(format: "%.1f°C", $0) }
+                            )
+                        ],
+                        dates: monitor.cpuTemperatureHistoryDates
+                    )
                         .frame(maxWidth: isWide ? .infinity : 96)
                         .frame(height: chartHeight(for: size, compact: 54))
                 }
@@ -508,17 +578,17 @@ struct SummaryView: View {
 
     private var aiUsageCard: some View {
         let size = cardSize(.aiUsage)
-        let summary = aiUsage.summary
 
         return cardButton(.ai) {
             MetricCard(
                 title: "AI Usage",
                 symbol: MonitorSection.ai.symbol,
                 color: MoniPalette.indigo,
-                trailing: "Last \(aiUsageRangeDays) days",
+                trailing: "\(visibleAIProviders.count) Account"
+                    + (visibleAIProviders.count == 1 ? "" : "s"),
                 trailingSymbol: "chevron.right"
             ) {
-                if summary.providers.isEmpty {
+                if visibleAIProviders.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(aiUsage.isLoading ? "Scanning" : "No Usage")
                             .font(.system(size: 30, weight: .bold, design: .rounded))
@@ -556,18 +626,33 @@ struct SummaryView: View {
     }
 
     private var aiUsageOverview: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(aiUsage.summary.estimatedCostUSD.map(currency) ?? "—")
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? .now
+        let thirtyDayStart = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+        let todayUsage = aiUsage.summary.daily.first {
+            $0.date >= today && $0.date < tomorrow
+        }
+        let lastThirtyDayTokens = aiUsage.summary.daily.reduce(UInt64(0)) { total, usage in
+            guard usage.date >= thirtyDayStart, usage.date < tomorrow else { return total }
+            return total + usage.tokens
+        }
+        let todayTokens = todayUsage?.tokens ?? 0
+        let todayCost = todayUsage?.costUSD ?? 0
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Text(compactTokens(todayTokens))
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .moniNumericTransition(aiUsage.summary.estimatedCostUSD)
+                .moniNumericTransition(todayTokens)
             Text(
-                "\(compactTokens(aiUsage.summary.totalTokens)) tokens · "
-                    + "\(aiUsage.summary.providers.count) account"
-                    + (aiUsage.summary.providers.count == 1 ? "" : "s")
+                "≈ \(currency(todayCost)) today · "
+                    + "\(compactTokens(lastThirtyDayTokens)) tokens"
             )
-                .font(.system(size: 12.5))
+                .font(.system(size: 13.5))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
                 .padding(.top, 4)
             DailyUsageChart(values: aiUsage.summary.daily)
                 .frame(minHeight: 40, maxHeight: .infinity)
@@ -579,7 +664,7 @@ struct SummaryView: View {
     private var aiUsageProviderStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 12) {
-                ForEach(aiUsage.summary.providers) { provider in
+                ForEach(visibleAIProviders) { provider in
                     aiUsageProviderCard(provider)
                         .frame(width: 236)
                 }
@@ -592,6 +677,14 @@ struct SummaryView: View {
         let quota = provider.quotaWindows.first {
             $0.label.localizedCaseInsensitiveContains("week")
         } ?? provider.quotaWindows.first
+        let todayUsage = aiUsage.summary.daily.first {
+            Calendar.current.isDateInToday($0.date)
+        }?.providers?[provider.provider]
+        let planName = provider.provider == "Codex"
+            ? AIQuotaFetcher.codexPlan(provider.planName) ?? "Local logs"
+            : provider.planName ?? "Local logs"
+        let showsWeeklyLimit = quota.map(isWeeklyQuota) ?? false
+        let weeklyLimit = quota.flatMap { estimatedWeeklyLimitUSD(for: provider, quota: $0) }
 
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 7) {
@@ -602,17 +695,17 @@ struct SummaryView: View {
                     .font(.system(size: 13.5, weight: .bold))
                     .lineLimit(1)
                 Spacer(minLength: 6)
-                Text(provider.planName ?? "Local logs")
+                Text(planName)
                     .font(.system(size: 11.5))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(compactTokens(provider.totalTokens))
+                Text(compactTokens(todayUsage?.tokens ?? 0))
                     .font(.system(size: 21, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                Text(provider.estimatedCostUSD.map(currency) ?? "unpriced")
+                Text(currency(todayUsage?.costUSD ?? 0))
                     .font(.system(size: 12.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -662,10 +755,19 @@ struct SummaryView: View {
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                Text(provider.models.first?.model ?? "Model unavailable")
+                Text(
+                    showsWeeklyLimit
+                        ? weeklyLimit.map(weeklyLimitLabel) ?? "Estimating…"
+                        : provider.models.first?.model ?? "Model unavailable"
+                )
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help(
+                        showsWeeklyLimit
+                            ? "Estimated API-equivalent weekly limit from local usage and the provider-reported weekly percentage."
+                            : ""
+                    )
             }
             .font(.system(size: 11.5))
         }
@@ -700,6 +802,31 @@ struct SummaryView: View {
         return "Reset unavailable"
     }
 
+    private func isWeeklyQuota(_ quota: AIQuotaWindow) -> Bool {
+        quota.windowMinutes == 10_080 || quota.label.localizedCaseInsensitiveContains("week")
+    }
+
+    private func estimatedWeeklyLimitUSD(
+        for provider: AIProviderUsage,
+        quota: AIQuotaWindow
+    ) -> Double? {
+        guard isWeeklyQuota(quota),
+            quota.usedPercent >= 1,
+            let windowCost = aiUsage.summary.weeklyWindowCostsUSD?[provider.provider],
+            windowCost > 0
+        else { return nil }
+
+        let estimate = windowCost / (quota.usedPercent / 100)
+        return estimate.isFinite && estimate > 0 ? estimate : nil
+    }
+
+    private func weeklyLimitLabel(_ value: Double) -> String {
+        let amount = value.formatted(
+            .number.grouping(.automatic).precision(.fractionLength(value < 100 ? 1 : 0))
+        )
+        return "≈ $\(amount) weekly"
+    }
+
     private var powerSourceTitle: String? {
         if snapshot.power.isCharging { return "Charging" }
         if snapshot.power.isExternalPowerConnected { return "AC Power" }
@@ -722,7 +849,7 @@ struct SummaryView: View {
     }
 
     private var visibleCards: Set<DashboardCardID> {
-        var cards: Set<DashboardCardID> = [.aiUsage]
+        var cards: Set<DashboardCardID> = []
         if showHost { cards.insert(.host) }
         if showCPU { cards.insert(.cpu) }
         if showMemory { cards.insert(.memory) }
@@ -731,6 +858,7 @@ struct SummaryView: View {
         if showStorage { cards.insert(.storage) }
         if showProcesses { cards.insert(.processes) }
         if showPower { cards.insert(.power) }
+        if showAI { cards.insert(.aiUsage) }
         if showDocker { cards.insert(.docker) }
         return cards
     }
@@ -822,6 +950,17 @@ struct SummaryView: View {
                     < distanceSquared(from: location, to: rhs.value)
             }
         guard let (card, frame) = target else { return }
+        if cardSize(source).columns == 3 {
+            let firstCardInRow = cardDragContext.frames
+                .filter {
+                    $0.key != source && abs($0.value.minY - frame.minY) < 6
+                }
+                .min(by: { $0.value.minX < $1.value.minX })?.key
+            if let firstCardInRow {
+                moveCard(source, firstCardInRow, false)
+                return
+            }
+        }
         moveCard(source, card, location.x >= frame.midX)
     }
 

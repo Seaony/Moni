@@ -3,6 +3,9 @@ import Foundation
 enum PreferenceKey {
     static let appearance = "appearance"
     static let compactMenuBar = "compactMenuBar"
+    static let menuBarItems = "menuBarItems"
+    static let menuBarDisplayStyle = "menuBarDisplayStyle"
+    static let showDockIcon = "showDockIcon"
     static let launchAtLogin = "launchAtLogin"
     static let menuBarMetric = "menuBarMetric"
     static let samplingInterval = "samplingInterval"
@@ -12,12 +15,15 @@ enum PreferenceKey {
     static let memoryAlertThreshold = "memoryAlertThreshold"
     static let diskAlertEnabled = "diskAlertEnabled"
     static let diskAlertThreshold = "diskAlertThreshold"
+    static let temperatureAlertThreshold = "temperatureAlertThreshold"
     static let notificationAlerts = "notificationAlerts"
     static let alertSounds = "alertSounds"
     static let repeatAlerts = "repeatAlerts"
     static let aiUsageRangeDays = "aiUsageRangeDays"
     static let aiUsageRange = "aiUsageRange"
+    static let disabledAIProviders = "disabledAIProviders"
     static let summaryCardLayout = "summaryCardLayout"
+    static let summaryGridDensity = "summaryGridDensity"
     static let storageFolderCache = "storageFolderCache"
     static let storageFolderCacheDate = "storageFolderCacheDate"
 
@@ -29,7 +35,31 @@ enum PreferenceKey {
     static let showStorage = "showStorage"
     static let showProcesses = "showProcesses"
     static let showPower = "showPower"
+    static let showAI = "showAI"
     static let showDocker = "showDocker"
+}
+
+enum SummaryGridDensity: String, CaseIterable, Identifiable {
+    case compact, comfortable, spacious
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+
+    var rowHeight: CGFloat {
+        switch self {
+        case .compact: 185
+        case .comfortable: 205
+        case .spacious: 225
+        }
+    }
+
+    var spacing: CGFloat {
+        switch self {
+        case .compact: 10
+        case .comfortable: 12
+        case .spacious: 14
+        }
+    }
 }
 
 enum AppAppearance: String, CaseIterable, Identifiable {
@@ -40,7 +70,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 }
 
 enum MenuBarMetric: String, CaseIterable, Identifiable {
-    case cpu, memory, network, disk, battery
+    case cpu, memory, network, disk, battery, temperature
 
     var id: String { rawValue }
 
@@ -51,6 +81,7 @@ enum MenuBarMetric: String, CaseIterable, Identifiable {
         case .network: "Network"
         case .disk: "Disk"
         case .battery: "Battery"
+        case .temperature: "Temp"
         }
     }
 
@@ -61,6 +92,21 @@ enum MenuBarMetric: String, CaseIterable, Identifiable {
         case .network: "arrow.down"
         case .disk: "internaldrive"
         case .battery: "battery.75percent"
+        case .temperature: "thermometer.medium"
+        }
+    }
+}
+
+enum MenuBarDisplayStyle: String, CaseIterable, Identifiable {
+    case valueOnly, graphOnly, graphAndValue
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .valueOnly: "Value only"
+        case .graphOnly: "Graph only"
+        case .graphAndValue: "Graph + value"
         }
     }
 }

@@ -106,8 +106,14 @@ nonisolated struct DailyAIUsage: Codable, Identifiable, Sendable {
     let tokens: UInt64
     let costUSD: Double
     let requestCount: Int
+    let providers: [String: DailyAIProviderUsage]?
 
     var id: Date { date }
+}
+
+nonisolated struct DailyAIProviderUsage: Codable, Sendable {
+    let tokens: UInt64
+    let costUSD: Double
 }
 
 nonisolated struct AIUsageSummary: Codable, Sendable {
@@ -115,6 +121,7 @@ nonisolated struct AIUsageSummary: Codable, Sendable {
     var daily: [DailyAIUsage] = []
     var scannedAt: Date?
     var quotaScannedAt: Date?
+    var weeklyWindowCostsUSD: [String: Double]?
 
     var totalTokens: UInt64 {
         providers.reduce(0) { $0 + $1.totalTokens }

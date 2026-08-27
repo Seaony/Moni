@@ -73,6 +73,7 @@ struct ContentView: View {
     @State private var settingsSection: SettingsSection = .general
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
+    @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -122,9 +123,13 @@ struct ContentView: View {
         .preferredColorScheme(preferredColorScheme)
         .onAppear {
             monitor.setSamplingInterval(samplingInterval)
+            NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
         }
         .onChange(of: samplingInterval) { _, value in
             monitor.setSamplingInterval(value)
+        }
+        .onChange(of: showDockIcon) { _, value in
+            NSApp.setActivationPolicy(value ? .regular : .accessory)
         }
         .scaleEffect(DashboardSizing.interfaceScale, anchor: .topLeading)
         .frame(

@@ -8,25 +8,35 @@ final class AlertMonitor {
 
     func evaluate(_ snapshot: SystemSnapshot) {
         let defaults = UserDefaults.standard
+        let alertsEnabled = defaults.bool(forKey: PreferenceKey.notificationAlerts)
         evaluate(
             id: "cpu",
             title: "CPU usage is high",
             value: snapshot.cpu.total,
-            enabled: defaults.bool(forKey: PreferenceKey.cpuAlertEnabled),
+            enabled: alertsEnabled,
             threshold: threshold(PreferenceKey.cpuAlertThreshold, fallback: 85)
         )
         evaluate(
             id: "memory",
             title: "Memory usage is high",
             value: snapshot.memory.usedPercent,
-            enabled: defaults.bool(forKey: PreferenceKey.memoryAlertEnabled),
+            enabled: alertsEnabled,
             threshold: threshold(PreferenceKey.memoryAlertThreshold, fallback: 90)
         )
+        if let temperature = snapshot.power.cpuTemperatureCelsius {
+            evaluate(
+                id: "temperature",
+                title: "CPU temperature is high",
+                value: temperature,
+                enabled: alertsEnabled,
+                threshold: threshold(PreferenceKey.temperatureAlertThreshold, fallback: 80)
+            )
+        }
         evaluate(
             id: "disk",
             title: "System disk is nearly full",
             value: snapshot.volumes.first { $0.mountPath == "/" }?.usedPercent ?? 0,
-            enabled: defaults.bool(forKey: PreferenceKey.diskAlertEnabled),
+            enabled: alertsEnabled,
             threshold: threshold(PreferenceKey.diskAlertThreshold, fallback: 90)
         )
     }

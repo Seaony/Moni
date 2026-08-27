@@ -90,13 +90,18 @@ actor AIUsageScanner {
         var tokens: UInt64 = 0
         var cost: Double = 0
         var requests = 0
+        var providerTokens: [String: UInt64] = [:]
+        var providerCosts: [String: Double] = [:]
 
-        mutating func add(_ event: UsageEvent) {
-            tokens +=
+        mutating func add(_ event: UsageEvent, provider: String) {
+            let eventTokens =
                 event.tokens.input + event.tokens.cacheRead + event.tokens.cacheWrite + event.tokens.output
                     + (event.reasoningCountsSeparately ? event.tokens.reasoning : 0)
+            tokens += eventTokens
             cost += event.costUSD ?? 0
             requests += max(1, event.requestCount)
+            providerTokens[provider, default: 0] += eventTokens
+            providerCosts[provider, default: 0] += event.costUSD ?? 0
         }
     }
 
@@ -348,7 +353,70 @@ actor AIUsageScanner {
             return replacingQuota(of: provider, with: quota)
         }
         refreshed.quotaScannedAt = now
+        return refreshingWeeklyWindowCosts(in: refreshed, now: now)
+    }
+
+    func refreshWeeklyWindowCosts(
+        in summary: AIUsageSummary,
+        now: Date = Date()
+    ) -> AIUsageSummary {
+        refreshingWeeklyWindowCosts(in: summary, now: now)
+    }
+
+    private func refreshingWeeklyWindowCosts(
+        in summary: AIUsageSummary,
+        now: Date
+    ) -> AIUsageSummary {
+        var refreshed = summary
+        var costs: [String: Double] = [:]
+
+        for provider in summary.providers {
+            guard let quota = provider.quotaWindows.first(where: {
+                $0.windowMinutes == 10_080 || $0.label.localizedCaseInsensitiveContains("week")
+            }),
+                let resetsAt = quota.resetsAt,
+                let windowMinutes = quota.windowMinutes,
+                resetsAt > now
+            else { continue }
+
+            let windowStart = resetsAt.addingTimeInterval(-TimeInterval(windowMinutes * 60))
+            if let cost = exactProviderCostUSD(
+                provider.provider,
+                start: windowStart,
+                end: min(now, resetsAt)
+            ) {
+                costs[provider.provider] = cost
+            }
+        }
+
+        refreshed.weeklyWindowCostsUSD = costs.isEmpty ? nil : costs
         return refreshed
+    }
+
+    private func exactProviderCostUSD(
+        _ provider: String,
+        start: Date,
+        end: Date
+    ) -> Double? {
+        guard end > start else { return nil }
+        loadPersistentCachesIfNeeded()
+        var daily: [Date: DailyBucket] = [:]
+        let totals: Totals
+
+        switch provider {
+        case "Codex":
+            totals = scanCodex(start: start, end: end, daily: &daily).totals
+        case "Claude":
+            totals = scanClaude(start: start, end: end, daily: &daily)
+        default:
+            return nil
+        }
+
+        guard totals.values.requests > 0,
+            totals.values.pricedRequests == totals.values.requests,
+            totals.values.cost > 0
+        else { return nil }
+        return totals.values.cost
     }
 
     private func replacingQuota(
@@ -389,7 +457,17 @@ actor AIUsageScanner {
                     date: date,
                     tokens: bucket.tokens,
                     costUSD: bucket.cost,
-                    requestCount: bucket.requests
+                    requestCount: bucket.requests,
+                    providers: Dictionary(uniqueKeysWithValues: bucket.providerTokens.map {
+                        provider, tokens in
+                        (
+                            provider,
+                            DailyAIProviderUsage(
+                                tokens: tokens,
+                                costUSD: bucket.providerCosts[provider] ?? 0
+                            )
+                        )
+                    })
                 ))
             guard let next = calendar.date(byAdding: .day, value: 1, to: date) else { break }
             date = next
@@ -420,7 +498,7 @@ actor AIUsageScanner {
             for event in session.events.dropFirst(droppedCount)
             where event.usage.date >= start && event.usage.date < end {
                 totals.add(event.usage)
-                addDaily(event.usage, to: &daily)
+                addDaily(event.usage, provider: "Codex", to: &daily)
                 countedSession = true
             }
             if countedSession { totals.sessions += 1 }
@@ -611,7 +689,7 @@ actor AIUsageScanner {
 
         for event in events where event.usage.date >= start && event.usage.date < end {
             totals.add(event.usage)
-            addDaily(event.usage, to: &daily)
+            addDaily(event.usage, provider: "Claude", to: &daily)
             sessions.insert(event.path)
         }
         totals.sessions = sessions.count
@@ -647,7 +725,7 @@ actor AIUsageScanner {
             var countedSession = false
             for usage in event.usages where usage.date >= start && usage.date < end {
                 totals.add(usage)
-                addDaily(usage, to: &daily)
+                addDaily(usage, provider: "Qwen Code", to: &daily)
                 countedSession = true
             }
             if countedSession { sessions.insert(event.sessionID) }
@@ -807,7 +885,7 @@ actor AIUsageScanner {
             let usage = item.record.usage
             guard usage.date >= start, usage.date < end else { continue }
             totals.add(usage)
-            addDaily(usage, to: &daily)
+            addDaily(usage, provider: "DeepSeek Harness", to: &daily)
             sessions.insert(item.sessionID)
         }
         totals.sessions = sessions.count
@@ -1026,7 +1104,7 @@ actor AIUsageScanner {
         var sessions: Set<String> = []
         for record in records.values where record.usage.date >= start && record.usage.date < end {
             totals.add(record.usage)
-            addDaily(record.usage, to: &daily)
+            addDaily(record.usage, provider: "OpenCode", to: &daily)
             sessions.insert(record.sessionID)
         }
         totals.sessions = sessions.count
@@ -1234,7 +1312,7 @@ actor AIUsageScanner {
             var countedSession = false
             for record in records where record.usage.date >= start && record.usage.date < end {
                 totals.add(record.usage)
-                addDaily(record.usage, to: &daily)
+                addDaily(record.usage, provider: "Kimi Code", to: &daily)
                 countedSession = true
             }
             if countedSession { sessions.insert(kimiSessionID(sessionDirectory)) }
@@ -1425,7 +1503,7 @@ actor AIUsageScanner {
             var countedSession = false
             for event in session.events where event.date >= start && event.date < end {
                 totals.add(event)
-                addDaily(event, to: &daily)
+                addDaily(event, provider: "Gemini CLI", to: &daily)
                 countedSession = true
             }
             if countedSession { totals.sessions += 1 }
@@ -1976,8 +2054,15 @@ actor AIUsageScanner {
         )
     }
 
-    private func addDaily(_ event: UsageEvent, to daily: inout [Date: DailyBucket]) {
-        daily[calendar.startOfDay(for: event.date), default: DailyBucket()].add(event)
+    private func addDaily(
+        _ event: UsageEvent,
+        provider: String,
+        to daily: inout [Date: DailyBucket]
+    ) {
+        daily[calendar.startOfDay(for: event.date), default: DailyBucket()].add(
+            event,
+            provider: provider
+        )
     }
 
     private func eventTotal(_ event: UsageEvent) -> UInt64 {
@@ -2033,9 +2118,7 @@ actor AIUsageScanner {
                 ))
         }
         guard !windows.isEmpty else { return nil }
-        let plan = string(rateLimits["plan_type"])?
-            .replacingOccurrences(of: "_", with: " ")
-            .capitalized
+        let plan = AIQuotaFetcher.codexPlan(string(rateLimits["plan_type"]))
         return AIQuotaFetchResult(planName: plan, windows: windows, message: nil)
     }
 

@@ -15,6 +15,8 @@ struct MoniApp: App {
     @StateObject private var updates = UpdateController()
     @AppStorage(PreferenceKey.compactMenuBar) private var compactMenuBar = false
     @AppStorage(PreferenceKey.menuBarMetric) private var menuBarMetric = MenuBarMetric.cpu.rawValue
+    @AppStorage(PreferenceKey.menuBarItems) private var menuBarItems = "cpu,memory"
+    @AppStorage(PreferenceKey.menuBarDisplayStyle) private var menuBarDisplayStyle = MenuBarDisplayStyle.valueOnly.rawValue
 
     var body: some Scene {
         MenuBarExtra {
@@ -24,16 +26,22 @@ struct MoniApp: App {
                 .environmentObject(updates)
                 .background(MenuBarWindowPositioner())
         } label: {
-            HStack(spacing: 4) {
-                if !compactMenuBar {
-                    Image(systemName: selectedMetric.symbol)
-                        .transition(MoniMotion.itemTransition)
+            HStack(spacing: 7) {
+                ForEach(Array(selectedMetrics.prefix(compactMenuBar ? 1 : 3))) { metric in
+                    HStack(spacing: 3) {
+                        if !compactMenuBar && displayStyle != .valueOnly {
+                            MenuBarMiniGraph(values: history(metric))
+                        }
+                        if compactMenuBar || displayStyle != .graphOnly {
+                            Text(menuBarValue(metric))
+                                .monospacedDigit()
+                                .moniNumericTransition(menuBarValue(metric))
+                        }
+                    }
                 }
-                Text(menuBarValue)
-                    .monospacedDigit()
-                    .moniNumericTransition(menuBarValue)
             }
-            .moniAnimation(value: compactMenuBar)
+            .moniAnimation(value: menuBarItems)
+            .moniAnimation(value: menuBarDisplayStyle)
         }
         .menuBarExtraStyle(.window)
         .commands {
@@ -58,8 +66,18 @@ struct MoniApp: App {
         MenuBarMetric(rawValue: menuBarMetric) ?? .cpu
     }
 
-    private var menuBarValue: String {
-        switch selectedMetric {
+    private var selectedMetrics: [MenuBarMetric] {
+        let selection = Set(menuBarItems.split(separator: ",").map(String.init))
+        let values = MenuBarMetric.allCases.filter { selection.contains($0.rawValue) }
+        return values.isEmpty ? [selectedMetric] : values
+    }
+
+    private var displayStyle: MenuBarDisplayStyle {
+        MenuBarDisplayStyle(rawValue: menuBarDisplayStyle) ?? .valueOnly
+    }
+
+    private func menuBarValue(_ metric: MenuBarMetric) -> String {
+        switch metric {
         case .cpu:
             return "\(Int(monitor.snapshot.cpu.total.rounded()))%"
         case .memory:
@@ -70,11 +88,52 @@ struct MoniApp: App {
             return "\(Int((monitor.snapshot.volumes.first { $0.mountPath == "/" }?.usedPercent ?? 0).rounded()))%"
         case .battery:
             return monitor.snapshot.power.batteryPercent.map { "\(Int($0.rounded()))%" } ?? "—"
+        case .temperature:
+            return monitor.snapshot.power.cpuTemperatureCelsius.map { "\(Int($0.rounded()))°" } ?? "—"
+        }
+    }
+
+    private func history(_ metric: MenuBarMetric) -> [Double] {
+        switch metric {
+        case .cpu: monitor.cpuHistory
+        case .memory: monitor.memoryHistory
+        case .network: monitor.downloadHistory
+        case .disk: monitor.diskReadHistory
+        case .battery: monitor.batteryHistory
+        case .temperature: monitor.cpuTemperatureHistory
         }
     }
 
     private func rate(_ value: Double) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(max(0, value)), countStyle: .decimal) + "/s"
+    }
+}
+
+private struct MenuBarMiniGraph: View {
+    let values: [Double]
+
+    var body: some View {
+        GeometryReader { proxy in
+            Path { path in
+                let values = Array(values.suffix(18))
+                guard values.count > 1,
+                      let minimum = values.min(),
+                      let maximum = values.max()
+                else { return }
+                let span = max(1, maximum - minimum)
+                for (index, value) in values.enumerated() {
+                    let x = proxy.size.width * CGFloat(index) / CGFloat(values.count - 1)
+                    let y = proxy.size.height * CGFloat(1 - (value - minimum) / span)
+                    if index == 0 {
+                        path.move(to: CGPoint(x: x, y: y))
+                    } else {
+                        path.addLine(to: CGPoint(x: x, y: y))
+                    }
+                }
+            }
+            .stroke(.primary, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+        }
+        .frame(width: 22, height: 12)
     }
 }
 

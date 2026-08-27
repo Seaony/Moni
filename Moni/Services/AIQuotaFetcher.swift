@@ -101,7 +101,7 @@ nonisolated enum AIQuotaFetcher {
             }
             guard !windows.isEmpty else {
                 return AIQuotaFetchResult(
-                    planName: formattedPlan(nonEmptyString(json["plan_type"])),
+                    planName: codexPlan(nonEmptyString(json["plan_type"])),
                     windows: [],
                     message: joinedMessage(
                         "Codex did not return any quota windows.",
@@ -110,7 +110,7 @@ nonisolated enum AIQuotaFetcher {
                 )
             }
             return AIQuotaFetchResult(
-                planName: formattedPlan(nonEmptyString(json["plan_type"])),
+                planName: codexPlan(nonEmptyString(json["plan_type"])),
                 windows: windows,
                 message: webQuota.message
             )
@@ -423,6 +423,17 @@ nonisolated enum AIQuotaFetcher {
         if tier?.contains("20x") == true { return "Max 20x" }
         if tier?.contains("5x") == true { return "Max 5x" }
         return subscription
+    }
+
+    static func codexPlan(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !value.isEmpty
+        else { return nil }
+        switch value.lowercased() {
+        case "pro": return "Pro 20x"
+        case "prolite", "pro_lite", "pro-lite", "pro lite": return "Pro 5x"
+        default: return formattedPlan(value)
+        }
     }
 
     private static func formattedPlan(_ value: String?) -> String? {

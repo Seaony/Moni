@@ -163,14 +163,15 @@ final class AIUsageStore: ObservableObject {
                 in: scanned,
                 from: cachedSummaries[query.cacheKey]?.summary
             )
-            publish(localSummary, for: query)
+            let localSummaryWithWeeklyCosts = await scanner.refreshWeeklyWindowCosts(in: localSummary)
+            publish(localSummaryWithWeeklyCosts, for: query)
 
             if includeQuotas {
                 let refreshed = await scanner.refreshQuotas(
-                    in: localSummary,
+                    in: localSummaryWithWeeklyCosts,
                     allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
                 )
-                publish(preservingValidQuotaData(in: refreshed, from: localSummary), for: query)
+                publish(preservingValidQuotaData(in: refreshed, from: localSummaryWithWeeklyCosts), for: query)
             }
 
             activeRequest = nil

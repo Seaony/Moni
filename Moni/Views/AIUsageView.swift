@@ -3,6 +3,7 @@ import SwiftUI
 struct AIUsageView: View {
     @EnvironmentObject private var store: AIUsageStore
     @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.month.rawValue
+    @AppStorage(PreferenceKey.disabledAIProviders) private var disabledProviderValue = ""
     let onAddSource: () -> Void
 
     private var range: AIUsageRange {
@@ -15,12 +16,12 @@ struct AIUsageView: View {
                 rangePicker
                 usagePanel
 
-                if !store.summary.providers.isEmpty {
+                if !visibleProviders.isEmpty {
                     LazyVGrid(
                         columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible())],
                         spacing: 12
                     ) {
-                        ForEach(store.summary.providers) { provider in
+                        ForEach(visibleProviders) { provider in
                             providerPanel(provider)
                                 .transition(MoniMotion.itemTransition)
                         }
@@ -52,7 +53,7 @@ struct AIUsageView: View {
                 }
             }
             .moniAnimation(value: store.isLoading)
-            .moniAnimation(value: store.summary.providers.map(\.id))
+            .moniAnimation(value: visibleProviders.map(\.id))
         }
         .task {
             store.loadIfNeeded(
@@ -64,6 +65,11 @@ struct AIUsageView: View {
         .onChange(of: rangeValue) { _, value in
             store.refresh(range: AIUsageRange(rawValue: value) ?? .month, includeQuotas: true)
         }
+    }
+
+    private var visibleProviders: [AIProviderUsage] {
+        let disabled = Set(disabledProviderValue.split(separator: ",").map(String.init))
+        return store.summary.providers.filter { !disabled.contains($0.provider) }
     }
 
     private var rangePicker: some View {
@@ -306,7 +312,7 @@ struct AIUsageView: View {
     }
 
     private var missingSources: [String] {
-        let detected = Set(store.summary.providers.map(\.provider))
+        let detected = Set(visibleProviders.map(\.provider))
         return ["Gemini CLI", "Qwen Code", "Kimi Code", "DeepSeek Harness", "OpenCode"]
             .filter { !detected.contains($0) }
     }
@@ -343,35 +349,164 @@ struct AIUsageView: View {
 }
 
 struct DailyUsageChart: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hoveredDayID: DailyAIUsage.ID?
+
     let values: [DailyAIUsage]
 
     var body: some View {
         GeometryReader { geometry in
             let recent = Array(values.suffix(14))
             let maximum = max(1, recent.map(\.tokens).max() ?? 1)
-            HStack(alignment: .bottom, spacing: 6) {
-                ForEach(Array(recent.enumerated()), id: \.element.id) { index, day in
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(MoniPalette.indigo.opacity(index == max(0, recent.count - 3) ? 1 : 0.45))
-                        .frame(
-                            height: max(
-                                4,
-                                geometry.size.height * CGFloat(Double(day.tokens) / Double(maximum))
+            let spacing: CGFloat = 6
+            let barWidth = max(
+                4,
+                (geometry.size.width - spacing * CGFloat(max(0, recent.count - 1)))
+                    / CGFloat(max(1, recent.count))
+            )
+
+            ZStack(alignment: .topLeading) {
+                HStack(alignment: .bottom, spacing: spacing) {
+                    ForEach(Array(recent.enumerated()), id: \.element.id) { index, day in
+                        usageBar(
+                            day,
+                            isEmphasized: index == max(0, recent.count - 3),
+                            maximum: maximum,
+                            chartHeight: geometry.size.height,
+                            width: barWidth
+                        )
+                    }
+                }
+
+                if let hoveredDay,
+                   let hoveredIndex = recent.firstIndex(where: { $0.id == hoveredDay.id })
+                {
+                    usageTooltip(hoveredDay)
+                        .fixedSize()
+                        .position(
+                            x: tooltipX(
+                                index: hoveredIndex,
+                                barWidth: barWidth,
+                                spacing: spacing,
+                                chartWidth: geometry.size.width
+                            ),
+                            y: tooltipY(
+                                day: hoveredDay,
+                                maximum: maximum,
+                                chartHeight: geometry.size.height
                             )
                         )
-                        .help(tooltip(for: day))
+                        .allowsHitTesting(false)
+                        .transition(
+                            reduceMotion
+                                ? .identity
+                                : .opacity.combined(with: .scale(scale: 0.96))
+                        )
+                        .zIndex(1)
                 }
             }
             .moniAnimation(MoniMotion.data, value: recent.map(\.tokens))
         }
+        .onDisappear {
+            hoveredDayID = nil
+        }
         .accessibilityLabel("Daily token usage")
     }
 
-    private func tooltip(for day: DailyAIUsage) -> String {
-        let date = day.date.formatted(date: .abbreviated, time: .omitted)
-        let cost = day.costUSD.formatted(
-            .number.precision(.fractionLength(day.costUSD < 0.01 ? 4 : 2))
+    private var hoveredDay: DailyAIUsage? {
+        values.suffix(14).first { $0.id == hoveredDayID }
+    }
+
+    private func usageBar(
+        _ day: DailyAIUsage,
+        isEmphasized: Bool,
+        maximum: UInt64,
+        chartHeight: CGFloat,
+        width: CGFloat
+    ) -> some View {
+        let isHovered = hoveredDayID == day.id
+        let barColor = isHovered
+            ? MoniPalette.indigo
+            : MoniPalette.indigo.opacity(isEmphasized ? 1 : 0.45)
+        let barHeight = max(
+            4,
+            chartHeight * CGFloat(Double(day.tokens) / Double(maximum))
         )
-        return "\(date): \(day.tokens.formatted()) tokens · \(day.requestCount) requests · $\(cost)"
+
+        return ZStack(alignment: .bottom) {
+            Color.clear
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(barColor)
+                .frame(height: barHeight)
+                .scaleEffect(x: isHovered ? 1.08 : 1, y: 1, anchor: .bottom)
+        }
+        .frame(width: width)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onHover { isHovering in
+            let update = {
+                hoveredDayID = isHovering ? day.id : nil
+            }
+            if reduceMotion {
+                update()
+            } else {
+                withAnimation(MoniMotion.press) {
+                    update()
+                }
+            }
+        }
+    }
+
+    private func usageTooltip(_ day: DailyAIUsage) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(day.date.formatted(date: .abbreviated, time: .omitted))
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(MoniPalette.foregroundSecondary)
+            Text("\(day.tokens.formatted(.number.notation(.compactName))) tokens")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(MoniPalette.foreground)
+                .monospacedDigit()
+            Text("≈\(currency(day.costUSD)) · \(day.requestCount.formatted()) requests")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(MoniPalette.controlHover)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(MoniPalette.panelLine, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
+    }
+
+    private func tooltipX(
+        index: Int,
+        barWidth: CGFloat,
+        spacing: CGFloat,
+        chartWidth: CGFloat
+    ) -> CGFloat {
+        let center = CGFloat(index) * (barWidth + spacing) + barWidth / 2
+        return min(max(center, 72), max(72, chartWidth - 72))
+    }
+
+    private func tooltipY(
+        day: DailyAIUsage,
+        maximum: UInt64,
+        chartHeight: CGFloat
+    ) -> CGFloat {
+        let barHeight = max(
+            4,
+            chartHeight * CGFloat(Double(day.tokens) / Double(maximum))
+        )
+        return chartHeight - barHeight - 34
+    }
+
+    private func currency(_ value: Double) -> String {
+        "$" + value.formatted(
+            .number.precision(.fractionLength(value < 0.01 ? 4 : 2))
+        )
     }
 }
