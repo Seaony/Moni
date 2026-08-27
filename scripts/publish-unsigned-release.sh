@@ -158,7 +158,7 @@ fi
     --embed-release-notes \
     --maximum-versions 1 \
     --maximum-deltas 0 \
-    -o appcast.xml \
+    -o "$updates_dir/appcast.xml" \
     "$updates_dir"
 cp "$updates_dir/appcast.xml" "$output_dir/appcast.xml"
 scripts/validate-release.sh "$app_path" "$output_dir/appcast.xml"
