@@ -68,6 +68,18 @@ Only tags matching `vMAJOR.MINOR.PATCH` pass release validation. `MARKETING_VERS
 
 If the same workflow run is retried, existing GitHub Release assets are replaced. A different commit must use a new version tag; published version tags must not be moved.
 
+## Publishing an unsigned release locally
+
+When Developer ID and notarization credentials are unavailable, publish the next unsigned release from a clean, fully pushed `master` branch with:
+
+```bash
+scripts/publish-unsigned-release.sh 1.2.3
+```
+
+The script reads the latest published appcast to choose the next bundle build number, builds a universal `arm64` and `x86_64` application, packages ZIP and DMG artifacts, signs the appcast with the `com.seaony.Moni` Sparkle key stored in the login Keychain, validates the result, pushes the version tag, and creates the GitHub Release. Generated artifacts are retained under `build/releases/v1.2.3/`.
+
+The script intentionally does not commit source changes or push `master`. Commit and push the intended release state before running it. Do not use this path when Developer ID signing and notarization credentials are available.
+
 ## Verification
 
 The workflow verifies all of the following before publishing:
