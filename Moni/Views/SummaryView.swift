@@ -270,6 +270,7 @@ struct SummaryView: View {
                     compactCardStat("Nice", percent(snapshot.cpu.nice), color: MoniPalette.yellow, help: "CPU time used by lower-priority processes.")
                     compactCardStat("Idle", percent(snapshot.cpu.idle), color: MoniPalette.green, help: "CPU capacity that is currently unused.")
                 }
+                .frame(maxHeight: .infinity, alignment: .bottomLeading)
             }
         }
     }
@@ -314,6 +315,7 @@ struct SummaryView: View {
                     compactCardStat("Cached", bytes(snapshot.memory.cachedBytes), color: MoniPalette.cyan, help: "Memory holding reusable file data that macOS can reclaim when needed.")
                     compactCardStat("Wired", bytes(snapshot.memory.wiredBytes), color: MoniPalette.orange, help: "Memory reserved by the kernel that cannot be compressed or paged out.")
                 }
+                .frame(maxHeight: .infinity, alignment: .bottomLeading)
             }
         }
     }
@@ -385,6 +387,7 @@ struct SummaryView: View {
                         compactCardStat("Allocated", snapshot.gpu.allocatedMemoryBytes.map(bytes) ?? "—", color: MoniPalette.blue, help: "Unified memory currently allocated to GPU workloads.")
                     }
                 }
+                .frame(maxHeight: .infinity, alignment: .bottomLeading)
             }
         }
     }
@@ -434,24 +437,27 @@ struct SummaryView: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: chartHeight(for: size, compact: 72))
                 }
-                HStack(spacing: 16) {
-                    networkTotal("Received", bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan, help: "Total data received across network interfaces since the counters started.")
-                    networkTotal("Sent", bytes(snapshot.network.totalSentBytes), color: MoniPalette.orange, help: "Total data sent across network interfaces since the counters started.")
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 16) {
+                        networkTotal("Received", bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan, help: "Total data received across network interfaces since the counters started.")
+                        networkTotal("Sent", bytes(snapshot.network.totalSentBytes), color: MoniPalette.orange, help: "Total data sent across network interfaces since the counters started.")
+                    }
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(MoniPalette.green)
+                            .frame(width: 7, height: 7)
+                        Text(primaryNetworkLabel)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .help("Primary network interface and physical Wi-Fi mode.")
+                        Spacer(minLength: 4)
+                        Text("\(snapshot.network.interfaces.filter(\.isActive).count) active")
+                            .foregroundStyle(.tertiary)
+                            .help("Number of network interfaces currently marked active.")
+                    }
+                    .font(.system(size: 11.5))
                 }
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(MoniPalette.green)
-                        .frame(width: 7, height: 7)
-                    Text(primaryNetworkLabel)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .help("Primary network interface and physical Wi-Fi mode.")
-                    Spacer(minLength: 4)
-                    Text("\(snapshot.network.interfaces.filter(\.isActive).count) active")
-                        .foregroundStyle(.tertiary)
-                        .help("Number of network interfaces currently marked active.")
-                }
-                .font(.system(size: 11.5))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             }
         }
     }
@@ -504,6 +510,7 @@ struct SummaryView: View {
                         networkTotal("Read", rate(snapshot.diskActivity.readBytesPerSecond), color: MoniPalette.cyan, help: "Current rate of data being read from storage devices.")
                         networkTotal("Write", rate(snapshot.diskActivity.writeBytesPerSecond), color: MoniPalette.orange, help: "Current rate of data being written to storage devices.")
                     }
+                    .frame(maxHeight: .infinity, alignment: .bottomLeading)
                 }
             }
         }
@@ -542,7 +549,7 @@ struct SummaryView: View {
 
     private var processCard: some View {
         let size = cardSize(.processes)
-        let itemCount = max(4, size.columns * size.rows * 4)
+        let itemsPerColumn = size.rows == 1 ? 3 : size.rows * 4
 
         return cardButton(.processes) {
             MetricCard(
@@ -558,9 +565,9 @@ struct SummaryView: View {
                         count: size.columns
                     ),
                     alignment: .leading,
-                    spacing: 9
+                    spacing: size.rows == 1 ? 0 : 9
                 ) {
-                    ForEach(snapshot.processes.prefix(itemCount)) { process in
+                    ForEach(snapshot.processes.prefix(size.columns * itemsPerColumn)) { process in
                         processSummaryRow(process)
                     }
                 }
@@ -621,17 +628,6 @@ struct SummaryView: View {
                             .help("Current battery charge level. “No Battery” is shown on desktop Macs.")
                     }
                     .layoutPriority(1)
-                    Spacer()
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("CPU die")
-                            .foregroundStyle(.secondary)
-                        Text(snapshot.power.cpuTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "No Data")
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .help("Temperature reported by the CPU die sensor.")
-                    }
-                    .layoutPriority(1)
                     InteractiveSparkline(
                         series: [
                             InteractiveSparklineSeries(
@@ -656,6 +652,7 @@ struct SummaryView: View {
                     powerStat("Power draw", snapshot.power.systemPowerWatts.map { String(format: "%.1f W", $0) } ?? "—", help: "Estimated electrical power currently consumed by the system.")
                     powerStat("Health", snapshot.power.batteryHealth ?? "—", color: batteryHealthColor, help: "Battery condition reported by macOS.")
                 }
+                .frame(maxHeight: .infinity, alignment: .bottomLeading)
             }
         }
     }
@@ -780,13 +777,13 @@ struct SummaryView: View {
                         aiUsageOverview
                             .frame(width: size.columns == 3 ? 190 : 150)
                             .zIndex(1)
-                        aiUsageProviderStrip
+                        aiUsageProviderStrip(expandsProviders: size.columns == 3 && visibleAIProviders.count == 2)
                     }
                     .frame(maxHeight: .infinity)
                 } else {
                     aiUsageOverview
                     if size.rows >= 2 {
-                        aiUsageProviderStrip
+                        aiUsageProviderStrip(expandsProviders: false)
                             .frame(height: 136)
                     }
                 }
@@ -838,12 +835,22 @@ struct SummaryView: View {
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var aiUsageProviderStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 12) {
+    @ViewBuilder
+    private func aiUsageProviderStrip(expandsProviders: Bool) -> some View {
+        if expandsProviders {
+            HStack(spacing: 12) {
                 ForEach(visibleAIProviders) { provider in
                     aiUsageProviderCard(provider)
-                        .frame(width: 236)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 12) {
+                    ForEach(visibleAIProviders) { provider in
+                        aiUsageProviderCard(provider)
+                            .frame(width: 236)
+                    }
                 }
             }
         }

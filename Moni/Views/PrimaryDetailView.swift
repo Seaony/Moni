@@ -238,17 +238,17 @@ private struct CPUDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
                 DetailPanel("Top CPU consumers") {
-                    processHeader(action: { selection = .processes })
+                    processHeader(activityTitle: "Relative CPU", action: { selection = .processes })
                     let maximum = max(1, snapshot.processes.prefix(6).map(\.cpuPercent).max() ?? 1)
-                    ForEach(snapshot.processes.prefix(6)) { process in
-                        consumerRow(
-                            process,
-                            value: process.cpuPercent,
-                            maximum: maximum,
-                            metric: percent(process.cpuPercent),
-                            color: MoniPalette.pink,
-                            metricWidth: 60
-                        )
+                    VStack(spacing: 0) {
+                        ForEach(snapshot.processes.prefix(6)) { process in
+                            consumerRow(
+                                process,
+                                value: process.cpuPercent,
+                                maximum: maximum,
+                                color: MoniPalette.pink
+                            )
+                        }
                     }
                 }
             }
@@ -341,18 +341,18 @@ private struct MemoryDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
                 DetailPanel("Top memory consumers") {
-                    processHeader(action: { selection = .processes })
+                    processHeader(activityTitle: "Relative memory", action: { selection = .processes })
                     let consumers = Array(snapshot.processes.sorted { $0.memoryBytes > $1.memoryBytes }.prefix(6))
                     let maximum = max(UInt64(1), consumers.map(\.memoryBytes).max() ?? 1)
-                    ForEach(consumers) { process in
-                        consumerRow(
-                            process,
-                            value: Double(process.memoryBytes),
-                            maximum: Double(maximum),
-                            metric: bytes(process.memoryBytes),
-                            color: MoniPalette.blue,
-                            metricWidth: 76
-                        )
+                    VStack(spacing: 0) {
+                        ForEach(consumers) { process in
+                            consumerRow(
+                                process,
+                                value: Double(process.memoryBytes),
+                                maximum: Double(maximum),
+                                color: MoniPalette.blue
+                            )
+                        }
                     }
                 }
             }
@@ -462,10 +462,9 @@ private struct ProcessesDetailView: View {
             }
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
 
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 2) {
+                LazyVStack(spacing: 0) {
                     ForEach(matches) { process in
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 1) {
@@ -480,8 +479,7 @@ private struct ProcessesDetailView: View {
                         }
                         .font(.system(size: 12.5))
                         .monospacedDigit()
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
+                        .padding(.vertical, 6)
                         .background(MoniPalette.card)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
@@ -534,13 +532,24 @@ private struct HistoryRangePicker: View {
     }
 }
 
-private func processHeader(action: @escaping () -> Void) -> some View {
-    HStack {
-        Text("Name")
-        Spacer()
-        Button("All processes ›", action: action)
-            .buttonStyle(MoniPressButtonStyle())
-            .foregroundStyle(MoniPalette.blue)
+private func processHeader(activityTitle: String, action: @escaping () -> Void) -> some View {
+    VStack(spacing: 8) {
+        HStack {
+            Text("Top 6 sampled processes")
+            Spacer()
+            Button("All processes ›", action: action)
+                .buttonStyle(MoniPressButtonStyle())
+                .foregroundStyle(MoniPalette.blue)
+        }
+        HStack(spacing: 10) {
+            Text("Process")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("PID").frame(width: 72, alignment: .trailing)
+            Text("CPU").frame(width: 60, alignment: .trailing)
+            Text("Memory").frame(width: 86, alignment: .trailing)
+            Text("Threads").frame(width: 62, alignment: .trailing)
+            Text(activityTitle).frame(width: 130, alignment: .leading)
+        }
     }
     .font(.caption)
     .foregroundStyle(.secondary)
@@ -550,30 +559,38 @@ private func consumerRow(
     _ process: ProcessUsage,
     value: Double,
     maximum: Double,
-    metric: String,
-    color: Color,
-    metricWidth: CGFloat
+    color: Color
 ) -> some View {
     HStack(spacing: 10) {
-        Text(process.name)
-            .fontWeight(.semibold)
-            .lineLimit(1)
+        VStack(alignment: .leading, spacing: 1) {
+            Text(process.name)
+                .fontWeight(.semibold)
+                .lineLimit(1)
+            Text(process.path)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
             .frame(maxWidth: .infinity, alignment: .leading)
         Text(process.pid.formatted())
             .foregroundStyle(.tertiary)
-            .frame(width: 72, alignment: .leading)
+            .monospacedDigit()
+            .frame(width: 72, alignment: .trailing)
+        Text(percent(process.cpuPercent))
+            .monospacedDigit()
+            .frame(width: 60, alignment: .trailing)
+        Text(bytes(process.memoryBytes))
+            .monospacedDigit()
+            .frame(width: 86, alignment: .trailing)
+        Text(process.threadCount.formatted())
+            .monospacedDigit()
+            .frame(width: 62, alignment: .trailing)
         ProgressView(value: value, total: maximum)
             .tint(color)
             .frame(width: 130)
-        Text(metric)
-            .fontWeight(.bold)
-            .monospacedDigit()
-            .frame(width: metricWidth, alignment: .trailing)
-            .moniNumericTransition(metric)
     }
-    .font(.system(size: 13))
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
+    .font(.system(size: 12.5))
+    .padding(.vertical, 6)
 }
 
 private func detailStat(_ key: String, _ value: String) -> some View {

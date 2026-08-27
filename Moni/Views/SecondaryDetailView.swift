@@ -102,27 +102,38 @@ private struct GPUDetailView: View {
                             .font(.system(size: 13))
                             .foregroundStyle(.tertiary)
                     } else {
-                        ForEach(monitor.snapshot.gpu.clients.prefix(8)) { client in
+                        VStack(spacing: 0) {
                             HStack(spacing: 10) {
-                                Text(client.name)
-                                    .fontWeight(.semibold)
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                Text("PID \(client.pid)")
-                                    .foregroundStyle(.tertiary)
-                                    .frame(width: 90, alignment: .leading)
-                                Text(client.memoryBytes > 0 ? bytes(client.memoryBytes) : "—")
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 110, alignment: .trailing)
-                                Text(percent(client.utilizationPercent))
-                                    .fontWeight(.bold)
-                                    .monospacedDigit()
-                                    .frame(width: 70, alignment: .trailing)
-                                    .moniNumericTransition(client.utilizationPercent)
+                                Text("Client").frame(maxWidth: .infinity, alignment: .leading)
+                                Text("PID").frame(width: 72, alignment: .trailing)
+                                Text("Memory").frame(width: 100, alignment: .trailing)
+                                Text("GPU").frame(width: 70, alignment: .trailing)
                             }
-                            .font(.system(size: 13))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 9)
+                            .padding(.bottom, 4)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+
+                            ForEach(monitor.snapshot.gpu.clients.prefix(8)) { client in
+                                HStack(spacing: 10) {
+                                    Text(client.name)
+                                        .fontWeight(.semibold)
+                                        .lineLimit(1)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    Text(client.pid.formatted())
+                                        .foregroundStyle(.tertiary)
+                                        .frame(width: 72, alignment: .trailing)
+                                    Text(client.memoryBytes > 0 ? bytes(client.memoryBytes) : "—")
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 100, alignment: .trailing)
+                                    Text(percent(client.utilizationPercent))
+                                        .fontWeight(.bold)
+                                        .monospacedDigit()
+                                        .frame(width: 70, alignment: .trailing)
+                                        .moniNumericTransition(client.utilizationPercent)
+                                }
+                                .font(.system(size: 12.5))
+                                .padding(.vertical, 6)
+                            }
                         }
                     }
                 }
@@ -227,7 +238,6 @@ private struct NetworkDetailView: View {
                                     .foregroundStyle(interface.isActive ? MoniPalette.green : MoniPalette.foregroundSecondary)
                             }
                             .font(.system(size: 12.5))
-                            .padding(.horizontal, 8)
                             .padding(.vertical, 8)
                         }
                     }
@@ -251,8 +261,9 @@ private struct NetworkDetailView: View {
 
                 DetailPanel("Active connections") {
                     HStack(spacing: 10) {
-                        Text("Process")
-                        Spacer(minLength: 8)
+                        Text("Process").frame(maxWidth: .infinity, alignment: .leading)
+                        Text("PID").frame(width: 64, alignment: .trailing)
+                        Text("Local").frame(width: 170, alignment: .leading)
                         Text("Remote").frame(width: 190, alignment: .leading)
                         Text("Proto").frame(width: 58, alignment: .leading)
                         Text("In").frame(width: 78, alignment: .trailing)
@@ -260,39 +271,45 @@ private struct NetworkDetailView: View {
                     }
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 10)
 
                     if network.connections.isEmpty {
                         Text("No active external connections")
                             .font(.system(size: 13))
                             .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 10)
                             .padding(.vertical, 8)
                     } else {
-                        ForEach(network.connections) { connection in
-                            HStack(spacing: 10) {
-                                Text(connection.processName)
-                                    .fontWeight(.semibold)
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                Text(connection.remoteEndpoint)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .frame(width: 190, alignment: .leading)
-                                Text(connection.transport)
-                                    .foregroundStyle(.tertiary)
-                                    .frame(width: 58, alignment: .leading)
-                                Text(bytes(connection.receivedBytes))
-                                    .foregroundStyle(MoniPalette.cyan)
-                                    .frame(width: 78, alignment: .trailing)
-                                Text(bytes(connection.sentBytes))
-                                    .foregroundStyle(MoniPalette.orange)
-                                    .frame(width: 78, alignment: .trailing)
+                        VStack(spacing: 0) {
+                            ForEach(network.connections) { connection in
+                                HStack(spacing: 10) {
+                                    Text(connection.processName)
+                                        .fontWeight(.semibold)
+                                        .lineLimit(1)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    Text(connection.pid.formatted())
+                                        .foregroundStyle(.tertiary)
+                                        .frame(width: 64, alignment: .trailing)
+                                    Text(connection.localEndpoint)
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                        .frame(width: 170, alignment: .leading)
+                                    Text(connection.remoteEndpoint)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .frame(width: 190, alignment: .leading)
+                                    Text(connection.transport)
+                                        .foregroundStyle(.tertiary)
+                                        .frame(width: 58, alignment: .leading)
+                                    Text(bytes(connection.receivedBytes))
+                                        .foregroundStyle(MoniPalette.cyan)
+                                        .frame(width: 78, alignment: .trailing)
+                                    Text(bytes(connection.sentBytes))
+                                        .foregroundStyle(MoniPalette.orange)
+                                        .frame(width: 78, alignment: .trailing)
+                                }
+                                .font(.system(size: 12.5))
+                                .monospacedDigit()
+                                .padding(.vertical, 6)
                             }
-                            .font(.system(size: 13))
-                            .monospacedDigit()
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
                         }
                     }
                 }
@@ -436,7 +453,16 @@ private struct StorageDetailView: View {
                             .font(.system(size: 12.5))
                             .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
                         } else {
-                            VStack(spacing: 10) {
+                            VStack(spacing: 0) {
+                                HStack(spacing: 12) {
+                                    Text("Folder").frame(width: 148, alignment: .leading)
+                                    Text("Relative size").frame(maxWidth: .infinity, alignment: .leading)
+                                    Text("Size").frame(width: 86, alignment: .trailing)
+                                }
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.bottom, 4)
+
                                 ForEach(monitor.largestFolders) { folder in
                                     HStack(spacing: 12) {
                                         Text(folder.path)
@@ -455,9 +481,12 @@ private struct StorageDetailView: View {
                                         Text(bytes(folder.sizeBytes))
                                             .fontWeight(.bold)
                                             .monospacedDigit()
-                                            .frame(width: 66, alignment: .trailing)
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.8)
+                                            .frame(width: 86, alignment: .trailing)
                                     }
                                     .font(.system(size: 12.5))
+                                    .padding(.vertical, 6)
                                     .transition(MoniMotion.itemTransition)
                                 }
                             }
@@ -592,12 +621,15 @@ private struct PowerDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
                 DetailPanel("Temperature sensors") {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 8)],
+                        spacing: 8
+                    ) {
                         if let temperature = power.batteryTemperatureCelsius {
-                            secondaryStat("Battery", String(format: "%.1f°C", temperature))
+                            sensorStat("Battery", temperature)
                         }
                         ForEach(power.temperatureSensors) { sensor in
-                            secondaryStat(sensor.name, String(format: "%.1f°C", sensor.valueCelsius))
+                            sensorStat(sensor.name, sensor.valueCelsius)
                         }
                     }
                 }
@@ -624,6 +656,24 @@ private struct PowerDetailView: View {
         if power.isCharging { return "Charging" }
         if power.isExternalPowerConnected { return "AC Power" }
         return "On battery"
+    }
+
+    private func sensorStat(_ name: String, _ temperature: Double) -> some View {
+        HStack(spacing: 8) {
+            Text(name)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help(name)
+            Spacer(minLength: 4)
+            Text(String(format: "%.1f°C", temperature))
+                .fontWeight(.bold)
+                .monospacedDigit()
+        }
+        .font(.system(size: 12.5))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(MoniPalette.inset)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
 
@@ -698,16 +748,26 @@ private struct DockerDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 22)
         } else {
+            HStack(spacing: 10) {
+                Text("Container").frame(maxWidth: .infinity, alignment: .leading)
+                Text("Status").frame(width: 220, alignment: .trailing)
+                Text("State").frame(width: 84, alignment: .trailing)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.secondary)
+
             VStack(spacing: 2) {
                 ForEach(docker.containers) { container in
                     HStack(spacing: 10) {
-                        Circle()
-                            .fill(containerColor(container.state))
-                            .frame(width: 8, height: 8)
-                        Text(container.name)
-                            .fontWeight(.semibold)
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(containerColor(container.state))
+                                .frame(width: 8, height: 8)
+                            Text(container.name)
+                                .fontWeight(.semibold)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         Text(container.status)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -717,9 +777,8 @@ private struct DockerDetailView: View {
                             .foregroundStyle(containerColor(container.state))
                             .frame(width: 84, alignment: .trailing)
                     }
-                    .font(.system(size: 13))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 9)
+                    .font(.system(size: 12.5))
+                    .padding(.vertical, 6)
                     .background(MoniPalette.inset)
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
@@ -823,7 +882,7 @@ private struct DiskBrowserView: View {
                 }
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 10)
                 .padding(.vertical, 9)
                 Divider()
 

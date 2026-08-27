@@ -156,7 +156,18 @@ struct AIUsageView: View {
     }
 
     private func providerPanel(_ provider: AIProviderUsage) -> some View {
-        DetailPanel {
+        let quotaWindows = provider.quotaWindows.filter {
+            !$0.label.localizedCaseInsensitiveContains("code review")
+        }
+        let quotaMessage = provider.quotaMessage.flatMap { message in
+            message.localizedCaseInsensitiveContains("code review") ? nil : message
+        }
+        let weeklyQuota = quotaWindows.first(where: isWeeklyQuota)
+        let weeklyLimit = weeklyQuota.flatMap {
+            estimatedWeeklyLimitUSD(for: provider, quota: $0)
+        }
+
+        return DetailPanel {
             HStack(spacing: 8) {
                 Circle()
                     .fill(providerColor(provider))
@@ -200,15 +211,15 @@ struct AIUsageView: View {
                 }
             }
 
-            if !provider.quotaWindows.isEmpty {
+            if !quotaWindows.isEmpty {
                 Divider()
                 VStack(spacing: 12) {
-                    ForEach(provider.quotaWindows) { window in
+                    ForEach(quotaWindows) { window in
                         quotaRow(window, color: providerColor(provider))
                     }
                 }
             }
-            if let message = provider.quotaMessage {
+            if let message = quotaMessage {
                 Divider()
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "exclamationmark.circle")
@@ -223,12 +234,16 @@ struct AIUsageView: View {
             Spacer(minLength: 0)
 
             HStack(spacing: 8) {
-                Text("Top model")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(provider.models.first?.model ?? "Model unavailable")
-                    .fontWeight(.semibold)
+                Text(quotaResetLabel(weeklyQuota))
+                    .foregroundStyle(.tertiary)
                     .lineLimit(1)
+                    .help("Time remaining until this provider reports that the weekly quota resets.")
+                Spacer()
+                Text(weeklyLimit.map(weeklyLimitLabel) ?? "Estimating…")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help("Estimated API-equivalent weekly limit from local usage and the provider-reported weekly percentage.")
             }
             .font(.system(size: 12))
             .padding(.horizontal, 12)
@@ -237,7 +252,7 @@ struct AIUsageView: View {
             .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
         .frame(maxHeight: .infinity, alignment: .top)
-        .moniAnimation(value: provider.quotaWindows.map(\.remainingPercent))
+        .moniAnimation(value: quotaWindows.map(\.remainingPercent))
     }
 
     private func quotaRow(_ window: AIQuotaWindow, color: Color) -> some View {
@@ -282,6 +297,42 @@ struct AIUsageView: View {
         if minutes >= 1_440 { return "\(minutes / 1_440)d" }
         if minutes >= 60 { return "\(minutes / 60)h" }
         return "\(minutes)m"
+    }
+
+    private func quotaResetLabel(_ quota: AIQuotaWindow?) -> String {
+        guard let quota else { return "Reset unavailable" }
+        if let resetsAt = quota.resetsAt {
+            return "resets in \(resetDuration(until: resetsAt))"
+        }
+        if let minutes = quota.windowMinutes {
+            return "\(compactDuration(minutes: minutes)) window"
+        }
+        return "Reset unavailable"
+    }
+
+    private func isWeeklyQuota(_ quota: AIQuotaWindow) -> Bool {
+        quota.windowMinutes == 10_080 || quota.label.localizedCaseInsensitiveContains("week")
+    }
+
+    private func estimatedWeeklyLimitUSD(
+        for provider: AIProviderUsage,
+        quota: AIQuotaWindow
+    ) -> Double? {
+        guard isWeeklyQuota(quota),
+            quota.usedPercent >= 1,
+            let windowCost = store.summary.weeklyWindowCostsUSD?[provider.provider],
+            windowCost > 0
+        else { return nil }
+
+        let estimate = windowCost / (quota.usedPercent / 100)
+        return estimate.isFinite && estimate > 0 ? estimate : nil
+    }
+
+    private func weeklyLimitLabel(_ value: Double) -> String {
+        let amount = value.formatted(
+            .number.grouping(.automatic).precision(.fractionLength(value < 100 ? 1 : 0))
+        )
+        return "≈ $\(amount) weekly"
     }
 
     private func totalStat(_ title: String, _ value: String) -> some View {
