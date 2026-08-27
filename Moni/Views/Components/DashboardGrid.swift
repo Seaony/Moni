@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 enum DashboardCardID: String, CaseIterable, Codable, Hashable, Identifiable {
@@ -86,10 +85,16 @@ struct DashboardCardLayout: Codable {
         return true
     }
 
+    /// `orderedCards` and `cardSize` are read once per card per body pass, and the
+    /// dashboard re-renders on every sample, so decoding each time was pure waste.
+    private static var decoded: (data: Data, layout: DashboardCardLayout)?
+
     static func decode(_ data: Data) -> DashboardCardLayout {
-        guard !data.isEmpty, let layout = try? JSONDecoder().decode(Self.self, from: data) else {
-            return DashboardCardLayout()
-        }
+        if let decoded, decoded.data == data { return decoded.layout }
+        let layout = data.isEmpty
+            ? DashboardCardLayout()
+            : (try? JSONDecoder().decode(Self.self, from: data)) ?? DashboardCardLayout()
+        decoded = (data, layout)
         return layout
     }
 
@@ -323,14 +328,8 @@ struct ResizableDashboardCard<Content: View>: View {
                         .frame(maxHeight: .infinity, alignment: .trailing)
                         .contentShape(Rectangle())
                         .highPriorityGesture(resizeGesture(in: geometry.size, axis: .width))
-                        .onHover { isHovered in
-                            if isHovered {
-                                NSCursor.resizeLeftRight.push()
-                            } else {
-                                NSCursor.pop()
-                            }
-                            isRightHandleHovered = isHovered
-                        }
+                        .pointerStyle(.columnResize)
+                        .onHover { isRightHandleHovered = $0 }
                         .help("Drag to change card width")
                         .moniAnimation(MoniMotion.press, value: isRightHandleHovered)
                 }
@@ -343,14 +342,8 @@ struct ResizableDashboardCard<Content: View>: View {
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                     .highPriorityGesture(resizeGesture(in: geometry.size, axis: .height))
-                    .onHover { isHovered in
-                        if isHovered {
-                            NSCursor.resizeUpDown.push()
-                        } else {
-                            NSCursor.pop()
-                        }
-                        isBottomHandleHovered = isHovered
-                    }
+                    .pointerStyle(.rowResize)
+                    .onHover { isBottomHandleHovered = $0 }
                     .help("Drag to change card height")
                     .moniAnimation(MoniMotion.press, value: isBottomHandleHovered)
             }
@@ -364,16 +357,6 @@ struct ResizableDashboardCard<Content: View>: View {
             )
             .opacity(draggingCard == card ? 0 : 1)
             .highPriorityGesture(reorderGesture(in: geometry))
-            .onDisappear {
-                if isRightHandleHovered {
-                    NSCursor.pop()
-                    isRightHandleHovered = false
-                }
-                if isBottomHandleHovered {
-                    NSCursor.pop()
-                    isBottomHandleHovered = false
-                }
-            }
         }
         .layoutValue(
             key: DashboardCardSpanKey.self,

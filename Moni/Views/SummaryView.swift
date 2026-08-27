@@ -5,7 +5,6 @@ struct SummaryView: View {
     @EnvironmentObject private var aiUsage: AIUsageStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var selection: MonitorSection
-    @AppStorage(PreferenceKey.aiUsageRangeDays) private var aiUsageRangeDays = 30
     @AppStorage(PreferenceKey.summaryCardLayout) private var cardLayoutData = Data()
     @AppStorage(PreferenceKey.summaryGridDensity) private var gridDensityValue = SummaryGridDensity.comfortable.rawValue
     @AppStorage(PreferenceKey.showHost) private var showHost = true
@@ -76,10 +75,9 @@ struct SummaryView: View {
             }
         }
         .task {
-            aiUsage.loadIfNeeded(
-                days: aiUsageRangeDays,
+            aiUsage.loadDashboardIfNeeded(
                 includeQuotas: true,
-                allowClaudeKeychainPrompt: true
+                allowKeychainPrompt: true
             )
         }
     }
@@ -532,7 +530,9 @@ struct SummaryView: View {
                 title: "Docker",
                 symbol: MonitorSection.docker.symbol,
                 color: color,
-                trailing: docker.isRunning ? "Live" : nil
+                trailing: docker.isRunning
+                    ? "\(docker.runningContainerCount)/\(docker.containers.count) up"
+                    : nil
             ) {
                 if cardSize(.docker).columns >= 2 {
                     HStack(alignment: .top, spacing: 32) {
@@ -628,13 +628,8 @@ struct SummaryView: View {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
         let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? .now
-        let thirtyDayStart = calendar.date(byAdding: .day, value: -29, to: today) ?? today
         let todayUsage = aiUsage.summary.daily.first {
             $0.date >= today && $0.date < tomorrow
-        }
-        let lastThirtyDayTokens = aiUsage.summary.daily.reduce(UInt64(0)) { total, usage in
-            guard usage.date >= thirtyDayStart, usage.date < tomorrow else { return total }
-            return total + usage.tokens
         }
         let todayTokens = todayUsage?.tokens ?? 0
         let todayCost = todayUsage?.costUSD ?? 0
@@ -644,10 +639,7 @@ struct SummaryView: View {
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .moniNumericTransition(todayTokens)
-            Text(
-                "≈ \(currency(todayCost)) today · "
-                    + "\(compactTokens(lastThirtyDayTokens)) tokens"
-            )
+            Text(aiUsageSubtitle(todayCost: todayCost))
                 .font(.system(size: 13.5))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -658,6 +650,14 @@ struct SummaryView: View {
                 .padding(.top, 14)
         }
         .frame(maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// The card always reads the rolling dashboard window, so the AI screen's
+    /// picker can never empty it out.
+    private func aiUsageSubtitle(todayCost: Double) -> String {
+        "≈ \(currency(todayCost)) today · "
+            + "\(compactTokens(aiUsage.summary.totalTokens)) tokens "
+            + "in \(AIUsageStore.dashboardWindowDays)d"
     }
 
     private var aiUsageProviderStrip: some View {
@@ -980,8 +980,9 @@ struct SummaryView: View {
     }
 
     private func chartHeight(for size: DashboardCardSize, compact: CGFloat) -> CGFloat {
-        let compactCardRemainder: CGFloat = 172
-        let compactFill = max(0, gridDensity.rowHeight - compactCardRemainder)
+        // The `compact` baselines are tuned for the comfortable row; only grow the
+        // chart when the density actually hands the card extra height.
+        let compactFill = max(0, gridDensity.rowHeight - SummaryGridDensity.comfortable.rowHeight)
         let additionalRows = CGFloat(size.rows - 1) * (gridDensity.rowHeight + gridDensity.spacing)
         return compact + compactFill + additionalRows
     }

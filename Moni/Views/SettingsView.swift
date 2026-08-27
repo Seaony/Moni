@@ -221,7 +221,7 @@ private struct AIUsageSettings: View {
                             store.refresh(
                                 range: range,
                                 includeQuotas: true,
-                                allowClaudeKeychainPrompt: true
+                                allowKeychainPrompt: true
                             )
                         } label: {
                             HStack(spacing: 7) {
@@ -297,7 +297,7 @@ private struct AIUsageSettings: View {
                     Text(displayName(providerName))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(isDetected ? MoniPalette.foreground : Color.secondary.opacity(0.55))
-                    Text(usage.map(providerSource) ?? "Not detected")
+                    Text(usage.map(providerSource) ?? (isProviderEnabled(providerName) ? "Not detected" : "Turned off"))
                         .font(.system(size: 12))
                         .foregroundStyle(isDetected ? Color.secondary.opacity(0.65) : Color.secondary.opacity(0.4))
                         .lineLimit(1)
@@ -317,7 +317,10 @@ private struct AIUsageSettings: View {
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(!isDetected)
+        // A provider that was switched off may stop being detected (its quota is
+        // no longer fetched); the row has to stay tappable or it can never be
+        // switched back on.
+        .disabled(!isDetected && isProviderEnabled(providerName))
         .moniPointingHand()
         .moniAnimation(value: disabledProviderValue)
     }
@@ -410,8 +413,13 @@ private struct AlertSettings: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 DetailPanel("Thresholds") {
+                    if !notificationAlerts {
+                        Text("Turn on the notification banner below for these limits to alert you.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                    }
                     VStack(spacing: 18) {
-                        thresholdRow("CPU load", hint: "current sample", color: MoniPalette.pink, value: $cpuThreshold)
+                        thresholdRow("CPU load", hint: "sustained over 30s", color: MoniPalette.pink, value: $cpuThreshold)
                         thresholdRow("Memory used", hint: "physical memory", color: MoniPalette.blue, value: $memoryThreshold)
                         thresholdRow("CPU temperature", hint: "die sensor", unit: "°C", color: MoniPalette.orange, value: $temperatureThreshold)
                         thresholdRow("Disk space used", hint: "boot volume", color: MoniPalette.yellow, value: $diskThreshold)
@@ -489,6 +497,22 @@ private struct AlertSettings: View {
                         Capsule()
                             .fill(color)
                             .frame(width: proxy.size.width * value.wrappedValue / 100)
+                    }
+                    // The grab area is an overlay so widening it cannot squeeze the
+                    // 6pt bar the GeometryReader is sized to.
+                    .overlay {
+                        Color.clear
+                            .frame(height: 22)
+                            .contentShape(Rectangle())
+                            .pointerStyle(.columnResize)
+                            .gesture(
+                                DragGesture(minimumDistance: 0)
+                                    .onChanged { drag in
+                                        let fraction = min(max(drag.location.x / max(1, proxy.size.width), 0), 1)
+                                        let steps = (fraction * 100 / 5).rounded()
+                                        value.wrappedValue = min(100, max(20, steps * 5))
+                                    }
+                            )
                     }
                 }
                 .frame(height: 6)
@@ -1025,7 +1049,6 @@ private struct AboutSettings: View {
                     ) {
                         shortcut("Refresh now", "⌘R")
                         shortcut("Settings", "⌘,")
-                        shortcut("Check for updates", "—")
                         shortcut("Quit", "⌘Q")
                     }
                 }

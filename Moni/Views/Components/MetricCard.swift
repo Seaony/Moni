@@ -2,6 +2,8 @@ import SwiftUI
 
 struct MetricCard<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(PreferenceKey.summaryGridDensity)
+    private var gridDensityValue = SummaryGridDensity.comfortable.rawValue
     @State private var isHovered = false
 
     let title: String
@@ -55,15 +57,27 @@ struct MetricCard<Content: View>: View {
             content
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 205, maxHeight: .infinity, alignment: .topLeading)
+        // Without a floor the card grows past the row it was given and paints over
+        // the next one; the floor has to track the density or it overflows the
+        // shorter compact rows instead.
+        .frame(
+            maxWidth: .infinity,
+            minHeight: rowHeight,
+            maxHeight: .infinity,
+            alignment: .topLeading
+        )
         .background(isHovered ? MoniPalette.cardHover : MoniPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(MoniPalette.line, lineWidth: 1)
+                .strokeBorder(MoniPalette.line, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onHover { isHovered = $0 }
         .animation(reduceMotion ? nil : MoniMotion.press, value: isHovered)
+    }
+
+    private var rowHeight: CGFloat {
+        (SummaryGridDensity(rawValue: gridDensityValue) ?? .comfortable).rowHeight
     }
 }
 

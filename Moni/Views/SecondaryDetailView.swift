@@ -580,38 +580,105 @@ private struct DockerDetailView: View {
     private var docker: DockerStatus { monitor.snapshot.docker }
 
     var body: some View {
-        DetailPanel {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text("Docker").font(.system(size: 17, weight: .bold)).foregroundStyle(MoniPalette.blue)
-                Text(docker.isRunning ? "Daemon reachable" : "Daemon not reachable")
-                    .font(.system(size: 12.5)).foregroundStyle(.tertiary)
-            }
-            VStack(spacing: 10) {
-                Image(systemName: MonitorSection.docker.symbol)
-                    .font(.system(size: 52, weight: .light))
-                    .foregroundStyle(docker.isRunning ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
-                Text(docker.statusTitle)
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
-                Text(docker.statusReason)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Button("Back to summary") { selection = .summary }
-                    .buttonStyle(.bordered)
-                    .moniPointingHand()
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 52)
+        ScrollView(.vertical, showsIndicators: false) {
+            DetailPanel {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("Docker").font(.system(size: 17, weight: .bold)).foregroundStyle(MoniPalette.blue)
+                    Text(docker.isRunning ? "Daemon reachable" : "Daemon not reachable")
+                        .font(.system(size: 12.5)).foregroundStyle(.tertiary)
+                }
+                if docker.isRunning {
+                    containers
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: MonitorSection.docker.symbol)
+                            .font(.system(size: 52, weight: .light))
+                            .foregroundStyle(MoniPalette.foregroundQuaternary)
+                        Text(docker.statusTitle)
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                        Text(docker.statusReason)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("Back to summary") { selection = .summary }
+                            .buttonStyle(.bordered)
+                            .moniPointingHand()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 52)
+                }
 
-            Divider()
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 12) {
-                dockerStat("Installed", docker.isInstalled ? "Yes" : "No")
-                dockerStat("Status", docker.statusTitle)
-                dockerStat("Provider", docker.installation ?? "—")
-                dockerStat("Socket", docker.socketPath ?? "—")
-                dockerStat("Detection", "Local")
-                dockerStat("Management", "Read only")
+                Divider()
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 12) {
+                    dockerStat("Installed", docker.isInstalled ? "Yes" : "No")
+                    dockerStat("Status", docker.statusTitle)
+                    dockerStat("Provider", docker.installation ?? "—")
+                    dockerStat("Socket", docker.socketPath ?? "—")
+                    dockerStat("Detection", "Local")
+                    dockerStat("Management", "Read only")
+                }
             }
+        }
+        .moniAnimation(value: docker.containers.map(\.id))
+    }
+
+    @ViewBuilder
+    private var containers: some View {
+        HStack(spacing: 10) {
+            Text("CONTAINERS")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .tracking(0.7)
+            Spacer()
+            Text("\(docker.runningContainerCount) running · \(docker.containers.count) total")
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+        }
+        .padding(.top, 4)
+
+        if docker.containers.isEmpty {
+            Text("The engine is reachable but reports no containers.")
+                .font(.system(size: 13))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 22)
+        } else {
+            VStack(spacing: 2) {
+                ForEach(docker.containers) { container in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(containerColor(container.state))
+                            .frame(width: 8, height: 8)
+                        Text(container.name)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(container.status)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(width: 220, alignment: .trailing)
+                        Text(container.state.capitalized)
+                            .fontWeight(.bold)
+                            .foregroundStyle(containerColor(container.state))
+                            .frame(width: 84, alignment: .trailing)
+                    }
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .background(MoniPalette.inset)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+            }
+        }
+    }
+
+    private func containerColor(_ state: String) -> Color {
+        switch state {
+        case "running": MoniPalette.green
+        case "paused", "restarting", "created": MoniPalette.orange
+        case "exited", "dead": MoniPalette.red
+        default: MoniPalette.foregroundSecondary
         }
     }
 }
@@ -633,7 +700,7 @@ private struct DiskBrowserView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var selectedPath = "/"
     @State private var items: [FileItem] = []
-    @State private var isLoading = false
+    @State private var loadingPath: String?
     @State private var loadError: String?
 
     var body: some View {
@@ -713,6 +780,22 @@ private struct DiskBrowserView: View {
                         description: Text(loadError)
                     )
                     .transition(MoniMotion.itemTransition)
+                } else if loadingPath == selectedPath {
+                    HStack(spacing: 9) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading folder…")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .font(.system(size: 12.5))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(MoniMotion.itemTransition)
+                } else if items.isEmpty {
+                    ContentUnavailableView(
+                        "Empty folder",
+                        systemImage: "folder",
+                        description: Text("Nothing visible in this folder.")
+                    )
+                    .transition(MoniMotion.itemTransition)
                 } else {
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(spacing: 2) {
@@ -751,24 +834,34 @@ private struct DiskBrowserView: View {
             }
             .padding(6)
             .background(MoniPalette.insetSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(MoniPalette.line, lineWidth: 1)
+                    .strokeBorder(MoniPalette.line, lineWidth: 1)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .moniAnimation(value: isLoading)
+        .moniAnimation(value: loadingPath)
         .moniAnimation(value: loadError)
         .task(id: selectedPath) {
-            isLoading = true
             let requestedPath = selectedPath
+            // Most folders list in a few milliseconds; flashing a spinner through
+            // a cross-fade for those reads as flicker, so it only appears once a
+            // read has been running long enough to feel slow. It is keyed by path
+            // so a delayed spinner from an abandoned read cannot light up a newer
+            // folder that has already finished.
+            let spinner = Task {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled, selectedPath == requestedPath else { return }
+                loadingPath = requestedPath
+            }
             let result = await Task.detached(priority: .userInitiated) {
                 Self.loadItems(at: requestedPath)
             }.value
+            spinner.cancel()
             guard !Task.isCancelled, selectedPath == requestedPath else { return }
             items = result.items
             loadError = result.error
-            isLoading = false
+            loadingPath = nil
         }
     }
 

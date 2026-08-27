@@ -339,11 +339,15 @@ actor AIUsageScanner {
     func refreshQuotas(
         in summary: AIUsageSummary,
         now: Date = Date(),
-        allowClaudeKeychainPrompt: Bool = false
+        allowKeychainPrompt: Bool = false,
+        allowBrowserKeychainPrompt: Bool = false,
+        disabledProviders: Set<String> = []
     ) async -> AIUsageSummary {
         let fetched = await AIQuotaFetcher.fetchAll(
             homeDirectory: homeDirectory,
-            allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
+            allowKeychainPrompt: allowKeychainPrompt,
+            allowBrowserKeychainPrompt: allowBrowserKeychainPrompt,
+            disabledProviders: disabledProviders
         )
         var refreshed = summary
         refreshed.providers = summary.providers.map { provider in

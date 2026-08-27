@@ -13,24 +13,36 @@ final class OpenAIWebQuotaFetcher {
     static let shared = OpenAIWebQuotaFetcher()
 
     private enum FetchError: LocalizedError {
-        case noDiaProfile
+        case noBrowserProfile
         case noCookies
-        case loginRequired
+        case loginRequired(String)
         case dashboardUnavailable
 
         var errorDescription: String? {
             switch self {
-            case .noDiaProfile:
-                "Code Review quota unavailable: no Dia profile was found."
+            case .noBrowserProfile:
+                "Code Review quota unavailable: no supported browser profile was found."
             case .noCookies:
-                "Code Review quota unavailable: sign in to ChatGPT in Dia, then refresh."
-            case .loginRequired:
-                "Code Review quota unavailable: the Dia ChatGPT session requires sign-in."
+                "Code Review quota unavailable: sign in to ChatGPT in your browser, then refresh."
+            case .loginRequired(let hint):
+                "Code Review quota unavailable: the ChatGPT session in \(hint) needs signing in again."
             case .dashboardUnavailable:
                 "Code Review quota is not present on the Codex usage dashboard."
             }
         }
     }
+
+    /// Thrown by the dashboard load when the page bounced to a sign-in screen; the
+    /// caller turns it into `FetchError.loginRequired` once it knows which
+    /// browsers were tried.
+    private struct SignedOut: Error {}
+
+    /// Rendering the dashboard is the expensive part, so cap how many signed-in
+    /// profiles are worth trying and how long the whole attempt may take — this
+    /// runs on a background refresh cycle.
+    private static let maximumProfileAttempts = 3
+    private static let profileBudget: TimeInterval = 15
+    private static let totalBudget: TimeInterval = 30
 
     private let usageURL = URL(string: "https://chatgpt.com/codex/cloud/settings/analytics#usage")!
     private let cookieClient = BrowserCookieClient()
@@ -38,7 +50,7 @@ final class OpenAIWebQuotaFetcher {
     private var webView: WKWebView?
     private var hostWindow: NSWindow?
 
-    func fetch(force: Bool = false) async -> OpenAIWebQuotaResult {
+    func fetch(force: Bool = false, allowKeychainPrompt: Bool = false) async -> OpenAIWebQuotaResult {
         if !force,
            let cachedResult,
            Date().timeIntervalSince(cachedResult.date) < 300
@@ -46,8 +58,9 @@ final class OpenAIWebQuotaFetcher {
             return cachedResult.result
         }
 
+        defer { teardownWebView() }
         do {
-            let result = try await fetchFromDia()
+            let result = try await fetchFromBrowsers(allowKeychainPrompt: allowKeychainPrompt)
             cachedResult = (Date(), result)
             return result
         } catch let error as FetchError {
@@ -65,53 +78,103 @@ final class OpenAIWebQuotaFetcher {
         }
     }
 
-    private func fetchFromDia() async throws -> OpenAIWebQuotaResult {
-        let stores = cookieClient.stores(for: .dia)
-        guard !stores.isEmpty else { throw FetchError.noDiaProfile }
-
+    private func fetchFromBrowsers(allowKeychainPrompt: Bool) async throws -> OpenAIWebQuotaResult {
         let query = BrowserCookieQuery(
             domains: ["chatgpt.com", "openai.com"],
             domainMatch: .suffix,
             origin: .fixed(usageURL)
         )
-        var foundCookies = false
-        var requiresLogin = false
 
-        for store in stores {
-            let cookies: [HTTPCookie]
-            do {
-                cookies = try cookieClient.cookies(matching: query, in: store)
-            } catch {
-                continue
-            }
-            guard !cookies.isEmpty else { continue }
-            foundCookies = true
+        // Enumerating profiles and reading cookies is cheap compared with
+        // rendering the dashboard, but it is still filesystem walks plus SQLite
+        // and AES per profile, so it runs off the main actor. Only the profiles
+        // that actually hold a ChatGPT session pay for a WebView.
+        let client = cookieClient
+        let scan = await Task.detached(priority: .utility) {
+            Self.scanBrowsers(matching: query, client: client, allowKeychainPrompt: allowKeychainPrompt)
+        }.value
+        guard scan.hasProfiles else { throw FetchError.noBrowserProfile }
+        let candidates = scan.candidates
+        guard !candidates.isEmpty else { throw FetchError.noCookies }
+
+        var requiresLogin = false
+        let overallDeadline = Date().addingTimeInterval(Self.totalBudget)
+
+        for candidate in candidates.prefix(Self.maximumProfileAttempts) {
+            guard Date() < overallDeadline else { break }
 
             let dataStore = WKWebsiteDataStore.nonPersistent()
-            for cookie in cookies {
+            for cookie in BrowserCookieClient.makeHTTPCookies(candidate.records, origin: query.origin) {
                 await dataStore.httpCookieStore.setCookie(cookie)
             }
             prepareWebView(dataStore: dataStore)
 
             do {
-                let body = try await loadDashboardBody()
+                let body = try await loadDashboardBody(
+                    deadline: min(overallDeadline, Date().addingTimeInterval(Self.profileBudget))
+                )
                 if let window = Self.parseCodeReviewWindow(from: body) {
                     return OpenAIWebQuotaResult(window: window, message: nil)
                 }
-            } catch FetchError.loginRequired {
+            } catch is SignedOut {
                 requiresLogin = true
             }
         }
 
-        if requiresLogin { throw FetchError.loginRequired }
-        if !foundCookies { throw FetchError.noCookies }
+        if requiresLogin {
+            var tried: [Browser] = []
+            for candidate in candidates.prefix(Self.maximumProfileAttempts)
+            where !tried.contains(candidate.store.browser) {
+                tried.append(candidate.store.browser)
+            }
+            throw FetchError.loginRequired(tried.loginHint)
+        }
         throw FetchError.dashboardUnavailable
     }
 
-    private func prepareWebView(dataStore: WKWebsiteDataStore) {
-        hostWindow?.orderOut(nil)
-        hostWindow = nil
+    /// Chromium profiles keep their cookie key in the Keychain, and the library
+    /// fetches that key before it looks at a single row — so every installed
+    /// Chromium browser can raise its own authorization dialog. Interaction is
+    /// therefore only allowed when the user explicitly asked for a refresh;
+    /// automatic refreshes read what is already authorized and skip the rest.
+    private struct BrowserScan: Sendable {
+        let hasProfiles: Bool
+        let candidates: [(store: BrowserCookieStore, records: [BrowserCookieRecord])]
+    }
+
+    private nonisolated static func scanBrowsers(
+        matching query: BrowserCookieQuery,
+        client: BrowserCookieClient,
+        allowKeychainPrompt: Bool
+    ) -> BrowserScan {
+        let stores = client.stores(in: Browser.defaultImportOrder)
+        let read = {
+            stores.compactMap { store -> (store: BrowserCookieStore, records: [BrowserCookieRecord])? in
+                let records = (try? client.records(matching: query, in: store)) ?? []
+                return records.isEmpty ? nil : (store, records)
+            }
+        }
+        let candidates = allowKeychainPrompt
+            ? read()
+            : BrowserCookieKeychainAccessGate.withUserInteractionDisallowed(read)
+        return BrowserScan(hasProfiles: !stores.isEmpty, candidates: candidates)
+    }
+
+    /// The host window has to be on screen for WebKit to keep running scripts, so
+    /// it must be closed again once the scrape finishes — otherwise a menu-bar app
+    /// leaves a live chatgpt.com web process and a stray window running forever.
+    private func teardownWebView() {
+        webView?.stopLoading()
+        webView?.removeFromSuperview()
         webView = nil
+        hostWindow?.contentView = nil
+        hostWindow?.orderOut(nil)
+        hostWindow?.close()
+        hostWindow = nil
+    }
+
+    private func prepareWebView(dataStore: WKWebsiteDataStore) {
+        teardownWebView()
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = dataStore
@@ -124,6 +187,9 @@ final class OpenAIWebQuotaFetcher {
             backing: .buffered,
             defer: false
         )
+        // Code-created NSWindows release themselves on close, which double-frees
+        // under ARC once `hostWindow` also releases it.
+        window.isReleasedWhenClosed = false
         window.contentView = webView
         window.alphaValue = 0.001
         window.ignoresMouseEvents = true
@@ -138,15 +204,14 @@ final class OpenAIWebQuotaFetcher {
         hostWindow = window
     }
 
-    private func loadDashboardBody() async throws -> String {
+    private func loadDashboardBody(deadline: Date) async throws -> String {
         guard let webView else { throw FetchError.dashboardUnavailable }
 
         var request = URLRequest(url: usageURL)
-        request.timeoutInterval = 15
+        request.timeoutInterval = Self.profileBudget
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
         webView.load(request)
 
-        let deadline = Date().addingTimeInterval(15)
         var sawLogin = false
         while Date() < deadline {
             try Task.checkCancellation()
@@ -165,11 +230,11 @@ final class OpenAIWebQuotaFetcher {
                 return body
             }
             if sawLogin, !webView.isLoading {
-                throw FetchError.loginRequired
+                throw SignedOut()
             }
         }
 
-        if sawLogin { throw FetchError.loginRequired }
+        if sawLogin { throw SignedOut() }
         throw FetchError.dashboardUnavailable
     }
 

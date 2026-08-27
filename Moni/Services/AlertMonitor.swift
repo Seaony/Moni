@@ -3,8 +3,14 @@ import UserNotifications
 
 @MainActor
 final class AlertMonitor {
+    /// A single 0.7s sample over the line is noise — a build, a page load — and
+    /// alerting on it turns every burst into a banner. The limit has to hold for
+    /// this long before it counts.
+    private static let sustainInterval: TimeInterval = 30
+
     private var activeAlerts: Set<String> = []
     private var lastNotification: [String: Date] = [:]
+    private var exceededSince: [String: Date] = [:]
 
     func evaluate(_ snapshot: SystemSnapshot) {
         let defaults = UserDefaults.standard
@@ -66,14 +72,21 @@ final class AlertMonitor {
         guard enabled else {
             activeAlerts.remove(id)
             lastNotification.removeValue(forKey: id)
+            exceededSince.removeValue(forKey: id)
             return
         }
 
         guard value >= threshold else {
             activeAlerts.remove(id)
             lastNotification.removeValue(forKey: id)
+            exceededSince.removeValue(forKey: id)
             return
         }
+
+        let now = Date()
+        let since = exceededSince[id] ?? now
+        exceededSince[id] = since
+        guard now.timeIntervalSince(since) >= Self.sustainInterval else { return }
 
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: PreferenceKey.notificationAlerts) else {

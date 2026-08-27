@@ -6,6 +6,7 @@ struct MoniWidgetEntry: TimelineEntry {
     let system: WidgetSystemSnapshot
     let ai: WidgetAISnapshot
     let isPlaceholder: Bool
+    var isStale = false
 }
 
 struct MoniWidgetProvider: TimelineProvider {
@@ -28,13 +29,16 @@ struct MoniWidgetProvider: TimelineProvider {
         guard !isPreview else {
             return MoniWidgetEntry(date: .now, system: .placeholder, ai: .placeholder, isPlaceholder: false)
         }
+        let now = Date()
         let system = kind.usesAIData ? nil : MoniWidgetStorage.loadSystem()
         let ai = kind.usesAIData ? MoniWidgetStorage.loadAI() : nil
+        let dataDate = kind.usesAIData ? ai?.date : system?.date
         return MoniWidgetEntry(
-            date: .now,
+            date: now,
             system: system ?? .placeholder,
             ai: ai ?? .placeholder,
-            isPlaceholder: kind.usesAIData ? ai == nil : system == nil
+            isPlaceholder: kind.usesAIData ? ai == nil : system == nil,
+            isStale: dataDate.map { now.timeIntervalSince($0) > kind.stalenessLimit } ?? false
         )
     }
 }
@@ -71,6 +75,13 @@ enum MoniWidgetKind: String {
         case .aiSpendSmall, .aiUsageMedium, .aiUsageLarge: true
         default: false
         }
+    }
+
+    /// System metrics are written every 15s while Moni runs, so anything older
+    /// means the numbers on screen are no longer live. AI usage is only rescanned
+    /// when the panel is opened, so it ages far slower.
+    var stalenessLimit: TimeInterval {
+        usesAIData ? 6 * 60 * 60 : 10 * 60
     }
 }
 
@@ -143,6 +154,15 @@ func moniWidgetConfiguration(
     StaticConfiguration(kind: kind.rawValue, provider: MoniWidgetProvider(kind: kind)) { entry in
         MoniWidgetView(kind: kind, entry: entry)
             .redacted(reason: entry.isPlaceholder ? .placeholder : [])
+            .overlay(alignment: .topTrailing) {
+                if entry.isStale {
+                    Circle()
+                        .fill(WidgetTheme.orange)
+                        .frame(width: 6, height: 6)
+                        .padding(5)
+                        .accessibilityLabel("Data is not live")
+                }
+            }
             .containerBackground(for: .widget) {
                 Color(nsColor: .windowBackgroundColor)
             }

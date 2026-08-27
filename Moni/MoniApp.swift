@@ -58,7 +58,7 @@ struct MoniApp: App {
                     monitor.loadNetworkExternalDetailsIfNeeded(force: true)
                     aiUsage.refreshCurrent(
                         includeQuotas: true,
-                        allowClaudeKeychainPrompt: true
+                        allowKeychainPrompt: true
                     )
                 }
                 .keyboardShortcut("r", modifiers: .command)
@@ -198,7 +198,9 @@ private final class MenuBarWindowPositioningView: NSView {
             }
         )
 
-        onVisibilityChange(true)
+        // The window can exist before it is ever shown; only an on-screen window
+        // counts, and `didBecomeKey` covers the moment it is actually opened.
+        onVisibilityChange(window.isVisible)
         DispatchQueue.main.async { [weak self] in
             self?.centerWindowBelowMenuBarClick()
         }

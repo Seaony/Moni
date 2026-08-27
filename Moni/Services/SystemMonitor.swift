@@ -70,10 +70,14 @@ final class SystemMonitor: ObservableObject {
     func setPanelVisible(_ isVisible: Bool) {
         guard isPanelVisible != isVisible else { return }
         isPanelVisible = isVisible
-        Task { [sampler] in await sampler.setPanelVisible(isVisible) }
         start()
-        if isVisible {
-            refresh(forceSlowMetrics: true)
+        // The forced refresh has to land after the sampler knows the panel is up,
+        // otherwise it still runs the idle intervals for that first pass.
+        Task { [sampler] in
+            await sampler.setPanelVisible(isVisible)
+            if isVisible {
+                refresh(forceSlowMetrics: true)
+            }
         }
     }
 

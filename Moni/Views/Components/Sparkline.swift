@@ -204,11 +204,11 @@ struct InteractiveSparkline: View {
         .padding(.vertical, 7)
         .frame(minWidth: 116)
         .background(MoniPalette.controlHover)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(MoniPalette.panelLine, lineWidth: 1)
+                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
     }
 

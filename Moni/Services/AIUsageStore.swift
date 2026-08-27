@@ -6,7 +6,12 @@ final class AIUsageStore: ObservableObject {
     private static let quotaRefreshInterval: TimeInterval = 5 * 60
     private static let retainedUntimedQuotaInterval: TimeInterval = 30 * 60
 
-    private enum Query: Equatable {
+    /// The dashboard card leads with today's tokens and a two-week trend, so it
+    /// reads a rolling window. The AI screen reads a calendar period the user
+    /// picks. These are genuinely different questions: folding the card onto the
+    /// screen's period empties it whenever that period excludes today, and even
+    /// month-to-date collapses to a single bar on the 1st.
+    private enum Query: Hashable {
         case days(Int)
         case range(AIUsageRange)
 
@@ -29,20 +34,34 @@ final class AIUsageStore: ObservableObject {
     private let scanner = AIUsageScanner()
     private var cachedSummaries: [String: CachedSummary]
     private var displayedQuery: Query?
-    private var completedQuery: Query?
-    private var activeRequest: (query: Query, includeQuotas: Bool, allowClaudeKeychainPrompt: Bool)?
-    private var pendingRequest: (query: Query, includeQuotas: Bool, allowClaudeKeychainPrompt: Bool)?
-    private var attemptedAutomaticClaudeKeychainPrompt = false
+    private var completedQueries: Set<Query> = []
+    private struct Request: Equatable {
+        let query: Query
+        let includeQuotas: Bool
+        let allowKeychainPrompt: Bool
+        let allowBrowserKeychainPrompt: Bool
+
+        /// Whether `self` asks for something `other` does not already cover.
+        func exceeds(_ other: Request?) -> Bool {
+            guard let other else { return true }
+            return query != other.query
+                || (includeQuotas && !other.includeQuotas)
+                || (allowKeychainPrompt && !other.allowKeychainPrompt)
+                || (allowBrowserKeychainPrompt && !other.allowBrowserKeychainPrompt)
+        }
+    }
+
+    private var activeRequest: Request?
+    private var pendingRequest: Request?
+    private var attemptedAutomaticKeychainPrompt = false
 
     init() {
         let cachedSummaries = Self.loadCachedSummaries()
         self.cachedSummaries = cachedSummaries
 
-        let storedDays = UserDefaults.standard.integer(forKey: PreferenceKey.aiUsageRangeDays)
-        let query = Query.days(storedDays == 0 ? 30 : storedDays)
-        if let cached = cachedSummaries[query.cacheKey] {
+        if let cached = cachedSummaries[Self.dashboardQuery.cacheKey] {
             summary = cached.summary
-            displayedQuery = query
+            displayedQuery = Self.dashboardQuery
             let widgetSnapshot = WidgetAISnapshot(summary: cached.summary)
             Task {
                 await WidgetSnapshotWriter.shared.persistAI(widgetSnapshot)
@@ -50,114 +69,115 @@ final class AIUsageStore: ObservableObject {
         }
     }
 
-    func loadIfNeeded(
-        days: Int? = nil,
+    static let dashboardWindowDays = 30
+
+    private static var dashboardQuery: Query { .days(dashboardWindowDays) }
+
+    static func storedRange() -> AIUsageRange {
+        AIUsageRange(rawValue: UserDefaults.standard.string(forKey: PreferenceKey.aiUsageRange) ?? "")
+            ?? .month
+    }
+
+    func loadDashboardIfNeeded(
         includeQuotas: Bool = false,
-        allowClaudeKeychainPrompt: Bool = false
+        allowKeychainPrompt: Bool = false
     ) {
-        let storedDays = UserDefaults.standard.integer(forKey: PreferenceKey.aiUsageRangeDays)
         loadIfNeeded(
-            query: .days(days ?? (storedDays == 0 ? 30 : storedDays)),
+            query: Self.dashboardQuery,
             includeQuotas: includeQuotas,
-            allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
+            allowKeychainPrompt: allowKeychainPrompt
         )
     }
 
     func loadIfNeeded(
         range: AIUsageRange,
         includeQuotas: Bool = false,
-        allowClaudeKeychainPrompt: Bool = false
+        allowKeychainPrompt: Bool = false
     ) {
         loadIfNeeded(
             query: .range(range),
             includeQuotas: includeQuotas,
-            allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
+            allowKeychainPrompt: allowKeychainPrompt
         )
     }
 
-    func refresh(
-        days: Int? = nil,
-        includeQuotas: Bool = false,
-        allowClaudeKeychainPrompt: Bool = false
-    ) {
-        let storedDays = UserDefaults.standard.integer(forKey: PreferenceKey.aiUsageRangeDays)
-        refresh(
-            query: .days(days ?? (storedDays == 0 ? 30 : storedDays)),
-            includeQuotas: includeQuotas,
-            allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
-        )
-    }
-
-    func refresh(
-        range: AIUsageRange,
-        includeQuotas: Bool = false,
-        allowClaudeKeychainPrompt: Bool = false
-    ) {
-        refresh(
-            query: .range(range),
-            includeQuotas: includeQuotas,
-            allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
-        )
-    }
-
+    /// ⌘R has to refresh whichever window is actually on screen, not whatever the
+    /// AI screen's picker was last set to.
     func refreshCurrent(
         includeQuotas: Bool = false,
-        allowClaudeKeychainPrompt: Bool = false
+        allowKeychainPrompt: Bool = false
     ) {
-        let stored = UserDefaults.standard.string(forKey: PreferenceKey.aiUsageRange)
         refresh(
-            range: AIUsageRange(rawValue: stored ?? "") ?? .month,
+            query: displayedQuery ?? Self.dashboardQuery,
             includeQuotas: includeQuotas,
-            allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
+            allowKeychainPrompt: allowKeychainPrompt,
+            allowBrowserKeychainPrompt: allowKeychainPrompt
+        )
+    }
+
+    func refresh(
+        range: AIUsageRange,
+        includeQuotas: Bool = false,
+        allowKeychainPrompt: Bool = false
+    ) {
+        refresh(
+            query: .range(range),
+            includeQuotas: includeQuotas,
+            allowKeychainPrompt: allowKeychainPrompt,
+            allowBrowserKeychainPrompt: allowKeychainPrompt
         )
     }
 
     private func loadIfNeeded(
         query: Query,
         includeQuotas: Bool,
-        allowClaudeKeychainPrompt: Bool = false
+        allowKeychainPrompt: Bool
     ) {
         presentCachedSummary(for: query)
-        let shouldPrompt = allowClaudeKeychainPrompt && !attemptedAutomaticClaudeKeychainPrompt
-        if shouldPrompt { attemptedAutomaticClaudeKeychainPrompt = true }
+        let shouldPrompt = allowKeychainPrompt && !attemptedAutomaticKeychainPrompt
+        if shouldPrompt { attemptedAutomaticKeychainPrompt = true }
         let refreshQuotas = includeQuotas && (quotaRefreshIsDue(for: query) || shouldPrompt)
-        guard completedQuery != query || refreshQuotas else { return }
+        // A Set, not a single value: the dashboard and the AI screen alternate, and
+        // a scalar made every switch look like a new window and rescan.
+        guard !completedQueries.contains(query) || refreshQuotas else { return }
+        // Browser cookie stores can each raise a Keychain dialog; an automatic
+        // refresh on panel open is not the moment for that, so only explicit
+        // refreshes (⌘R, Rescan now) may prompt for them.
         refresh(
             query: query,
             includeQuotas: refreshQuotas,
-            allowClaudeKeychainPrompt: shouldPrompt
+            allowKeychainPrompt: shouldPrompt,
+            allowBrowserKeychainPrompt: false
         )
     }
 
     private func refresh(
         query: Query,
         includeQuotas: Bool,
-        allowClaudeKeychainPrompt: Bool
+        allowKeychainPrompt: Bool,
+        allowBrowserKeychainPrompt: Bool
     ) {
+        presentCachedSummary(for: query)
+        let request = Request(
+            query: query,
+            includeQuotas: includeQuotas,
+            allowKeychainPrompt: allowKeychainPrompt,
+            allowBrowserKeychainPrompt: allowBrowserKeychainPrompt
+        )
         guard !isLoading else {
-            let request = (
-                query: query,
-                includeQuotas: includeQuotas,
-                allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
-            )
-            if activeRequest?.query != request.query
-                || (request.includeQuotas && activeRequest?.includeQuotas == false)
-                || (request.allowClaudeKeychainPrompt && activeRequest?.allowClaudeKeychainPrompt == false)
-            {
+            if request.exceeds(activeRequest) {
                 pendingRequest = request
             }
             return
         }
 
-        activeRequest = (query, includeQuotas, allowClaudeKeychainPrompt)
+        activeRequest = request
         isLoading = true
         Task {
             let scanned: AIUsageSummary
             switch query {
-            case .days(let days):
-                scanned = await scanner.scan(days: days)
-            case .range(let range):
-                scanned = await scanner.scan(range: range)
+            case .days(let days): scanned = await scanner.scan(days: days)
+            case .range(let range): scanned = await scanner.scan(range: range)
             }
             let localSummary = preservingValidQuotaData(
                 in: scanned,
@@ -171,7 +191,9 @@ final class AIUsageStore: ObservableObject {
             if includeQuotas {
                 let refreshed = await scanner.refreshQuotas(
                     in: localSummaryWithWeeklyCosts,
-                    allowClaudeKeychainPrompt: allowClaudeKeychainPrompt
+                    allowKeychainPrompt: allowKeychainPrompt,
+                    allowBrowserKeychainPrompt: allowBrowserKeychainPrompt,
+                    disabledProviders: Self.disabledProviders()
                 )
                 publish(preservingValidQuotaData(in: refreshed, from: localSummaryWithWeeklyCosts), for: query)
             }
@@ -183,22 +205,35 @@ final class AIUsageStore: ObservableObject {
                 refresh(
                     query: pendingRequest.query,
                     includeQuotas: pendingRequest.includeQuotas,
-                    allowClaudeKeychainPrompt: pendingRequest.allowClaudeKeychainPrompt
+                    allowKeychainPrompt: pendingRequest.allowKeychainPrompt,
+                    allowBrowserKeychainPrompt: pendingRequest.allowBrowserKeychainPrompt
                 )
             }
         }
     }
 
     private func publish(_ value: AIUsageSummary, for query: Query) {
-        summary = value
-        displayedQuery = query
-        completedQuery = query
+        completedQueries.insert(query)
         cachedSummaries[query.cacheKey] = CachedSummary(summary: value, storedAt: Date())
         Self.persistCachedSummaries(cachedSummaries)
+        if displayedQuery == query {
+            summary = value
+        }
+        // Widgets show the dashboard window; a transient picker choice on the AI
+        // screen must not rewrite what they display.
+        guard query == Self.dashboardQuery else { return }
         let widgetSnapshot = WidgetAISnapshot(summary: value)
         Task {
             await WidgetSnapshotWriter.shared.persistAI(widgetSnapshot)
         }
+    }
+
+    private static func disabledProviders() -> Set<String> {
+        Set(
+            (UserDefaults.standard.string(forKey: PreferenceKey.disabledAIProviders) ?? "")
+                .split(separator: ",")
+                .map(String.init)
+        )
     }
 
     private func quotaRefreshIsDue(for query: Query, now: Date = Date()) -> Bool {

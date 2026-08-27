@@ -25,20 +25,40 @@ nonisolated enum AIQuotaFetcher {
     private static let claudeCacheAccount = "claudeAiOauth"
     private static let claudeOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
+    /// `disabledProviders` are the ones switched off in Settings. Skipping them
+    /// here is what makes the switch mean "stop touching my account" instead of
+    /// merely hiding the card while still calling the API and the Keychain.
     static func fetchAll(
         homeDirectory: URL,
-        allowClaudeKeychainPrompt: Bool = false
+        allowKeychainPrompt: Bool = false,
+        allowBrowserKeychainPrompt: Bool = false,
+        disabledProviders: Set<String> = []
     ) async -> [String: AIQuotaFetchResult] {
-        async let codex = fetchCodex(homeDirectory: homeDirectory)
-        async let claude = fetchClaude(
-            homeDirectory: homeDirectory,
-            allowKeychainPrompt: allowClaudeKeychainPrompt
-        )
-        return await ["Codex": codex, "Claude": claude]
+        async let codex = disabledProviders.contains("Codex")
+            ? nil
+            : fetchCodex(
+                homeDirectory: homeDirectory,
+                allowBrowserKeychainPrompt: allowBrowserKeychainPrompt
+            )
+        async let claude = disabledProviders.contains("Claude")
+            ? nil
+            : fetchClaude(
+                homeDirectory: homeDirectory,
+                allowKeychainPrompt: allowKeychainPrompt
+            )
+        var results: [String: AIQuotaFetchResult] = [:]
+        if let codex = await codex { results["Codex"] = codex }
+        if let claude = await claude { results["Claude"] = claude }
+        return results
     }
 
-    private static func fetchCodex(homeDirectory: URL) async -> AIQuotaFetchResult {
-        async let webQuotaTask = OpenAIWebQuotaFetcher.shared.fetch()
+    private static func fetchCodex(
+        homeDirectory: URL,
+        allowBrowserKeychainPrompt: Bool
+    ) async -> AIQuotaFetchResult {
+        async let webQuotaTask = OpenAIWebQuotaFetcher.shared.fetch(
+            allowKeychainPrompt: allowBrowserKeychainPrompt
+        )
         let authURL = homeDirectory.appending(path: ".codex/auth.json")
         guard let authData = try? Data(contentsOf: authURL),
             let root = try? JSONSerialization.jsonObject(with: authData) as? [String: Any],

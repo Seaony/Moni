@@ -59,7 +59,7 @@ struct AIUsageView: View {
             store.loadIfNeeded(
                 range: range,
                 includeQuotas: true,
-                allowClaudeKeychainPrompt: true
+                allowKeychainPrompt: true
             )
         }
         .onChange(of: rangeValue) { _, value in
@@ -474,11 +474,11 @@ struct DailyUsageChart: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
         .background(MoniPalette.controlHover)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(MoniPalette.panelLine, lineWidth: 1)
+                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
     }
 
@@ -501,8 +501,9 @@ struct DailyUsageChart: View {
             4,
             chartHeight * CGFloat(Double(day.tokens) / Double(maximum))
         )
-        // Keep the callout inside the chart when the bar nearly fills it.
-        return max(20, chartHeight - barHeight - 34)
+        // Keep the callout inside the chart when the bar nearly fills it; 26 is
+        // half the three-line callout's height.
+        return max(26, chartHeight - barHeight - 34)
     }
 
     private func currency(_ value: Double) -> String {

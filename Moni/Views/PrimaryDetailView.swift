@@ -42,11 +42,11 @@ struct DetailPanel<Content: View>: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(MoniPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(MoniPalette.line, lineWidth: 1)
+                .strokeBorder(MoniPalette.line, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -387,16 +387,19 @@ private struct ProcessesDetailView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var query = ""
     @State private var sort: Sort = .cpu
+    @State private var isAscending = false
 
     private var processes: [ProcessUsage] {
         let filtered = monitor.snapshot.processes.filter {
             query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.path.localizedCaseInsensitiveContains(query) || String($0.pid).contains(query)
         }
+        let descending: [ProcessUsage]
         switch sort {
-        case .cpu: return filtered.sorted { $0.cpuPercent > $1.cpuPercent }
-        case .memory: return filtered.sorted { $0.memoryBytes > $1.memoryBytes }
-        case .name: return filtered.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        case .cpu: descending = filtered.sorted { $0.cpuPercent > $1.cpuPercent }
+        case .memory: descending = filtered.sorted { $0.memoryBytes > $1.memoryBytes }
+        case .name: descending = filtered.sorted { $0.name.localizedStandardCompare($1.name) == .orderedDescending }
         }
+        return isAscending ? descending.reversed() : descending
     }
 
     var body: some View {
@@ -459,9 +462,15 @@ private struct ProcessesDetailView: View {
 
     private func sortHeader(_ title: String, value: Sort) -> some View {
         Button {
-            sort = value
+            if sort == value {
+                isAscending.toggle()
+            } else {
+                sort = value
+                // Names read best A→Z; the numeric columns read best largest first.
+                isAscending = value == .name
+            }
         } label: {
-            Text(title + (sort == value ? " ↓" : ""))
+            Text(title + (sort == value ? (isAscending ? " ↑" : " ↓") : ""))
                 .frame(maxWidth: .infinity, alignment: value == .name ? .leading : .trailing)
                 .contentShape(Rectangle())
         }

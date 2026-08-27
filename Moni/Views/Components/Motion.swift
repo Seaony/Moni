@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 enum MoniMotion {
@@ -39,29 +38,6 @@ struct MoniPressButtonStyle: ButtonStyle {
     }
 }
 
-private struct MoniPointingHandModifier: ViewModifier {
-    @State private var isHovering = false
-
-    func body(content: Content) -> some View {
-        content
-            .onHover { hovering in
-                guard hovering != isHovering else { return }
-                if hovering {
-                    NSCursor.pointingHand.push()
-                } else {
-                    NSCursor.pop()
-                }
-                isHovering = hovering
-            }
-            .onDisappear {
-                if isHovering {
-                    NSCursor.pop()
-                    isHovering = false
-                }
-            }
-    }
-}
-
 private struct MoniNumericTransition<Value: Equatable>: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let value: Value
@@ -89,8 +65,11 @@ private struct MoniValueAnimation<Value: Equatable>: ViewModifier {
 }
 
 extension View {
+    /// `pointerStyle` is scoped to the view, so it cannot leave the cursor stack
+    /// unbalanced the way a manual `NSCursor.push()`/`pop()` pair can when a view
+    /// disappears while hovered.
     func moniPointingHand() -> some View {
-        modifier(MoniPointingHandModifier())
+        pointerStyle(.link)
     }
 
     func moniNumericTransition<Value: Equatable>(_ value: Value) -> some View {

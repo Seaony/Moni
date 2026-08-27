@@ -4,6 +4,8 @@ import WidgetKit
 actor WidgetSnapshotWriter {
     static let shared = WidgetSnapshotWriter()
 
+    private static let reloadInterval: TimeInterval = 5 * 60
+
     private var lastSystemWrite = Date.distantPast
     private var lastTimelineReload = Date.distantPast
 
@@ -11,15 +13,20 @@ actor WidgetSnapshotWriter {
         guard snapshot.date.timeIntervalSince(lastSystemWrite) >= 15 else { return }
         lastSystemWrite = snapshot.date
         try? MoniWidgetStorage.saveSystem(snapshot)
-
-        if snapshot.date.timeIntervalSince(lastTimelineReload) >= 5 * 60 {
-            lastTimelineReload = snapshot.date
-            WidgetCenter.shared.reloadAllTimelines()
-        }
+        reloadTimelinesIfDue(at: snapshot.date)
     }
 
     func persistAI(_ snapshot: WidgetAISnapshot) {
         try? MoniWidgetStorage.saveAI(snapshot)
+        reloadTimelinesIfDue(at: Date())
+    }
+
+    /// WidgetKit budgets timeline reloads per day; a scan publishes twice and the
+    /// AI screen rescans on every range change, so reloading on each write burns
+    /// through the budget and leaves the widgets frozen.
+    private func reloadTimelinesIfDue(at date: Date) {
+        guard date.timeIntervalSince(lastTimelineReload) >= Self.reloadInterval else { return }
+        lastTimelineReload = date
         WidgetCenter.shared.reloadAllTimelines()
     }
 }
@@ -104,18 +111,33 @@ extension WidgetSystemSnapshot {
         )
     }
 
+    /// Mirrors the thresholds the user configured in Settings → Alerts so the
+    /// widget does not contradict the notifications.
     private static func alerts(for snapshot: SystemSnapshot) -> [Alert] {
         var alerts: [Alert] = []
-        if snapshot.cpu.total >= 85 {
-            alerts.append(.init(message: "CPU usage is above 85%", date: snapshot.date, severity: 2))
+        let cpuLimit = threshold(PreferenceKey.cpuAlertThreshold, fallback: 85)
+        let memoryLimit = threshold(PreferenceKey.memoryAlertThreshold, fallback: 90)
+        let diskLimit = threshold(PreferenceKey.diskAlertThreshold, fallback: 90)
+        let temperatureLimit = threshold(PreferenceKey.temperatureAlertThreshold, fallback: 80)
+
+        if snapshot.cpu.total >= cpuLimit {
+            alerts.append(.init(message: "CPU usage is above \(Int(cpuLimit))%", date: snapshot.date, severity: 2))
         }
-        if snapshot.memory.usedPercent >= 90 {
-            alerts.append(.init(message: "Memory usage is above 90%", date: snapshot.date, severity: 2))
+        if snapshot.memory.usedPercent >= memoryLimit {
+            alerts.append(.init(message: "Memory usage is above \(Int(memoryLimit))%", date: snapshot.date, severity: 2))
         }
-        if let disk = snapshot.volumes.first(where: { $0.mountPath == "/" }), disk.usedPercent >= 90 {
-            alerts.append(.init(message: "System disk usage is above 90%", date: snapshot.date, severity: 3))
+        if let temperature = snapshot.power.cpuTemperatureCelsius, temperature >= temperatureLimit {
+            alerts.append(.init(message: "CPU temperature is above \(Int(temperatureLimit))°C", date: snapshot.date, severity: 2))
+        }
+        if let disk = snapshot.volumes.first(where: { $0.mountPath == "/" }), disk.usedPercent >= diskLimit {
+            alerts.append(.init(message: "System disk usage is above \(Int(diskLimit))%", date: snapshot.date, severity: 3))
         }
         return alerts
+    }
+
+    private static func threshold(_ key: String, fallback: Double) -> Double {
+        let value = UserDefaults.standard.double(forKey: key)
+        return value == 0 ? fallback : value
     }
 }
 

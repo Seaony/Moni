@@ -90,27 +90,27 @@ nonisolated final class SMCSensorReader {
         case "ui32" where bytes.count >= 4:
             return Double(unsigned32(bytes))
         case "sp1e" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 16_384
+            return Double(signed16(bytes)) / 16_384
         case "sp3c" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 4_096
+            return Double(signed16(bytes)) / 4_096
         case "sp4b" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 2_048
+            return Double(signed16(bytes)) / 2_048
         case "sp5a" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 1_024
+            return Double(signed16(bytes)) / 1_024
         case "sp69" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 512
+            return Double(signed16(bytes)) / 512
         case "sp78" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 256
+            return Double(signed16(bytes)) / 256
         case "sp87" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 128
+            return Double(signed16(bytes)) / 128
         case "sp96" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 64
+            return Double(signed16(bytes)) / 64
         case "spa5" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 32
+            return Double(signed16(bytes)) / 32
         case "spb4" where bytes.count >= 2:
-            return Double(unsigned16(bytes)) / 16
+            return Double(signed16(bytes)) / 16
         case "spf0" where bytes.count >= 2:
-            return Double(unsigned16(bytes))
+            return Double(signed16(bytes))
         case "fpe2" where bytes.count >= 2:
             return Double((Int(bytes[0]) << 6) + (Int(bytes[1]) >> 2))
         case "flt " where bytes.count >= 4:
@@ -171,6 +171,12 @@ nonisolated final class SMCSensorReader {
 
     private func unsigned16(_ bytes: [UInt8]) -> UInt16 {
         (UInt16(bytes[0]) << 8) | UInt16(bytes[1])
+    }
+
+    /// The `sp*` SMC types are signed fixed-point; reading them as unsigned turns a
+    /// negative reading into a very large positive one.
+    private func signed16(_ bytes: [UInt8]) -> Int16 {
+        Int16(bitPattern: unsigned16(bytes))
     }
 
     private func unsigned32(_ bytes: [UInt8]) -> UInt32 {
