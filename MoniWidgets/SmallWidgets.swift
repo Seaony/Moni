@@ -47,7 +47,7 @@ struct MemorySmallWidget: Widget {
         moniWidgetConfiguration(
             kind: .memorySmall,
             displayName: "Memory",
-            description: "查看内存使用率、容量与压力状态。",
+            description: "查看内存使用率、容量与占用状态。",
             family: .systemSmall
         )
     }
@@ -56,7 +56,7 @@ struct MemorySmallWidget: Widget {
 struct MemorySmallWidgetView: View {
     let snapshot: WidgetSystemSnapshot
 
-    private var pressure: (label: String, color: Color) {
+    private var usageStatus: (label: String, color: Color) {
         switch snapshot.memory.usedPercent {
         case 90...: ("Critical", WidgetTheme.red)
         case 80...: ("High", WidgetTheme.orange)
@@ -83,11 +83,11 @@ struct MemorySmallWidgetView: View {
             .frame(maxWidth: .infinity)
             Spacer(minLength: 4)
             HStack(spacing: 6) {
-                Circle().fill(pressure.color).frame(width: 6, height: 6)
-                Text("Pressure")
+                Circle().fill(usageStatus.color).frame(width: 6, height: 6)
+                Text("Usage")
                     .foregroundStyle(WidgetTheme.secondary)
-                Text(pressure.label)
-                    .foregroundStyle(pressure.color)
+                Text(usageStatus.label)
+                    .foregroundStyle(usageStatus.color)
                     .fontWeight(.bold)
             }
             .font(.system(size: 10.5))

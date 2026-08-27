@@ -8,6 +8,12 @@ private enum DashboardSizing {
     static let contentBottomPadding: CGFloat = 18
 }
 
+private enum StatusBarAction {
+    case refresh
+    case settings
+    case quit
+}
+
 enum MonitorSection: String, CaseIterable, Identifiable {
     case summary, host, cpu, memory, gpu, network, storage, processes, sensors, ai, docker, disks, settings
 
@@ -67,6 +73,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @EnvironmentObject private var aiUsage: AIUsageStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: MonitorSection = .summary
     @State private var hoveredSection: MonitorSection?
@@ -74,6 +81,7 @@ struct ContentView: View {
     @State private var hostContentHeight: CGFloat?
     @State private var toolbarHeight: CGFloat = 0
     @State private var statusBarHeight: CGFloat = 0
+    @State private var hoveredStatusBarAction: StatusBarAction?
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
     @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
@@ -269,20 +277,72 @@ struct ContentView: View {
 
             Spacer()
 
-            Text("⌘R refresh")
-            Text("⌘, settings")
-            Text("⌘Q quit")
+            HStack(spacing: 2) {
+                statusBarButton("Refresh", shortcut: "⌘R", action: .refresh) {
+                    monitor.refresh(forceSlowMetrics: true)
+                    monitor.loadNetworkExternalDetailsIfNeeded(force: true)
+                    aiUsage.refreshCurrent(
+                        includeQuotas: true,
+                        allowKeychainPrompt: true
+                    )
+                }
+                statusBarButton("Settings", shortcut: "⌘,", action: .settings) {
+                    settingsSection = .general
+                    select(.settings)
+                }
+                statusBarButton("Quit", shortcut: "⌘Q", action: .quit) {
+                    NSApp.terminate(nil)
+                }
+            }
         }
         .font(.system(size: 12))
         .foregroundStyle(MoniPalette.foregroundTertiary)
         .padding(.horizontal, 18)
-        .padding(.vertical, 11)
+        .padding(.vertical, 7)
         .background(MoniPalette.inset)
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(MoniPalette.footerLine)
                 .frame(height: 1)
         }
+    }
+
+    private func statusBarButton(
+        _ title: String,
+        shortcut: String,
+        action: StatusBarAction,
+        perform: @escaping () -> Void
+    ) -> some View {
+        Button(action: perform) {
+            HStack(spacing: 4) {
+                Text(title)
+                Text(shortcut)
+                    .foregroundStyle(MoniPalette.foregroundQuaternary)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .foregroundStyle(
+                hoveredStatusBarAction == action
+                    ? MoniPalette.foregroundSecondary
+                    : MoniPalette.foregroundTertiary
+            )
+            .background(
+                hoveredStatusBarAction == action
+                    ? MoniPalette.controlHover
+                    : Color.clear
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(MoniPressButtonStyle(scale: 0.98))
+        .onHover { isHovered in
+            if isHovered {
+                hoveredStatusBarAction = action
+            } else if hoveredStatusBarAction == action {
+                hoveredStatusBarAction = nil
+            }
+        }
+        .animation(reduceMotion ? nil : MoniMotion.press, value: hoveredStatusBarAction)
     }
 
     private var statusText: String {

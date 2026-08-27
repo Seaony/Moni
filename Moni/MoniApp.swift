@@ -13,10 +13,6 @@ struct MoniApp: App {
     @StateObject private var monitor = SystemMonitor()
     @StateObject private var aiUsage = AIUsageStore()
     @StateObject private var updates = UpdateController()
-    @AppStorage(PreferenceKey.compactMenuBar) private var compactMenuBar = false
-    @AppStorage(PreferenceKey.menuBarMetric) private var menuBarMetric = MenuBarMetric.cpu.rawValue
-    @AppStorage(PreferenceKey.menuBarItems) private var menuBarItems = "cpu,memory"
-    @AppStorage(PreferenceKey.menuBarDisplayStyle) private var menuBarDisplayStyle = MenuBarDisplayStyle.valueOnly.rawValue
 
     var body: some Scene {
         MenuBarExtra {
@@ -30,28 +26,7 @@ struct MoniApp: App {
                     }
                 )
         } label: {
-            HStack(spacing: 7) {
-                ForEach(compactMenuBar ? Array(selectedMetrics.prefix(1)) : selectedMetrics) { metric in
-                    HStack(spacing: 3) {
-                        if displayStyle != .valueOnly {
-                            MenuBarMiniGraph(values: history(metric))
-                        }
-                        if displayStyle != .graphOnly {
-                            Text(menuBarValue(metric))
-                                .monospacedDigit()
-                                .moniNumericTransition(menuBarValue(metric))
-                        }
-                    }
-                }
-            }
-            .moniAnimation(value: menuBarItems)
-            .moniAnimation(value: menuBarDisplayStyle)
-            .onAppear {
-                loadMenuBarAIIfNeeded()
-            }
-            .onChange(of: menuBarItems) {
-                loadMenuBarAIIfNeeded()
-            }
+            MenuBarStatusLabel(monitor: monitor, aiUsage: aiUsage)
         }
         .menuBarExtraStyle(.window)
         .commands {
@@ -71,6 +46,30 @@ struct MoniApp: App {
             }
         }
     }
+}
+
+private struct MenuBarStatusLabel: View {
+    @ObservedObject var monitor: SystemMonitor
+    @ObservedObject var aiUsage: AIUsageStore
+    @AppStorage(PreferenceKey.compactMenuBar) private var compactMenuBar = false
+    @AppStorage(PreferenceKey.menuBarMetric) private var menuBarMetric = MenuBarMetric.cpu.rawValue
+    @AppStorage(PreferenceKey.menuBarItems) private var menuBarItems = "cpu,memory"
+    @AppStorage(PreferenceKey.menuBarDisplayStyle) private var menuBarDisplayStyle = MenuBarDisplayStyle.valueOnly.rawValue
+
+    var body: some View {
+        menuBarContent
+            .monospacedDigit()
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel(accessibilityLabel)
+            .moniAnimation(value: menuBarItems)
+            .moniAnimation(value: menuBarDisplayStyle)
+            .onAppear {
+                loadMenuBarAIIfNeeded()
+            }
+            .onChange(of: menuBarItems) {
+                loadMenuBarAIIfNeeded()
+            }
+    }
 
     private var selectedMetric: MenuBarMetric {
         MenuBarMetric(rawValue: menuBarMetric) ?? .cpu
@@ -82,8 +81,55 @@ struct MoniApp: App {
         return values.isEmpty ? [selectedMetric] : values
     }
 
+    private var visibleMetrics: [MenuBarMetric] {
+        compactMenuBar ? Array(selectedMetrics.prefix(1)) : selectedMetrics
+    }
+
     private var displayStyle: MenuBarDisplayStyle {
         MenuBarDisplayStyle(rawValue: menuBarDisplayStyle) ?? .valueOnly
+    }
+
+    @ViewBuilder
+    private var menuBarContent: some View {
+        switch displayStyle {
+        case .valueOnly:
+            Text(valueLabel)
+        case .graphOnly:
+            Image(nsImage: MenuBarGraphRenderer.image(items: renderItems, includesValues: false))
+                .renderingMode(.template)
+        case .graphAndValue:
+            Image(nsImage: MenuBarGraphRenderer.image(items: renderItems, includesValues: true))
+                .renderingMode(.template)
+        }
+    }
+
+    private var valueLabel: String {
+        visibleMetrics
+            .map { "\(menuBarTag($0)) \(menuBarValue($0))" }
+            .joined(separator: "  ")
+    }
+
+    private var renderItems: [MenuBarGraphRenderer.Item] {
+        visibleMetrics.map { metric in
+            MenuBarGraphRenderer.Item(
+                values: history(metric),
+                value: menuBarValue(metric)
+            )
+        }
+    }
+
+    private var accessibilityLabel: String {
+        visibleMetrics
+            .map { "\($0.title) \(menuBarValue($0))" }
+            .joined(separator: ", ")
+    }
+
+    private func menuBarTag(_ metric: MenuBarMetric) -> String {
+        switch metric {
+        case .temperature: "TMP"
+        case .aiUsage: "AI"
+        default: String(metric.title.prefix(3)).uppercased()
+        }
     }
 
     private func menuBarValue(_ metric: MenuBarMetric) -> String {
@@ -157,6 +203,115 @@ struct MenuBarMiniGraph: View {
             .stroke(color, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
         }
         .frame(width: 22, height: 12)
+    }
+}
+
+private enum MenuBarGraphRenderer {
+    struct Item {
+        let values: [Double]
+        let value: String
+    }
+
+    private static let graphSize = NSSize(width: 22, height: 12)
+    private static let itemSpacing: CGFloat = 8
+    private static let graphTextSpacing: CGFloat = 4
+    private static let valueAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
+        .foregroundColor: NSColor.black,
+    ]
+
+    static func image(items: [Item], includesValues: Bool) -> NSImage {
+        let itemWidths = items.map { itemWidth($0, includesValues: includesValues) }
+        let contentWidth = itemWidths.reduce(0, +)
+            + itemSpacing * CGFloat(max(0, items.count - 1))
+        let size = NSSize(width: max(1, ceil(contentWidth)), height: 14)
+        let image = NSImage(size: size, flipped: false) { bounds in
+            var x = bounds.minX
+            for (index, item) in items.enumerated() {
+                drawGraph(
+                    item.values,
+                    in: NSRect(
+                        x: x,
+                        y: bounds.midY - graphSize.height / 2,
+                        width: graphSize.width,
+                        height: graphSize.height
+                    )
+                )
+                x += graphSize.width
+
+                if includesValues {
+                    x += graphTextSpacing
+                    x += draw(item.value, at: x, in: bounds, attributes: valueAttributes)
+                }
+
+                if index < items.count - 1 { x += itemSpacing }
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    private static func itemWidth(_ item: Item, includesValues: Bool) -> CGFloat {
+        guard includesValues else { return graphSize.width }
+        return graphSize.width
+            + graphTextSpacing
+            + textSize(item.value, attributes: valueAttributes).width
+    }
+
+    private static func draw(
+        _ value: String,
+        at x: CGFloat,
+        in bounds: NSRect,
+        attributes: [NSAttributedString.Key: Any]
+    ) -> CGFloat {
+        let size = textSize(value, attributes: attributes)
+        (value as NSString).draw(
+            at: NSPoint(x: x, y: floor(bounds.midY - size.height / 2)),
+            withAttributes: attributes
+        )
+        return size.width
+    }
+
+    private static func textSize(
+        _ value: String,
+        attributes: [NSAttributedString.Key: Any]
+    ) -> NSSize {
+        (value as NSString).size(withAttributes: attributes)
+    }
+
+    private static func drawGraph(_ source: [Double], in bounds: NSRect) {
+        let values = Array(source.suffix(18))
+        guard !values.isEmpty else { return }
+        let minimum = values.min() ?? 0
+        let maximum = values.max() ?? minimum
+        let horizontalInset: CGFloat = 1
+        let verticalInset: CGFloat = 1
+        let drawingWidth = max(0, bounds.width - horizontalInset * 2)
+        let drawingHeight = max(0, bounds.height - verticalInset * 2)
+        let path = NSBezierPath()
+        path.lineWidth = 1.2
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+
+        for (index, value) in values.enumerated() {
+            let fraction = maximum > minimum ? (value - minimum) / (maximum - minimum) : 0.5
+            let x = bounds.minX + horizontalInset
+                + drawingWidth * CGFloat(index) / CGFloat(max(1, values.count - 1))
+            let y = bounds.minY + verticalInset + drawingHeight * CGFloat(fraction)
+            let point = NSPoint(x: x, y: y)
+            if index == 0 {
+                path.move(to: point)
+            } else {
+                path.line(to: point)
+            }
+        }
+
+        if values.count == 1 {
+            path.line(to: NSPoint(x: bounds.maxX - horizontalInset, y: path.currentPoint.y))
+        }
+        NSColor.black.setStroke()
+        path.stroke()
     }
 }
 

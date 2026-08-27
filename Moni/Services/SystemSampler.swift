@@ -894,6 +894,21 @@ actor SystemSampler {
     }
 
     private static func loadGPUHardwareMetadata() -> GPUHardwareMetadata? {
+        let displayID = CGMainDisplayID()
+        let displayMode = CGDisplayCopyDisplayMode(displayID)
+        let displayResolution = displayMode.map { "\($0.pixelWidth) × \($0.pixelHeight)" }
+        let displayRefreshRate = displayMode.flatMap { $0.refreshRate > 0 ? $0.refreshRate : nil }
+        let displaySize = CGDisplayScreenSize(displayID)
+        let displayDiagonalInches = Double(hypot(displaySize.width, displaySize.height)) / 25.4
+        let displayOnlyMetadata = GPUHardwareMetadata(
+            name: nil,
+            vendor: nil,
+            coreCount: nil,
+            metalSupport: nil,
+            mainDisplayResolution: displayResolution,
+            mainDisplayDiagonalInches: displayDiagonalInches > 0 ? displayDiagonalInches : nil,
+            mainDisplayRefreshRateHertz: displayRefreshRate
+        )
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
@@ -907,7 +922,7 @@ actor SystemSampler {
             guard process.terminationStatus == 0,
                   let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let adapters = root["SPDisplaysDataType"] as? [[String: Any]],
-                  let adapter = adapters.first else { return nil }
+                  let adapter = adapters.first else { return displayOnlyMetadata }
 
             let name = adapter["sppci_model"] as? String ?? adapter["_name"] as? String
             let vendorToken = adapter["spdisplays_vendor"] as? String
@@ -916,31 +931,18 @@ actor SystemSampler {
             let metalSupport = (adapter["spdisplays_mtlgpufamilysupport"] as? String).flatMap { value in
                 value.last.flatMap(\.wholeNumberValue).map { "Metal \($0)" }
             }
-            let displays = adapter["spdisplays_ndrvs"] as? [[String: Any]] ?? []
-            let mainDisplay = displays.first { $0["spdisplays_main"] as? String == "spdisplays_yes" }
-                ?? displays.first
-            let resolution = mainDisplay?["_spdisplays_pixels"] as? String
-            let displaySize = CGDisplayScreenSize(CGMainDisplayID())
-            let diagonalInches = Double(hypot(displaySize.width, displaySize.height)) / 25.4
-            let refreshRate = (mainDisplay?["_spdisplays_resolution"] as? String).flatMap(refreshRate(from:))
             return GPUHardwareMetadata(
                 name: name,
                 vendor: vendor,
                 coreCount: coreCount,
                 metalSupport: metalSupport,
-                mainDisplayResolution: resolution,
-                mainDisplayDiagonalInches: diagonalInches > 0 ? diagonalInches : nil,
-                mainDisplayRefreshRateHertz: refreshRate
+                mainDisplayResolution: displayResolution,
+                mainDisplayDiagonalInches: displayDiagonalInches > 0 ? displayDiagonalInches : nil,
+                mainDisplayRefreshRateHertz: displayRefreshRate
             )
         } catch {
-            return nil
+            return displayOnlyMetadata
         }
-    }
-
-    private static func refreshRate(from resolution: String) -> Double? {
-        guard let marker = resolution.range(of: " @ "),
-              let suffix = resolution[marker.upperBound...].split(separator: "H").first else { return nil }
-        return Double(suffix)
     }
 
     private func sampleGPU(at date: Date) -> GPUUsage {
@@ -1106,7 +1108,7 @@ actor SystemSampler {
             "--silent",
             "--max-time", "1",
             "--unix-socket", socketPath,
-            "http://localhost/containers/json?all=1"
+            "http://localhost/v1.40/containers/json?all=1"
         ]
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice

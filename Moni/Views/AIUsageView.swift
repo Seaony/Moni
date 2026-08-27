@@ -601,7 +601,7 @@ struct DailyUsageChart: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .frame(minWidth: 188)
+        .frame(width: 200, alignment: .leading)
         .background(MoniPalette.controlHover)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
@@ -679,7 +679,7 @@ struct DailyUsageChart: View {
         let tooltipHalfWidth: CGFloat = 100
         let barCenter = CGFloat(index) * (barWidth + spacing) + barWidth / 2
         if tooltipAvoidsPointer {
-            let pointerClearance: CGFloat = 14
+            let pointerClearance: CGFloat = 18
             let right = barCenter + barWidth / 2 + pointerClearance + tooltipHalfWidth
             if right + tooltipHalfWidth <= chartWidth {
                 return right
@@ -688,11 +688,11 @@ struct DailyUsageChart: View {
             if left - tooltipHalfWidth >= 0 {
                 return left
             }
-            let preferred = chartWidth - barCenter >= barCenter ? right : left
-            return min(
-                max(preferred, tooltipHalfWidth),
-                max(tooltipHalfWidth, chartWidth - tooltipHalfWidth)
-            )
+            // The compact dashboard chart is narrower than the tooltip. Clamping
+            // it back into that width necessarily puts it over the hovered bar;
+            // the AI card explicitly permits content overflow, and its provider
+            // area to the right is the safe collision-free fallback.
+            return right
         }
         return min(
             max(barCenter, tooltipHalfWidth),

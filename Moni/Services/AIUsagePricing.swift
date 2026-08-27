@@ -121,15 +121,6 @@ enum AIUsagePricing {
         "claude-haiku-4-5": Price(input: 1, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2, output: 5),
     ]
 
-    private nonisolated static let qwenPrices: [String: Price] = [
-        "qwen3-coder": Price(input: 0.22, cacheRead: 0, output: 1.8),
-        "qwen3-coder-30b-a3b-instruct": Price(input: 0.07, cacheRead: 0, output: 0.27),
-        "qwen3-coder-flash": Price(input: 0.195, cacheRead: 0.039, cacheWrite: 0.24375, output: 0.975),
-        "qwen3-coder-next": Price(input: 0.11, cacheRead: 0.07, output: 0.8),
-        "qwen3-coder-plus": Price(input: 0.65, cacheRead: 0.13, cacheWrite: 0.8125, output: 3.25),
-        "qwen3.7-plus": Price(input: 0.39, cacheRead: 0.078, cacheWrite: 0.49, output: 1.16),
-    ]
-
     private nonisolated static let geminiPrices: [String: Price] = [
         "gemini-3.5-flash": Price(input: 1.5, cacheRead: 0.15, output: 9),
         "gemini-3.5-flash-lite": Price(input: 0.3, cacheRead: 0.03, output: 2.5),
@@ -185,6 +176,9 @@ enum AIUsagePricing {
         if case .qwen = provider {
             value = value.replacingOccurrences(of: " ", with: "-")
             if value == "qwen-latest-series-invite-beta-v23" { return "qwen3.7-plus" }
+            if let range = value.range(of: #"-\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) {
+                value.removeSubrange(range)
+            }
         }
         if case .claude = provider,
             let lastDot = value.lastIndex(of: ".")
@@ -227,8 +221,13 @@ enum AIUsagePricing {
         cacheWrite5mTokens: UInt64? = nil,
         outputTokens: UInt64
     ) -> Double? {
-        guard let price = price(provider: provider, model: model, date: date) else { return nil }
         let inputTotal = inputTokens + cacheReadTokens + cacheWriteTokens
+        guard let price = price(
+            provider: provider,
+            model: model,
+            date: date,
+            inputTotal: inputTotal
+        ) else { return nil }
         let usesLongContext = price.threshold.map { inputTotal > $0 } ?? false
         let inputRate = usesLongContext ? price.longInput ?? price.input : price.input
         let cacheReadRate = usesLongContext ? price.longCacheRead ?? price.cacheRead : price.cacheRead
@@ -248,7 +247,12 @@ enum AIUsagePricing {
             + Double(outputTokens) * outputRate) / 1_000_000
     }
 
-    private nonisolated static func price(provider: AIUsageProvider, model: String, date: Date) -> Price? {
+    private nonisolated static func price(
+        provider: AIUsageProvider,
+        model: String,
+        date: Date,
+        inputTotal: UInt64
+    ) -> Price? {
         let normalized = normalize(model, provider: provider)
         switch provider {
         case .codex:
@@ -292,7 +296,7 @@ enum AIUsagePricing {
         case .claude:
             if let exact = claudePrices[normalized] { return exact }
         case .qwen:
-            if let exact = qwenPrices[normalized] { return exact }
+            return qwenPrice(model: normalized, inputTotal: inputTotal)
         case .gemini:
             if normalized == "gemini-3.7-flash" {
                 return date < Date(timeIntervalSince1970: 1_798_761_600)
@@ -325,5 +329,35 @@ enum AIUsagePricing {
             longCacheWrite: input * 2.5,
             longOutput: output * 1.5
         )
+    }
+
+    private nonisolated static func qwenPrice(model: String, inputTotal: UInt64) -> Price? {
+        let rates: (input: Double, output: Double)?
+        switch model {
+        case "qwen3-coder-plus":
+            rates = if inputTotal <= 32_000 { (1, 5) }
+                else if inputTotal <= 128_000 { (1.8, 9) }
+                else if inputTotal <= 256_000 { (3, 15) }
+                else { (6, 60) }
+        case "qwen3-coder-flash":
+            rates = if inputTotal <= 32_000 { (0.3, 1.5) }
+                else if inputTotal <= 128_000 { (0.5, 2.5) }
+                else if inputTotal <= 256_000 { (0.8, 4) }
+                else { (1.6, 9.6) }
+        case "qwen3-coder-next":
+            rates = if inputTotal <= 32_000 { (0.3, 1.5) }
+                else if inputTotal <= 128_000 { (0.5, 2.5) }
+                else { (0.8, 4) }
+        case "qwen3-coder-30b-a3b-instruct":
+            rates = if inputTotal <= 32_000 { (0.45, 2.25) }
+                else if inputTotal <= 128_000 { (0.75, 3.75) }
+                else { (1.2, 6) }
+        case "qwen3.7-plus":
+            rates = inputTotal <= 256_000 ? (0.4, 1.6) : (1.2, 4.8)
+        default:
+            rates = nil
+        }
+        guard let rates else { return nil }
+        return Price(input: rates.input, cacheRead: rates.input * 0.2, output: rates.output)
     }
 }

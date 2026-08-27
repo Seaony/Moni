@@ -287,7 +287,7 @@ struct MemoryMediumWidgetView: View {
                 Text(bytes(snapshot.memory.usedBytes))
                     .font(.system(size: 27, weight: .heavy, design: .rounded))
                     .monospacedDigit()
-                Text("used · pressure \(pressure)")
+                Text("used · status \(usageStatus)")
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(WidgetTheme.secondary)
             }
@@ -322,7 +322,7 @@ struct MemoryMediumWidgetView: View {
         .padding(16)
     }
 
-    private var pressure: String {
+    private var usageStatus: String {
         snapshot.memory.usedPercent >= 90 ? "Critical" : snapshot.memory.usedPercent >= 80 ? "High" : "Normal"
     }
 

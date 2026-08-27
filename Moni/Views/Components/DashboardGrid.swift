@@ -318,6 +318,8 @@ struct ResizableDashboardCard<Content: View>: View {
             ZStack(alignment: .bottomTrailing) {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .highPriorityGesture(reorderGesture(in: geometry))
 
                 if limits.maxColumns > 1 {
                     Capsule()
@@ -356,7 +358,6 @@ struct ResizableDashboardCard<Content: View>: View {
                 ]
             )
             .opacity(draggingCard == card ? 0 : 1)
-            .highPriorityGesture(reorderGesture(in: geometry))
         }
         .layoutValue(
             key: DashboardCardSpanKey.self,
@@ -393,7 +394,10 @@ struct ResizableDashboardCard<Content: View>: View {
     }
 
     private func resizeGesture(in renderedSize: CGSize, axis: ResizeAxis) -> some Gesture {
-        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+        DragGesture(
+            minimumDistance: 2,
+            coordinateSpace: .named(DashboardGridCoordinateSpace.name)
+        )
             .onChanged { value in
                 let origin = dragOrigin ?? size
                 let cellSize = dragOrigin == nil ? baseCellSize(in: renderedSize) : dragCellSize

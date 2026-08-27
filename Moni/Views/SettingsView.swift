@@ -739,9 +739,11 @@ private struct MenuBarSettings: View {
                                     )
                                 }
                                 if displayStyle != .graphOnly {
-                                    Text(previewTag(item))
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(metricColor(item))
+                                    if displayStyle == .valueOnly {
+                                        Text(previewTag(item))
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundStyle(metricColor(item))
+                                    }
                                     Text(previewValue(item))
                                         .font(.system(size: 12, weight: .semibold))
                                         .monospacedDigit()
