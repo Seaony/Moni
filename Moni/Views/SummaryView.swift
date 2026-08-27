@@ -1190,7 +1190,7 @@ struct SummaryView: View {
     }
 
     private func compactTokens(_ value: UInt64) -> String {
-        value.formatted(.number.notation(.compactName))
+        MoniLocalization.compactNumber(value)
     }
 
     private func currency(_ value: Double) -> String {

@@ -403,7 +403,7 @@ struct AIUsageView: View {
     }
 
     private func tokens(_ value: UInt64) -> String {
-        value.formatted(.number.notation(.compactName))
+        MoniLocalization.compactNumber(value)
     }
 
     private func percent(_ value: Double) -> String {
@@ -569,7 +569,7 @@ struct DailyUsageChart: View {
             Text(day.date.formatted(date: .abbreviated, time: .omitted))
                 .font(.system(size: 10.5, weight: .semibold))
                 .foregroundStyle(MoniPalette.foregroundSecondary)
-            Text("\(day.tokens.formatted(.number.notation(.compactName))) tokens")
+            Text(MoniLocalization.format("%@ tokens", MoniLocalization.compactNumber(day.tokens)))
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(MoniPalette.foreground)
                 .monospacedDigit()
@@ -591,7 +591,7 @@ struct DailyUsageChart: View {
                         }
                         Spacer(minLength: 12)
                         Text(
-                            "\(provider.usage.tokens.formatted(.number.notation(.compactName))) · "
+                            "\(MoniLocalization.compactNumber(provider.usage.tokens)) · "
                                 + "≈ \(currency(provider.usage.costUSD))"
                         )
                         .fontWeight(.semibold)

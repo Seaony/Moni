@@ -360,7 +360,7 @@ struct AISpendSmallWidgetView: View {
     }
 
     private func compact(_ value: UInt64) -> String {
-        value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
+        MoniLocalization.compactNumber(value)
     }
 }
 

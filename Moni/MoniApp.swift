@@ -158,7 +158,7 @@ private struct MenuBarStatusLabel: View {
         case .temperature:
             return monitor.snapshot.power.cpuTemperatureCelsius.map { "\(Int($0.rounded()))°" } ?? "—"
         case .aiUsage:
-            return todayAITokens.formatted(.number.notation(.compactName))
+            return MoniLocalization.compactNumber(todayAITokens, language: selectedLanguage)
         }
     }
 

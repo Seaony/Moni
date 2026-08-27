@@ -312,7 +312,7 @@ private struct AIUsageSettings: View {
 
                 Spacer(minLength: 12)
 
-                Text(usage?.totalTokens.formatted(.number.notation(.compactName)) ?? "—")
+                Text(usage.map { MoniLocalization.compactNumber($0.totalTokens) } ?? "—")
                     .font(.system(size: 12))
                     .foregroundStyle(isDetected ? Color.secondary.opacity(0.65) : Color.secondary.opacity(0.4))
                     .monospacedDigit()
@@ -928,7 +928,7 @@ private struct MenuBarSettings: View {
         case .temperature:
             monitor.snapshot.power.cpuTemperatureCelsius.map { "\(Int($0.rounded()))°" } ?? "—"
         case .aiUsage:
-            todayAITokens.formatted(.number.notation(.compactName))
+            MoniLocalization.compactNumber(todayAITokens)
         }
     }
 
