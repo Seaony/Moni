@@ -40,7 +40,7 @@ private struct GPUDetailView: View {
                             .foregroundStyle(MoniPalette.green)
                         Text(deviceSubtitle)
                             .font(.system(size: 12.5))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                         Spacer(minLength: 12)
                         SecondaryRangePicker(selection: $historyRange)
                         Text(MoniLocalization.string(monitor.snapshot.gpu.utilizationPercent.map(percent) ?? "No Data"))
@@ -78,7 +78,7 @@ private struct GPUDetailView: View {
                     DetailPanel("Engine activity") {
                         ForEach(engineActivity, id: \.0) { engine, value in
                             HStack(spacing: 12) {
-                                Text(engine).foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
+                                Text(engine).foregroundStyle(MoniPalette.foregroundSecondary).frame(width: 92, alignment: .leading)
                                 GeometryReader { geometry in
                                     ZStack(alignment: .leading) {
                                         Capsule().fill(MoniPalette.track)
@@ -100,7 +100,7 @@ private struct GPUDetailView: View {
                     if monitor.snapshot.gpu.clients.isEmpty {
                         Text("No active GPU clients")
                             .font(.system(size: 13))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                     } else {
                         VStack(spacing: 0) {
                             HStack(spacing: 10) {
@@ -111,7 +111,7 @@ private struct GPUDetailView: View {
                             }
                             .padding(.bottom, 4)
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
 
                             ForEach(monitor.snapshot.gpu.clients.prefix(8)) { client in
                                 HStack(spacing: 10) {
@@ -120,10 +120,10 @@ private struct GPUDetailView: View {
                                         .lineLimit(1)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     Text(client.pid.formatted())
-                                        .foregroundStyle(.tertiary)
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
                                         .frame(width: 72, alignment: .trailing)
                                     Text(client.memoryBytes > 0 ? bytes(client.memoryBytes) : "—")
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(MoniPalette.foregroundSecondary)
                                         .frame(width: 100, alignment: .trailing)
                                     Text(percent(client.utilizationPercent))
                                         .fontWeight(.bold)
@@ -194,7 +194,7 @@ private struct NetworkDetailView: View {
                             .foregroundStyle(MoniPalette.cyan)
                         Text(networkHeader)
                             .font(.system(size: 12.5))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                         Spacer(minLength: 12)
                         SecondaryRangePicker(selection: $historyRange)
                         Text("↓ " + rate(network.downloadBytesPerSecond))
@@ -232,7 +232,7 @@ private struct NetworkDetailView: View {
                             HStack(spacing: 10) {
                                 Text(interface.name).fontWeight(.semibold).frame(width: 62, alignment: .leading)
                                 Text(interfaceDetail(interface))
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
                                     .lineLimit(1)
                                 Spacer()
                                 Text(MoniLocalization.string(interface.isActive ? "Active" : "Inactive"))
@@ -272,12 +272,12 @@ private struct NetworkDetailView: View {
                         Text("Out").frame(width: 78, alignment: .trailing)
                     }
                     .font(.system(size: 12))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
 
                     if network.connections.isEmpty {
                         Text("No active external connections")
                             .font(.system(size: 13))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                             .padding(.vertical, 8)
                     } else {
                         VStack(spacing: 0) {
@@ -288,18 +288,18 @@ private struct NetworkDetailView: View {
                                         .lineLimit(1)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     Text(connection.pid.formatted())
-                                        .foregroundStyle(.tertiary)
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
                                         .frame(width: 64, alignment: .trailing)
                                     Text(connection.localEndpoint)
-                                        .foregroundStyle(.tertiary)
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
                                         .lineLimit(1)
                                         .frame(width: 170, alignment: .leading)
                                     Text(connection.remoteEndpoint)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(MoniPalette.foregroundSecondary)
                                         .lineLimit(1)
                                         .frame(width: 190, alignment: .leading)
                                     Text(connection.transport)
-                                        .foregroundStyle(.tertiary)
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
                                         .frame(width: 58, alignment: .leading)
                                     Text(bytes(connection.receivedBytes))
                                         .foregroundStyle(MoniPalette.cyan)
@@ -398,7 +398,7 @@ private struct StorageDetailView: View {
                                     .foregroundStyle(MoniPalette.orange)
                                 Text(volume.mountPath)
                                     .font(.system(size: 12))
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
                                     .lineLimit(1)
                                 Spacer()
                                 Text(percent(volume.usedPercent))
@@ -409,7 +409,7 @@ private struct StorageDetailView: View {
                                 .tint(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
                             Text("\(bytes(UInt64(volume.usedBytes))) of \(bytes(UInt64(volume.totalBytes))) used")
                                 .font(.system(size: 12.5))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
                             HStack(spacing: 14) {
                                 secondaryStat("Format", volume.format ?? "Unknown")
                                 secondaryStat("Free", bytes(UInt64(max(0, volume.availableBytes))))
@@ -422,7 +422,7 @@ private struct StorageDetailView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         Text("DISK ACTIVITY")
                             .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                             .tracking(0.7)
                         Spacer()
                         Text("Read \(rate(monitor.snapshot.diskActivity.readBytesPerSecond))")
@@ -458,14 +458,14 @@ private struct StorageDetailView: View {
                             HStack(spacing: 9) {
                                 ProgressView().controlSize(.small)
                                 Text("Calculating folder sizes…")
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
                             }
                             .font(.system(size: 12.5))
                             .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
                         } else if monitor.largestFolders.isEmpty {
                             Text("Folder sizes unavailable")
                                 .font(.system(size: 12.5))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
                                 .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
                         } else {
                             VStack(spacing: 0) {
@@ -475,7 +475,7 @@ private struct StorageDetailView: View {
                                     Text("Size").frame(width: 86, alignment: .trailing)
                                 }
                                 .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
                                 .padding(.bottom, 4)
 
                                 ForEach(monitor.largestFolders) { folder in
@@ -574,7 +574,7 @@ private struct PowerDetailView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text("Battery").font(.system(size: 15, weight: .bold)).foregroundStyle(MoniPalette.yellow)
                             Text(powerSourceDescription)
-                                .font(.system(size: 12.5)).foregroundStyle(.tertiary)
+                                .font(.system(size: 12.5)).foregroundStyle(MoniPalette.foregroundTertiary)
                         }
                         if let batteryPercent = power.batteryPercent {
                             Text(MoniLocalization.string(power.batteryPercent.map(percent) ?? "No Battery"))
@@ -598,7 +598,7 @@ private struct PowerDetailView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text("Thermals").font(.system(size: 15, weight: .bold)).foregroundStyle(MoniPalette.orange)
                             Text(MoniLocalization.string(power.cpuTemperatureCelsius == nil ? "Waiting for sensors" : "Live HID sensors"))
-                                .font(.system(size: 12.5)).foregroundStyle(.tertiary)
+                                .font(.system(size: 12.5)).foregroundStyle(MoniPalette.foregroundTertiary)
                             Spacer()
                             Text(power.cpuTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "—")
                                 .font(.system(size: 22, weight: .bold))
@@ -678,7 +678,7 @@ private struct PowerDetailView: View {
     private func sensorStat(_ name: String, _ temperature: Double) -> some View {
         HStack(spacing: 8) {
             Text(name)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
                 .lineLimit(1)
                 .help(name)
             Spacer(minLength: 4)
@@ -706,7 +706,7 @@ private struct DockerDetailView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text("Docker").font(.system(size: 17, weight: .bold)).foregroundStyle(MoniPalette.blue)
                     Text(MoniLocalization.string(docker.isRunning ? "Daemon reachable" : "Daemon not reachable"))
-                        .font(.system(size: 12.5)).foregroundStyle(.tertiary)
+                        .font(.system(size: 12.5)).foregroundStyle(MoniPalette.foregroundTertiary)
                 }
                 if docker.isRunning {
                     containers
@@ -719,7 +719,7 @@ private struct DockerDetailView: View {
                             .font(.system(size: 26, weight: .bold, design: .rounded))
                         Text(MoniLocalization.string(docker.statusReason))
                             .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                             .multilineTextAlignment(.center)
                         Button("Back to summary") { selection = .summary }
                             .buttonStyle(.bordered)
@@ -748,12 +748,12 @@ private struct DockerDetailView: View {
         HStack(spacing: 10) {
             Text("CONTAINERS")
                 .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
                 .tracking(0.7)
             Spacer()
             Text("\(docker.runningContainerCount) running · \(docker.containers.count) total")
                 .font(.system(size: 12))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(MoniPalette.foregroundTertiary)
                 .monospacedDigit()
         }
         .padding(.top, 4)
@@ -761,7 +761,7 @@ private struct DockerDetailView: View {
         if docker.containers.isEmpty {
             Text("The engine is reachable but reports no containers.")
                 .font(.system(size: 13))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(MoniPalette.foregroundTertiary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 22)
         } else {
@@ -771,7 +771,7 @@ private struct DockerDetailView: View {
                 Text("State").frame(width: 84, alignment: .trailing)
             }
             .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(MoniPalette.foregroundSecondary)
 
             VStack(spacing: 2) {
                 ForEach(docker.containers) { container in
@@ -786,7 +786,7 @@ private struct DockerDetailView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         Text(container.status)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                             .lineLimit(1)
                             .frame(width: 220, alignment: .trailing)
                         Text(container.state.capitalized)
@@ -838,7 +838,7 @@ private struct DiskBrowserView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("VOLUMES")
                     .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                     .tracking(0.7)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 4)
@@ -861,7 +861,7 @@ private struct DiskBrowserView: View {
                                 .tint(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
                             Text("\(bytes(UInt64(volume.usedBytes))) of \(bytes(UInt64(volume.totalBytes)))")
                                 .font(.system(size: 12))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 11)
@@ -898,7 +898,7 @@ private struct DiskBrowserView: View {
                     Text("Modified").frame(width: 130, alignment: .trailing)
                 }
                 .font(.system(size: 12))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(MoniPalette.foregroundTertiary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 9)
                 Divider()
@@ -914,7 +914,7 @@ private struct DiskBrowserView: View {
                     HStack(spacing: 9) {
                         ProgressView().controlSize(.small)
                         Text("Reading folder…")
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                     }
                     .font(.system(size: 12.5))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -942,10 +942,10 @@ private struct DiskBrowserView: View {
                                         }
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         Text(item.isDirectory ? "—" : bytes(item.size))
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(MoniPalette.foregroundSecondary)
                                             .frame(width: 110, alignment: .trailing)
                                         Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
-                                            .foregroundStyle(.tertiary)
+                                            .foregroundStyle(MoniPalette.foregroundTertiary)
                                             .frame(width: 130, alignment: .trailing)
                                     }
                                     .font(.system(size: 13))
@@ -1053,7 +1053,11 @@ private struct SecondaryRangePicker: View {
                 } label: {
                     Text(range)
                         .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(selection == range ? .primary : .tertiary)
+                        .foregroundStyle(
+                            selection == range
+                                ? MoniPalette.foreground
+                                : MoniPalette.foregroundTertiary
+                        )
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
                         .background(selection == range ? MoniPalette.controlSelected : Color.clear)
@@ -1068,7 +1072,7 @@ private struct SecondaryRangePicker: View {
 
 private func secondaryStat(_ key: String, _ text: String) -> some View {
     VStack(alignment: .leading, spacing: 3) {
-        Text(MoniLocalization.string(key)).foregroundStyle(.secondary)
+        Text(MoniLocalization.string(key)).foregroundStyle(MoniPalette.foregroundSecondary)
         Text(MoniLocalization.string(text)).fontWeight(.bold).monospacedDigit().lineLimit(1)
     }
     .font(.system(size: 12.5))
@@ -1077,7 +1081,7 @@ private func secondaryStat(_ key: String, _ text: String) -> some View {
 
 private func insetStat(_ key: String, _ text: String) -> some View {
     VStack(alignment: .leading, spacing: 4) {
-        Text(MoniLocalization.string(key)).font(.system(size: 12)).foregroundStyle(.secondary)
+        Text(MoniLocalization.string(key)).font(.system(size: 12)).foregroundStyle(MoniPalette.foregroundSecondary)
         Text(MoniLocalization.string(text)).font(.system(size: 20, weight: .bold)).monospacedDigit()
     }
     .padding(.horizontal, 14)
@@ -1089,7 +1093,7 @@ private func insetStat(_ key: String, _ text: String) -> some View {
 
 private func dockerStat(_ key: String, _ text: String) -> some View {
     HStack(spacing: 8) {
-        Text(MoniLocalization.string(key)).foregroundStyle(.secondary)
+        Text(MoniLocalization.string(key)).foregroundStyle(MoniPalette.foregroundSecondary)
         Spacer(minLength: 6)
         Text(MoniLocalization.string(text)).fontWeight(.bold).lineLimit(1)
     }
@@ -1107,7 +1111,7 @@ private func rangeFooter(_ range: String) -> some View {
         Text("now")
     }
     .font(.system(size: 11.5))
-    .foregroundStyle(.quaternary)
+    .foregroundStyle(MoniPalette.foregroundQuaternary)
 }
 
 private func secondaryHistoryDuration(_ range: String) -> TimeInterval {

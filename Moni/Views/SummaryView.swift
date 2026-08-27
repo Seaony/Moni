@@ -106,7 +106,7 @@ struct SummaryView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("\(hostOperatingSystemLabel) · \(hostChipLabel)")
                                 .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.75)
                                 .help("Current macOS release installed on this Mac.")
@@ -116,7 +116,7 @@ struct SummaryView: View {
                                 .moniNumericTransition(Int(snapshot.host.uptime))
                                 .help("Time since this Mac last started.")
                             Text("Uptime")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
                                 .help("Time since this Mac last started.")
                         }
                         VStack(spacing: 9) {
@@ -129,7 +129,7 @@ struct SummaryView: View {
                 } else {
                     Text("\(hostOperatingSystemLabel) · \(hostChipLabel)")
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
                         .help("Current macOS release installed on this Mac.")
@@ -141,7 +141,7 @@ struct SummaryView: View {
                                 .moniNumericTransition(Int(snapshot.host.uptime))
                                 .help("Time since this Mac last started.")
                             Text("Uptime")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
                         }
                         .help("Time since this Mac last started.")
                         Spacer(minLength: 8)
@@ -171,7 +171,7 @@ struct SummaryView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(MoniLocalization.string(label))
                 .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
             Text(value)
                 .font(.system(size: 13.5, weight: .bold))
                 .monospacedDigit()
@@ -188,7 +188,7 @@ struct SummaryView: View {
                 .fill(MoniPalette.orange)
                 .frame(width: 7, height: 7)
             Text("Load")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
             Spacer(minLength: 4)
             ForEach(Array(snapshot.host.loadAverages.enumerated()), id: \.offset) { index, value in
                 if index > 0 {
@@ -293,7 +293,7 @@ struct SummaryView: View {
                                 .help("Total physical memory installed in this Mac.")
                         }
                             .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                     }
                     InteractiveSparkline(
                         series: [
@@ -327,7 +327,7 @@ struct SummaryView: View {
                     .fill(color)
                     .frame(width: 6, height: 6)
                 Text(MoniLocalization.string(label))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
             }
             Text(value)
                 .fontWeight(.bold)
@@ -353,13 +353,13 @@ struct SummaryView: View {
                 HStack(alignment: .bottom, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Utilization")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                         Text(MoniLocalization.string(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data"))
                             .font(.system(size: 30, weight: .bold, design: .rounded))
                             .help("Current overall GPU utilization reported by macOS.")
                         Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
                             .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                             .lineLimit(1)
                     }
                     InteractiveSparkline(
@@ -447,12 +447,12 @@ struct SummaryView: View {
                             .fill(MoniPalette.green)
                             .frame(width: 7, height: 7)
                         Text(primaryNetworkLabel)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                             .lineLimit(1)
                             .help("Primary network interface and physical Wi-Fi mode.")
                         Spacer(minLength: 4)
                         Text("\(snapshot.network.interfaces.filter(\.isActive).count) active")
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                             .help("Number of network interfaces currently marked active.")
                     }
                     .font(.system(size: 11.5))
@@ -468,7 +468,7 @@ struct SummaryView: View {
                 .fill(color)
                 .frame(width: 6, height: 6)
             Text(MoniLocalization.string(label))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
             Text(value)
                 .fontWeight(.bold)
                 .monospacedDigit()
@@ -496,7 +496,7 @@ struct SummaryView: View {
             ) {
                 if snapshot.volumes.isEmpty {
                     Text("No mounted volumes")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                 } else {
                     LazyVGrid(
                         columns: Array(repeating: GridItem(.flexible()), count: size.columns),
@@ -541,7 +541,7 @@ struct SummaryView: View {
                 Text("used")
             }
                 .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .font(.system(size: 11.5))
@@ -588,7 +588,7 @@ struct SummaryView: View {
                         .fontWeight(.semibold)
                     Text("PID \(process.pid)")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                         .help("Process identifier assigned by macOS.")
                 }
                 Spacer(minLength: 4)
@@ -597,7 +597,7 @@ struct SummaryView: View {
                     .help("Current CPU share used by \(process.name).")
                 Text("\(percent(memoryPercent)) MEM")
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
                     .help("Share of total physical memory used by \(process.name).")
             }
             HStack(spacing: 6) {
@@ -619,7 +619,7 @@ struct SummaryView: View {
                 HStack(alignment: .bottom, spacing: 18) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Battery")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                         Text(MoniLocalization.string(snapshot.power.batteryPercent.map(percent) ?? "No Battery"))
                             .font(.system(size: 32, weight: .bold, design: .rounded))
                             .lineLimit(1)
@@ -665,7 +665,7 @@ struct SummaryView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(MoniLocalization.string(label))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
             Text(value)
                 .fontWeight(.bold)
                 .foregroundStyle(color)
@@ -702,7 +702,7 @@ struct SummaryView: View {
                             Text(MoniLocalization.string(docker.statusTitle))
                                 .font(.system(size: 30, weight: .bold, design: .rounded))
                             Text(MoniLocalization.string(docker.installation ?? "No supported installation"))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
                         }
                         VStack(alignment: .leading, spacing: 10) {
                             MetricRow(
@@ -713,7 +713,7 @@ struct SummaryView: View {
                             )
                             Text(MoniLocalization.string(docker.statusReason))
                                 .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
                                 .lineLimit(3)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -722,7 +722,7 @@ struct SummaryView: View {
                     Text(MoniLocalization.string(docker.statusTitle))
                         .font(.system(size: 30, weight: .bold, design: .rounded))
                     Text(MoniLocalization.string(docker.installation ?? "No supported installation"))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                     Spacer()
                     MetricRow(
                         label: "Engine",
@@ -732,7 +732,7 @@ struct SummaryView: View {
                     )
                     Text(MoniLocalization.string(docker.statusReason))
                         .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                         .lineLimit(2)
                 }
             }
@@ -762,7 +762,7 @@ struct SummaryView: View {
                                 : "No Codex or Claude token usage was found in this period.")
                         )
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                         if aiUsage.isLoading {
                             ProgressView()
@@ -820,7 +820,7 @@ struct SummaryView: View {
                     .help("Length of the rolling dashboard window in days.")
             }
             .font(.system(size: 11.5))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(MoniPalette.foregroundSecondary)
             .lineLimit(1)
             .minimumScaleFactor(0.72)
             .padding(.top, 4)
@@ -880,7 +880,7 @@ struct SummaryView: View {
                 Spacer(minLength: 6)
                 Text(MoniLocalization.string(planName))
                     .font(.system(size: 11.5))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                     .lineLimit(1)
                     .help("Detected subscription plan for this provider.")
             }
@@ -892,7 +892,7 @@ struct SummaryView: View {
                     .help("Tokens recorded today for this provider.")
                 Text(currency(todayUsage?.costUSD ?? 0))
                     .font(.system(size: 12.5))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
                     .lineLimit(1)
                     .help("Estimated API-list-price cost of this provider’s tokens recorded today.")
             }
@@ -901,7 +901,7 @@ struct SummaryView: View {
             if let quota {
                 HStack(alignment: .firstTextBaseline) {
                     Text(MoniLocalization.format("%@ left", MoniLocalization.string(quota.label)))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                     Spacer()
                     Text("\(Int(quota.remainingPercent.rounded()))%")
                         .fontWeight(.bold)
@@ -925,7 +925,7 @@ struct SummaryView: View {
             } else {
                 HStack {
                     Text("Local usage")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                     Spacer()
                     Text(MoniLocalization.format("%@ requests", provider.requestCount.formatted()))
                         .fontWeight(.semibold)
@@ -940,7 +940,7 @@ struct SummaryView: View {
 
             HStack(alignment: .bottom, spacing: 8) {
                 Text(quotaResetLabel(quota))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                     .lineLimit(1)
                     .help("Time remaining until this provider reports that the quota window resets.")
                 Spacer(minLength: 4)
@@ -950,7 +950,7 @@ struct SummaryView: View {
                         : provider.models.first?.model ?? "Model unavailable"
                 )
                     .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
                     .lineLimit(1)
                     .help(
                         showsWeeklyLimit

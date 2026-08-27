@@ -1,6 +1,33 @@
 import Combine
+import AppKit
 import Foundation
 import Sparkle
+
+@MainActor
+private final class UpdateWindowLevelCoordinator: NSObject, SPUStandardUserDriverDelegate {
+    private weak var obscuringWindow: NSWindow?
+    private var originalLevel: NSWindow.Level?
+
+    func standardUserDriverWillShowModalAlert() {
+        guard let window = NSApp.keyWindow,
+              window.level > .modalPanel
+        else {
+            return
+        }
+
+        obscuringWindow = window
+        originalLevel = window.level
+        window.level = .normal
+    }
+
+    func standardUserDriverDidShowModalAlert() {
+        if let obscuringWindow, let originalLevel {
+            obscuringWindow.level = originalLevel
+        }
+        obscuringWindow = nil
+        originalLevel = nil
+    }
+}
 
 @MainActor
 final class UpdateController: ObservableObject {
@@ -11,6 +38,7 @@ final class UpdateController: ObservableObject {
 
     let configurationError: String?
 
+    private let userDriverDelegate = UpdateWindowLevelCoordinator()
     private let updaterController: SPUStandardUpdaterController?
     private var observations: Set<AnyCancellable> = []
 
@@ -35,7 +63,7 @@ final class UpdateController: ObservableObject {
         let controller = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
-            userDriverDelegate: nil
+            userDriverDelegate: userDriverDelegate
         )
         let updater = controller.updater
         configurationError = nil

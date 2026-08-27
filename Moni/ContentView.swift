@@ -400,7 +400,7 @@ private struct ModulePlaceholder: View {
         VStack(spacing: 16) {
             Image(systemName: section.symbol)
                 .font(.system(size: 42))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
             Text(section.title)
                 .font(.title2.bold())
             Button("Back to summary", action: back)

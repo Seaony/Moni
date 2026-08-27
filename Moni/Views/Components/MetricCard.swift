@@ -51,19 +51,19 @@ struct MetricCard<Content: View>: View {
                 if let trailing {
                     if let trailingHelp {
                         Text(MoniLocalization.string(trailing))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                             .moniNumericTransition(trailing)
                             .help(MoniLocalization.string(trailingHelp))
                     } else {
                         Text(MoniLocalization.string(trailing))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                             .moniNumericTransition(trailing)
                     }
                 }
                 if let trailingSymbol {
                     Image(systemName: trailingSymbol)
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
             }
             .font(.system(size: 14))
@@ -115,7 +115,7 @@ struct MetricRow: View {
                 .fill(color)
                 .frame(width: 7, height: 7)
             Text(MoniLocalization.string(label))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
             Spacer(minLength: 4)
             if let helpText {
                 Text(MoniLocalization.string(value))

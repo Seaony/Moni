@@ -37,7 +37,7 @@ struct AIUsageView: View {
                 } else if !store.isLoading {
                     DetailPanel("No local usage") {
                         Text("No Codex or Claude Code token usage was found for \(range.title.lowercased()).")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
                     }
                     .transition(MoniMotion.itemTransition)
                 }
@@ -49,7 +49,7 @@ struct AIUsageView: View {
                                 .foregroundStyle(MoniPalette.orange)
                             Text("No local logs found for: \(missingSources.joined(separator: " · "))")
                                 .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
                             Spacer(minLength: 8)
                             Button("Manage providers…", action: onManageProviders)
                                 .font(.system(size: 12))
@@ -118,7 +118,7 @@ struct AIUsageView: View {
                     .foregroundStyle(MoniPalette.indigo)
                 Text("\(range.title) · estimated at API list prices, not your invoice")
                     .font(.system(size: 12.5))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                 Spacer(minLength: 12)
                 Text(store.summary.estimatedCostUSD.map(currency) ?? "—")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
@@ -151,7 +151,7 @@ struct AIUsageView: View {
                 Text("today")
             }
             .font(.system(size: 11.5))
-            .foregroundStyle(.quaternary)
+            .foregroundStyle(MoniPalette.foregroundQuaternary)
 
         }
     }
@@ -178,7 +178,7 @@ struct AIUsageView: View {
                 Spacer()
                 Text(MoniLocalization.string(provider.planName ?? "Local logs"))
                     .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 3)
                     .background(MoniPalette.control)
@@ -194,7 +194,7 @@ struct AIUsageView: View {
                     provider.estimatedCostUSD.map(currency) ?? MoniLocalization.string("unpriced")
                 ))
                     .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
                 Spacer()
             }
 
@@ -230,7 +230,7 @@ struct AIUsageView: View {
                         .foregroundStyle(MoniPalette.orange)
                     Text(MoniLocalization.string(message))
                         .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                     Spacer(minLength: 0)
                 }
             }
@@ -239,13 +239,13 @@ struct AIUsageView: View {
 
             HStack(spacing: 8) {
                 Text(quotaResetLabel(weeklyQuota))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                     .lineLimit(1)
                     .help("Time remaining until this provider reports that the weekly quota resets.")
                 Spacer()
                 Text(MoniLocalization.string(weeklyLimit.map(weeklyLimitLabel) ?? "Estimating…"))
                     .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
                     .lineLimit(1)
                     .help("Estimated API-equivalent weekly limit from local usage and the provider-reported weekly percentage.")
             }
@@ -272,12 +272,12 @@ struct AIUsageView: View {
                 if let resetsAt = window.resetsAt {
                     Text(resetDuration(until: resetsAt))
                         .font(.system(size: 11.5))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                         .monospacedDigit()
                 } else if let minutes = window.windowMinutes {
                     Text(compactDuration(minutes: minutes))
                         .font(.system(size: 11.5))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                         .monospacedDigit()
                 }
             }
@@ -343,7 +343,7 @@ struct AIUsageView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(MoniLocalization.string(title))
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MoniPalette.foregroundSecondary)
             Text(value)
                 .font(.system(size: 20, weight: .bold))
                 .monospacedDigit()
@@ -357,7 +357,7 @@ struct AIUsageView: View {
 
     private func providerStat(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(MoniLocalization.string(title)).foregroundStyle(.secondary)
+            Text(MoniLocalization.string(title)).foregroundStyle(MoniPalette.foregroundSecondary)
             Text(value).fontWeight(.bold).monospacedDigit()
         }
         .font(.system(size: 12.5))
@@ -575,7 +575,7 @@ struct DailyUsageChart: View {
                 .monospacedDigit()
             Text("≈\(currency(day.costUSD)) · \(day.requestCount.formatted()) requests")
                 .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(MoniPalette.foregroundTertiary)
                 .monospacedDigit()
 
             if !providers.isEmpty {

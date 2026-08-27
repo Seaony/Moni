@@ -35,7 +35,7 @@ struct DetailPanel<Content: View>: View {
             if let title {
                 Text(MoniLocalization.string(title).uppercased())
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
                     .tracking(0.7)
             }
             content
@@ -69,7 +69,7 @@ private struct HostDetailView: View {
                             .foregroundStyle(MoniPalette.blue)
                         Text("\(snapshot.host.model) · \(snapshot.host.kernel)")
                             .font(.system(size: 12.5))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                             .lineLimit(1)
                         Spacer(minLength: 12)
                         HistoryRangePicker(selection: $historyRange)
@@ -86,7 +86,7 @@ private struct HostDetailView: View {
                         ForEach(hostStatistics, id: \.0) { key, value in
                             HStack(spacing: 8) {
                                 Text(MoniLocalization.string(key))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(MoniPalette.foregroundSecondary)
                                 Spacer(minLength: 6)
                                 Text(value)
                                     .fontWeight(.bold)
@@ -108,7 +108,7 @@ private struct HostDetailView: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(["1 min", "5 min", "15 min"][index])
                                     .font(.system(size: 12.5))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(MoniPalette.foregroundSecondary)
                                 Text(String(format: "%.2f", load))
                                     .font(.system(size: 26, weight: .bold, design: .rounded))
                                     .monospacedDigit()
@@ -173,7 +173,7 @@ private struct CPUDetailView: View {
                             .foregroundStyle(MoniPalette.pink)
                         Text("\(snapshot.host.chip) · \(snapshot.cpu.perCore.count) cores")
                             .font(.system(size: 12.5))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                         Spacer(minLength: 12)
                         HistoryRangePicker(selection: $historyRange)
                         Text(percent(snapshot.cpu.total))
@@ -200,7 +200,7 @@ private struct CPUDetailView: View {
                         Text("now")
                     }
                     .font(.system(size: 11.5))
-                    .foregroundStyle(.quaternary)
+                    .foregroundStyle(MoniPalette.foregroundQuaternary)
                 }
 
                 HStack(alignment: .top, spacing: 12) {
@@ -210,7 +210,7 @@ private struct CPUDetailView: View {
                                 HStack(spacing: 8) {
                                     Text("Core \(index + 1)")
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(MoniPalette.foregroundSecondary)
                                         .frame(width: 48, alignment: .leading)
                                     ProgressView(value: value, total: 100)
                                         .tint(value > 80 ? MoniPalette.red : value > 45 ? MoniPalette.orange : MoniPalette.green)
@@ -273,7 +273,7 @@ private struct MemoryDetailView: View {
                             .foregroundStyle(MoniPalette.blue)
                         Text(MoniLocalization.format("%@ unified memory", bytes(snapshot.memory.totalBytes)))
                             .font(.system(size: 12.5))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                         Spacer(minLength: 12)
                         HistoryRangePicker(selection: $historyRange)
                         Text(percent(snapshot.memory.usedPercent))
@@ -300,7 +300,7 @@ private struct MemoryDetailView: View {
                         Text("now")
                     }
                     .font(.system(size: 11.5))
-                    .foregroundStyle(.quaternary)
+                    .foregroundStyle(MoniPalette.foregroundQuaternary)
                 }
 
                 HStack(alignment: .top, spacing: 12) {
@@ -444,7 +444,7 @@ private struct ProcessesDetailView: View {
                     .foregroundStyle(MoniPalette.purple)
                 Text("\(matches.count) matches")
                     .font(.system(size: 12.5))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                     .moniNumericTransition(matches.count)
                 Spacer()
                 TextField("Search processes", text: $query)
@@ -461,7 +461,7 @@ private struct ProcessesDetailView: View {
                 Text("Threads").frame(width: 80, alignment: .trailing)
             }
             .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(MoniPalette.foregroundSecondary)
 
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 0) {
@@ -469,7 +469,7 @@ private struct ProcessesDetailView: View {
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(process.name).fontWeight(.semibold).lineLimit(1)
-                                Text(process.path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                                Text(process.path).font(.caption2).foregroundStyle(MoniPalette.foregroundTertiary).lineLimit(1)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             Text(process.pid.formatted()).frame(width: 70, alignment: .trailing)
@@ -519,7 +519,11 @@ private struct HistoryRangePicker: View {
                 } label: {
                     Text(range)
                         .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(selection == range ? .primary : .tertiary)
+                        .foregroundStyle(
+                            selection == range
+                                ? MoniPalette.foreground
+                                : MoniPalette.foregroundTertiary
+                        )
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
                         .background(selection == range ? MoniPalette.controlSelected : Color.clear)
@@ -552,7 +556,7 @@ private func processHeader(activityTitle: String, action: @escaping () -> Void) 
         }
     }
     .font(.caption)
-    .foregroundStyle(.secondary)
+    .foregroundStyle(MoniPalette.foregroundSecondary)
 }
 
 private func consumerRow(
@@ -568,12 +572,12 @@ private func consumerRow(
                 .lineLimit(1)
             Text(process.path)
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(MoniPalette.foregroundTertiary)
                 .lineLimit(1)
         }
             .frame(maxWidth: .infinity, alignment: .leading)
         Text(process.pid.formatted())
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(MoniPalette.foregroundTertiary)
             .monospacedDigit()
             .frame(width: 72, alignment: .trailing)
         Text(percent(process.cpuPercent))
@@ -596,7 +600,7 @@ private func consumerRow(
 private func detailStat(_ key: String, _ value: String) -> some View {
     VStack(alignment: .leading, spacing: 3) {
         Text(MoniLocalization.string(key))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(MoniPalette.foregroundSecondary)
         Text(value)
             .fontWeight(.bold)
             .monospacedDigit()

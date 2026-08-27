@@ -61,10 +61,10 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Moni \(appVersion)")
                         .font(.system(size: 11.5))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                     Text("Sampling \(samplingLabel)")
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
@@ -153,7 +153,7 @@ private struct SettingsToggleRow: View {
                         .foregroundStyle(MoniPalette.foreground)
                     Text(MoniLocalization.string(hint))
                         .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
                 Spacer(minLength: 12)
                 SettingsSwitch(isOn: isOn)
@@ -272,7 +272,7 @@ private struct AIUsageSettings: View {
 
                     Text("Costs are estimated from local logs at API list prices — they are not your subscription invoice.")
                         .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                         .padding(.top, 4)
                 }
             }
@@ -423,7 +423,7 @@ private struct AlertSettings: View {
                     if !notificationAlerts {
                         Text("Turn on the notification banner below for these limits to alert you.")
                             .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                     }
                     VStack(spacing: 18) {
                         thresholdRow("CPU load", hint: "sustained over 30s", color: MoniPalette.pink, value: $cpuThreshold)
@@ -485,7 +485,7 @@ private struct AlertSettings: View {
                     .font(.system(size: 13, weight: .semibold))
                 Text(MoniLocalization.string(hint))
                     .font(.system(size: 12))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                 Spacer()
                 Text("\(Int(value.wrappedValue))\(unit)")
                     .font(.system(size: 15, weight: .bold))
@@ -591,7 +591,7 @@ private struct GeneralSettings: View {
                     }
                     Text("Changes the language across Moni, the menu bar, notifications, and widgets.")
                         .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
 
                 DetailPanel("Appearance") {
@@ -630,7 +630,7 @@ private struct GeneralSettings: View {
                             : MoniLocalization.string("Light mode follows the same palette with inverted surfaces.")
                     )
                     .font(.system(size: 12))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
 
                 DetailPanel("Sampling interval") {
@@ -646,14 +646,14 @@ private struct GeneralSettings: View {
                     }
                     Text("Shorter intervals give smoother graphs and use slightly more CPU.")
                         .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
 
                 DetailPanel("Zoom") {
                     HStack(spacing: 12) {
                         Text("0.5×")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
 
                         Slider(
                             value: Binding(
@@ -685,7 +685,7 @@ private struct GeneralSettings: View {
                     }
                     Text("Scales the entire pop-up window. The default size is 1.0×.")
                         .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
 
                 DetailPanel("Behavior") {
@@ -816,7 +816,7 @@ private struct MenuBarSettings: View {
                         }
                         Text(Date.now.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
                             .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 7)
@@ -861,7 +861,7 @@ private struct MenuBarSettings: View {
 
                     Text("DISPLAY STYLE")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                         .tracking(0.7)
                         .padding(.top, 10)
 
@@ -1087,7 +1087,7 @@ private struct ModuleSettings: View {
                 Spacer(minLength: 12)
                 Text(MoniLocalization.string(note))
                     .font(.system(size: 12))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                     .lineLimit(1)
                 SettingsSwitch(isOn: isOn.wrappedValue)
             }
@@ -1127,64 +1127,58 @@ private struct AboutSettings: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 12) {
-                DetailPanel {
-                    Text("Moni \(version)")
-                        .font(.system(size: 22, weight: .heavy))
-                        .tracking(-0.6)
-                    Text("Build \(build) · \(architecture) · \(ProcessInfo.processInfo.operatingSystemVersionString)")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.tertiary)
+        VStack(spacing: 18) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 104, height: 104)
 
-                    HStack(spacing: 8) {
-                        aboutButton("Check for updates") {
-                            updates.checkForUpdates()
-                        }
-                        .disabled(!updates.canCheckForUpdates)
+            VStack(spacing: 6) {
+                Text("Moni \(version)")
+                    .font(.system(size: 24, weight: .heavy))
+                    .tracking(-0.6)
+                Text("Build \(build) · \(architecture) · \(ProcessInfo.processInfo.operatingSystemVersionString)")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
 
-                        aboutButton("Export diagnostics…") {
-                            exportDiagnostics()
-                        }
+            HStack(spacing: 8) {
+                AboutActionButton(
+                    title: "Check for updates",
+                    systemImage: "arrow.triangle.2.circlepath"
+                ) {
+                    updates.checkForUpdates()
+                }
+                .disabled(!updates.canCheckForUpdates)
 
-                        Button {
-                            NSApp.terminate(nil)
-                        } label: {
-                            Text("Quit Moni")
-                                .font(.system(size: 12.5, weight: .semibold))
-                                .foregroundStyle(MoniPalette.red)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                .background(MoniPalette.red.opacity(0.14))
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        }
-                        .buttonStyle(MoniPressButtonStyle())
-                    }
-
-                    if let exportError {
-                        Text(exportError)
-                            .font(.system(size: 12))
-                            .foregroundStyle(MoniPalette.red)
-                    } else if let configurationError = updates.configurationError {
-                        Text(configurationError)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
-                    }
+                AboutActionButton(
+                    title: "Export diagnostics…",
+                    systemImage: "square.and.arrow.up"
+                ) {
+                    exportDiagnostics()
                 }
 
-                DetailPanel("Shortcuts") {
-                    LazyVGrid(
-                        columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())],
-                        spacing: 10
-                    ) {
-                        shortcut("Refresh now", "⌘R")
-                        shortcut("Settings", "⌘,")
-                        shortcut("Quit", "⌘Q")
-                    }
+                AboutActionButton(
+                    title: "Quit Moni",
+                    systemImage: "power",
+                    isDestructive: true
+                ) {
+                    NSApp.terminate(nil)
                 }
             }
+
+            if let exportError {
+                Text(exportError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.red)
+            } else if let configurationError = updates.configurationError {
+                Text(configurationError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
         }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private var architecture: String {
@@ -1193,36 +1187,6 @@ private struct AboutSettings: View {
 #else
         "Intel"
 #endif
-    }
-
-    private func aboutButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(MoniLocalization.string(title))
-                .font(.system(size: 12.5))
-                .foregroundStyle(MoniPalette.foreground)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(MoniPalette.control)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-        .buttonStyle(MoniPressButtonStyle())
-    }
-
-    private func shortcut(_ title: String, _ keys: String) -> some View {
-        HStack {
-            Text(MoniLocalization.string(title))
-                .foregroundStyle(MoniPalette.foregroundSecondary)
-            Spacer()
-            Text(keys)
-                .fontWeight(.semibold)
-                .foregroundStyle(MoniPalette.foreground)
-        }
-        .font(.system(size: 12.5))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(MoniPalette.inset)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func exportDiagnostics() {
@@ -1246,5 +1210,40 @@ private struct AboutSettings: View {
         } catch {
             exportError = error.localizedDescription
         }
+    }
+}
+
+private struct AboutActionButton: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    let title: String
+    let systemImage: String
+    var isDestructive = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(MoniLocalization.string(title), systemImage: systemImage)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(isDestructive ? MoniPalette.red : MoniPalette.foreground)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(backgroundColor)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(MoniPressButtonStyle())
+        .opacity(isEnabled ? 1 : 0.45)
+        .onHover { isHovered = $0 }
+        .animation(reduceMotion ? nil : MoniMotion.press, value: isHovered)
+    }
+
+    private var backgroundColor: Color {
+        if isDestructive {
+            return MoniPalette.red.opacity(isHovered ? 0.22 : 0.14)
+        }
+        return isHovered ? MoniPalette.controlHover : MoniPalette.control
     }
 }

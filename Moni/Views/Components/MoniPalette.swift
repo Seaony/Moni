@@ -14,15 +14,15 @@ enum MoniPalette {
 
     static let foreground = adaptive(light: rgb(0x16161A), dark: rgb(0xFFFFFF))
     static let foregroundSecondary = adaptive(
-        light: rgb(0x000000, alpha: 0.62),
+        light: rgb(0x000000, alpha: 0.68),
         dark: rgb(0xFFFFFF, alpha: 0.60)
     )
     static let foregroundTertiary = adaptive(
-        light: rgb(0x000000, alpha: 0.45),
+        light: rgb(0x000000, alpha: 0.52),
         dark: rgb(0xFFFFFF, alpha: 0.45)
     )
     static let foregroundQuaternary = adaptive(
-        light: rgb(0x000000, alpha: 0.30),
+        light: rgb(0x000000, alpha: 0.38),
         dark: rgb(0xFFFFFF, alpha: 0.35)
     )
     static let track = adaptive(
