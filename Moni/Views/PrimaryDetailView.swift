@@ -400,15 +400,18 @@ private struct ProcessesDetailView: View {
     }
 
     var body: some View {
-        DetailPanel {
+        // `processes` filters and sorts the full table; evaluate it once per pass.
+        let matches = processes
+
+        return DetailPanel {
             HStack(spacing: 10) {
                 Text("Processes")
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(MoniPalette.purple)
-                Text("\(processes.count) matches")
+                Text("\(matches.count) matches")
                     .font(.system(size: 12.5))
                     .foregroundStyle(.tertiary)
-                    .moniNumericTransition(processes.count)
+                    .moniNumericTransition(matches.count)
                 Spacer()
                 TextField("Search processes", text: $query)
                     .textFieldStyle(.roundedBorder)
@@ -429,7 +432,7 @@ private struct ProcessesDetailView: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 2) {
-                    ForEach(processes) { process in
+                    ForEach(matches) { process in
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(process.name).fontWeight(.semibold).lineLimit(1)
@@ -473,15 +476,18 @@ private struct HistoryRangePicker: View {
     var body: some View {
         HStack(spacing: 4) {
             ForEach(["1m", "1h", "24h"], id: \.self) { range in
-                Button(range) {
+                Button {
                     selection = range
+                } label: {
+                    Text(range)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(selection == range ? .primary : .tertiary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(selection == range ? MoniPalette.controlSelected : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(selection == range ? .primary : .tertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(selection == range ? MoniPalette.controlSelected : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .buttonStyle(MoniPressButtonStyle(scale: 0.98))
             }
         }

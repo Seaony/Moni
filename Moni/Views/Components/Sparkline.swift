@@ -1,7 +1,6 @@
 import SwiftUI
 
 struct Sparkline: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let values: [Double]
     let color: Color
     var showsFill = true
@@ -36,9 +35,6 @@ struct Sparkline: View {
                     .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
                 }
             }
-            .id(values)
-            .transition(.opacity)
-            .animation(reduceMotion ? nil : MoniMotion.data, value: values)
         }
         .accessibilityHidden(true)
     }
@@ -114,9 +110,7 @@ struct InteractiveSparkline: View {
                     tooltip(index: hoveredIndex)
                         .fixedSize()
                         .position(
-                            x: tooltipX(
-                                hoveredX: x
-                            ),
+                            x: tooltipX(hoveredX: x, width: geometry.size.width),
                             y: tooltipHeight / 2
                         )
                         .allowsHitTesting(false)
@@ -141,8 +135,6 @@ struct InteractiveSparkline: View {
                     hoveredIndex = nil
                 }
             }
-            .id(series.map(\.values))
-            .animation(reduceMotion ? nil : MoniMotion.data, value: series.map(\.values))
         }
         .onDisappear {
             hoveredIndex = nil
@@ -224,9 +216,13 @@ struct InteractiveSparkline: View {
         series.count > 1 ? 54 : 42
     }
 
-    private func tooltipX(hoveredX: CGFloat) -> CGFloat {
+    private func tooltipX(hoveredX: CGFloat, width: CGFloat) -> CGFloat {
         let halfWidth: CGFloat = 66
-        return hoveredX - halfWidth - 12
+        // Sit left of the cursor, flipping to the right when that would run past
+        // the chart's leading edge, then clamp so the card never clips it.
+        let preferred = hoveredX - halfWidth - 12
+        let candidate = preferred - halfWidth < 0 ? hoveredX + halfWidth + 12 : preferred
+        return min(max(candidate, halfWidth), max(halfWidth, width - halfWidth))
     }
 
     private func xPosition(for index: Int, sampleCount: Int, width: CGFloat) -> CGFloat {

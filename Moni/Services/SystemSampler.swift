@@ -82,6 +82,20 @@ actor SystemSampler {
     private let peripheralInterval: TimeInterval = 5
     private let connectionInterval: TimeInterval = 5
     private let dockerInterval: TimeInterval = 15
+    private let idleProcessInterval: TimeInterval = 30
+    private let idlePeripheralInterval: TimeInterval = 60
+    private let idleDockerInterval: TimeInterval = 60
+
+    /// While the panel is hidden nothing on screen reads these at full rate — the
+    /// menu bar needs none of them and the desktop widgets refresh far slower — so
+    /// they run on stretched intervals instead. Per-connection traffic costs a
+    /// `nettop` subprocess and is only ever shown on the open Network page, so it
+    /// pauses outright.
+    private var isPanelVisible = false
+
+    func setPanelVisible(_ isVisible: Bool) {
+        isPanelVisible = isVisible
+    }
 
     func sample(forceSlowMetrics: Bool = false) -> SystemSnapshot {
         let now = Date()
@@ -92,11 +106,19 @@ actor SystemSampler {
             gpuDevices = Self.loadGPUDevices()
             didLoadGPUDevices = true
         }
-        if forceSlowMetrics || shouldRefresh(lastProcessSample, at: now, interval: processInterval) {
+        if forceSlowMetrics || shouldRefresh(
+            lastProcessSample,
+            at: now,
+            interval: isPanelVisible ? processInterval : idleProcessInterval
+        ) {
             cachedProcesses = sampleProcesses(at: now)
             lastProcessSample = now
         }
-        if forceSlowMetrics || shouldRefresh(lastPeripheralSample, at: now, interval: peripheralInterval) {
+        if forceSlowMetrics || shouldRefresh(
+            lastPeripheralSample,
+            at: now,
+            interval: isPanelVisible ? peripheralInterval : idlePeripheralInterval
+        ) {
             cachedVolumes = sampleVolumes()
             if cachedDriveHealth.smartStatus == nil {
                 cachedDriveHealth = sampleDriveHealth()
@@ -105,7 +127,11 @@ actor SystemSampler {
             cachedNetworkMetadata = Self.loadNetworkMetadata()
             lastPeripheralSample = now
         }
-        if forceSlowMetrics || shouldRefresh(lastDockerSample, at: now, interval: dockerInterval) {
+        if forceSlowMetrics || shouldRefresh(
+            lastDockerSample,
+            at: now,
+            interval: isPanelVisible ? dockerInterval : idleDockerInterval
+        ) {
             cachedDocker = sampleDockerStatus()
             lastDockerSample = now
         }
@@ -243,7 +269,7 @@ actor SystemSampler {
     }
 
     private func sampleNetwork(at date: Date) -> NetworkUsage {
-        if shouldRefresh(lastConnectionSample, at: date, interval: connectionInterval) {
+        if isPanelVisible, shouldRefresh(lastConnectionSample, at: date, interval: connectionInterval) {
             cachedNetworkConnections = sampleNetworkConnections()
             lastConnectionSample = date
         }

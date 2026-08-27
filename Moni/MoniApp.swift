@@ -24,7 +24,11 @@ struct MoniApp: App {
                 .environmentObject(monitor)
                 .environmentObject(aiUsage)
                 .environmentObject(updates)
-                .background(MenuBarWindowPositioner())
+                .background(
+                    MenuBarWindowPositioner { isVisible in
+                        monitor.setPanelVisible(isVisible)
+                    }
+                )
         } label: {
             HStack(spacing: 7) {
                 ForEach(Array(selectedMetrics.prefix(compactMenuBar ? 1 : 3))) { metric in
@@ -138,41 +142,75 @@ private struct MenuBarMiniGraph: View {
 }
 
 private struct MenuBarWindowPositioner: NSViewRepresentable {
+    let onVisibilityChange: (Bool) -> Void
+
     func makeNSView(context: Context) -> MenuBarWindowPositioningView {
-        MenuBarWindowPositioningView()
+        MenuBarWindowPositioningView(onVisibilityChange: onVisibilityChange)
     }
 
-    func updateNSView(_ nsView: MenuBarWindowPositioningView, context: Context) {}
+    func updateNSView(_ nsView: MenuBarWindowPositioningView, context: Context) {
+        nsView.onVisibilityChange = onVisibilityChange
+    }
 }
 
 private final class MenuBarWindowPositioningView: NSView {
-    private var keyWindowObserver: NSObjectProtocol?
+    var onVisibilityChange: (Bool) -> Void
+
+    private var observers: [NSObjectProtocol] = []
+
+    init(onVisibilityChange: @escaping (Bool) -> Void) {
+        self.onVisibilityChange = onVisibilityChange
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
 
-        if let keyWindowObserver {
-            NotificationCenter.default.removeObserver(keyWindowObserver)
-        }
-        guard let window else { return }
-
-        keyWindowObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            self?.centerWindowBelowMenuBarClick()
+        removeObservers()
+        guard let window else {
+            onVisibilityChange(false)
+            return
         }
 
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                onVisibilityChange(true)
+                centerWindowBelowMenuBarClick()
+            }
+        )
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.onVisibilityChange(false)
+            }
+        )
+
+        onVisibilityChange(true)
         DispatchQueue.main.async { [weak self] in
             self?.centerWindowBelowMenuBarClick()
         }
     }
 
     deinit {
-        if let keyWindowObserver {
-            NotificationCenter.default.removeObserver(keyWindowObserver)
-        }
+        removeObservers()
+    }
+
+    private func removeObservers() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
     }
 
     private func centerWindowBelowMenuBarClick() {

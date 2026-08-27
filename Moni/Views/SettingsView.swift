@@ -217,14 +217,6 @@ private struct AIUsageSettings: View {
                     }
 
                     HStack(spacing: 8) {
-                        Text("Add log path…")
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(MoniPalette.blue)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-
                         Button {
                             store.refresh(
                                 range: range,
@@ -271,20 +263,10 @@ private struct AIUsageSettings: View {
                         }
                     }
 
-                    Text("COST BASIS")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .tracking(0.7)
-                        .padding(.top, 8)
-
-                    HStack(spacing: 6) {
-                        settingsChoice("API list price", selected: true)
-                        settingsChoice("Subscription share", selected: false)
-                    }
-
-                    Text("Costs are estimated from local logs — they are not your subscription invoice.")
+                    Text("Costs are estimated from local logs at API list prices — they are not your subscription invoice.")
                         .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
+                        .padding(.top, 4)
                 }
             }
         }
@@ -354,16 +336,6 @@ private struct AIUsageSettings: View {
             disabled.remove(provider)
         }
         disabledProviderValue = disabled.sorted().joined(separator: ",")
-    }
-
-    private func settingsChoice(_ title: String, selected: Bool) -> some View {
-        Text(title)
-            .font(.system(size: 12.5, weight: .semibold))
-            .foregroundStyle(selected ? Color.white : MoniPalette.foregroundSecondary)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 7)
-            .background(selected ? MoniPalette.blue : MoniPalette.control)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func displayName(_ provider: String) -> String {
@@ -439,9 +411,9 @@ private struct AlertSettings: View {
             VStack(spacing: 12) {
                 DetailPanel("Thresholds") {
                     VStack(spacing: 18) {
-                        thresholdRow("CPU load", hint: "sustained over 30s", color: MoniPalette.pink, value: $cpuThreshold)
+                        thresholdRow("CPU load", hint: "current sample", color: MoniPalette.pink, value: $cpuThreshold)
                         thresholdRow("Memory used", hint: "physical memory", color: MoniPalette.blue, value: $memoryThreshold)
-                        thresholdRow("CPU temperature", hint: "die sensor", color: MoniPalette.orange, value: $temperatureThreshold)
+                        thresholdRow("CPU temperature", hint: "die sensor", unit: "°C", color: MoniPalette.orange, value: $temperatureThreshold)
                         thresholdRow("Disk space used", hint: "boot volume", color: MoniPalette.yellow, value: $diskThreshold)
                     }
                 }
@@ -466,7 +438,8 @@ private struct AlertSettings: View {
                         SettingsToggleRow(
                             title: "Repeat every 5 min",
                             hint: "Keep alerting while over the limit",
-                            isOn: repeatAlerts
+                            isOn: repeatAlerts,
+                            isEnabled: notificationAlerts
                         ) {
                             repeatAlerts.toggle()
                         }
@@ -487,6 +460,7 @@ private struct AlertSettings: View {
     private func thresholdRow(
         _ title: String,
         hint: String,
+        unit: String = "%",
         color: Color,
         value: Binding<Double>
     ) -> some View {
@@ -498,7 +472,7 @@ private struct AlertSettings: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
                 Spacer()
-                Text("\(Int(value.wrappedValue))%")
+                Text("\(Int(value.wrappedValue))\(unit)")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(color)
                     .monospacedDigit()
@@ -568,16 +542,23 @@ private struct GeneralSettings: View {
             VStack(spacing: 12) {
                 DetailPanel("Appearance") {
                     HStack(spacing: 6) {
-                        SettingsChoiceButton(title: "Dark", selected: resolvedAppearance == .dark, expand: true) {
+                        SettingsChoiceButton(title: "Dark", selected: storedAppearance == .dark, expand: true) {
                             appearance = AppAppearance.dark.rawValue
                         }
-                        SettingsChoiceButton(title: "Light", selected: resolvedAppearance == .light, expand: true) {
+                        SettingsChoiceButton(title: "Light", selected: storedAppearance == .light, expand: true) {
                             appearance = AppAppearance.light.rawValue
                         }
+                        SettingsChoiceButton(title: "Auto", selected: storedAppearance == .system, expand: true) {
+                            appearance = AppAppearance.system.rawValue
+                        }
                     }
-                    Text("Light mode follows the same palette with inverted surfaces.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
+                    Text(
+                        storedAppearance == .system
+                            ? "Auto follows the macOS appearance, currently \(colorScheme == .dark ? "dark" : "light")."
+                            : "Light mode follows the same palette with inverted surfaces."
+                    )
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
                 }
 
                 DetailPanel("Sampling interval") {
@@ -641,10 +622,8 @@ private struct GeneralSettings: View {
         .moniAnimation(value: notificationError)
     }
 
-    private var resolvedAppearance: AppAppearance {
-        let stored = AppAppearance(rawValue: appearance) ?? .system
-        guard stored == .system else { return stored }
-        return colorScheme == .dark ? .dark : .light
+    private var storedAppearance: AppAppearance {
+        AppAppearance(rawValue: appearance) ?? .system
     }
 
     private func settingsError(_ message: String) -> some View {
@@ -1013,15 +992,18 @@ private struct AboutSettings: View {
                             exportDiagnostics()
                         }
 
-                        Button("Quit Moni") {
+                        Button {
                             NSApp.terminate(nil)
+                        } label: {
+                            Text("Quit Moni")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(MoniPalette.red)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(MoniPalette.red.opacity(0.14))
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(MoniPalette.red)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(MoniPalette.red.opacity(0.14))
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .buttonStyle(MoniPressButtonStyle())
                     }
 
@@ -1041,11 +1023,9 @@ private struct AboutSettings: View {
                         columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())],
                         spacing: 10
                     ) {
-                        shortcut("Open panel", "⌃⌘V")
                         shortcut("Refresh now", "⌘R")
                         shortcut("Settings", "⌘,")
-                        shortcut("Next module", "⌘→")
-                        shortcut("Search processes", "⌘F")
+                        shortcut("Check for updates", "—")
                         shortcut("Quit", "⌘Q")
                     }
                 }
@@ -1062,14 +1042,17 @@ private struct AboutSettings: View {
     }
 
     private func aboutButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .font(.system(size: 12.5))
-            .foregroundStyle(MoniPalette.foreground)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(MoniPalette.control)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .buttonStyle(MoniPressButtonStyle())
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12.5))
+                .foregroundStyle(MoniPalette.foreground)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(MoniPalette.control)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(MoniPressButtonStyle())
     }
 
     private func shortcut(_ title: String, _ keys: String) -> some View {

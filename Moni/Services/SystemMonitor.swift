@@ -31,6 +31,7 @@ final class SystemMonitor: ObservableObject {
     private var recentHistory: [HistorySample] = []
     private var minuteHistory: [HistorySample] = []
     private var lastWidgetPersistence = Date.distantPast
+    private var isPanelVisible = false
 
     private struct HistorySample {
         let date: Date
@@ -55,9 +56,25 @@ final class SystemMonitor: ObservableObject {
 
     func start() {
         timer?.cancel()
-        timer = Timer.publish(every: samplingInterval, on: .main, in: .common)
+        timer = Timer.publish(every: activeInterval, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in self?.refresh() }
+    }
+
+    /// The menu bar label only needs a coarse tick; the fast interval is for the
+    /// open panel's charts.
+    private var activeInterval: TimeInterval {
+        isPanelVisible ? samplingInterval : max(samplingInterval, 2)
+    }
+
+    func setPanelVisible(_ isVisible: Bool) {
+        guard isPanelVisible != isVisible else { return }
+        isPanelVisible = isVisible
+        Task { [sampler] in await sampler.setPanelVisible(isVisible) }
+        start()
+        if isVisible {
+            refresh(forceSlowMetrics: true)
+        }
     }
 
     func stop() {

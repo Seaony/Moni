@@ -163,7 +163,9 @@ final class AIUsageStore: ObservableObject {
                 in: scanned,
                 from: cachedSummaries[query.cacheKey]?.summary
             )
-            let localSummaryWithWeeklyCosts = await scanner.refreshWeeklyWindowCosts(in: localSummary)
+            let localSummaryWithWeeklyCosts = includeQuotas
+                ? localSummary
+                : await scanner.refreshWeeklyWindowCosts(in: localSummary)
             publish(localSummaryWithWeeklyCosts, for: query)
 
             if includeQuotas {

@@ -825,14 +825,19 @@ private struct SecondaryRangePicker: View {
     var body: some View {
         HStack(spacing: 4) {
             ForEach(["1m", "1h", "24h"], id: \.self) { range in
-                Button(range) { selection = range }
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(selection == range ? .primary : .tertiary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(selection == range ? MoniPalette.controlSelected : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .buttonStyle(MoniPressButtonStyle(scale: 0.98))
+                Button {
+                    selection = range
+                } label: {
+                    Text(range)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(selection == range ? .primary : .tertiary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(selection == range ? MoniPalette.controlSelected : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(MoniPressButtonStyle(scale: 0.98))
             }
         }
     }

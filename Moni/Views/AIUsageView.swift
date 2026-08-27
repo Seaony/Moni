@@ -4,7 +4,7 @@ struct AIUsageView: View {
     @EnvironmentObject private var store: AIUsageStore
     @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.month.rawValue
     @AppStorage(PreferenceKey.disabledAIProviders) private var disabledProviderValue = ""
-    let onAddSource: () -> Void
+    let onManageProviders: () -> Void
 
     private var range: AIUsageRange {
         AIUsageRange(rawValue: rangeValue) ?? .month
@@ -43,7 +43,7 @@ struct AIUsageView: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
                             Spacer(minLength: 8)
-                            Button("Add source…", action: onAddSource)
+                            Button("Manage providers…", action: onManageProviders)
                                 .font(.system(size: 12))
                                 .foregroundStyle(MoniPalette.blue)
                                 .buttonStyle(.plain)
@@ -370,7 +370,7 @@ struct DailyUsageChart: View {
                     ForEach(Array(recent.enumerated()), id: \.element.id) { index, day in
                         usageBar(
                             day,
-                            isEmphasized: index == max(0, recent.count - 3),
+                            isEmphasized: index == recent.count - 1,
                             maximum: maximum,
                             chartHeight: geometry.size.height,
                             width: barWidth
@@ -501,7 +501,8 @@ struct DailyUsageChart: View {
             4,
             chartHeight * CGFloat(Double(day.tokens) / Double(maximum))
         )
-        return chartHeight - barHeight - 34
+        // Keep the callout inside the chart when the bar nearly fills it.
+        return max(20, chartHeight - barHeight - 34)
     }
 
     private func currency(_ value: Double) -> String {

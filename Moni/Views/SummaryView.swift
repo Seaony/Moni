@@ -254,7 +254,7 @@ struct SummaryView: View {
                         ],
                         dates: monitor.gpuHistoryDates
                     )
-                        .frame(maxWidth: isWide ? .infinity : 104)
+                        .frame(maxWidth: .infinity)
                         .frame(height: chartHeight(for: size, compact: 66))
                 }
                 LazyVGrid(
@@ -273,7 +273,6 @@ struct SummaryView: View {
 
     private var networkCard: some View {
         let size = cardSize(.network)
-        let isWide = size.columns >= 2
 
         return cardButton(.network) {
             MetricCard(title: "Network", symbol: MonitorSection.network.symbol, color: MoniPalette.cyan, trailing: "Live") {
@@ -310,7 +309,7 @@ struct SummaryView: View {
                         ],
                         dates: monitor.recentHistoryDates
                     )
-                    .frame(maxWidth: isWide ? .infinity : 112)
+                    .frame(maxWidth: .infinity)
                     .frame(height: chartHeight(for: size, compact: 72))
                 }
                 HStack(spacing: 16) {
@@ -489,7 +488,7 @@ struct SummaryView: View {
                         ],
                         dates: monitor.cpuTemperatureHistoryDates
                     )
-                        .frame(maxWidth: isWide ? .infinity : 96)
+                        .frame(maxWidth: .infinity)
                         .frame(height: chartHeight(for: size, compact: 54))
                 }
                 LazyVGrid(
@@ -981,7 +980,10 @@ struct SummaryView: View {
     }
 
     private func chartHeight(for size: DashboardCardSize, compact: CGFloat) -> CGFloat {
-        compact + CGFloat(size.rows - 1) * 179
+        let compactCardRemainder: CGFloat = 172
+        let compactFill = max(0, gridDensity.rowHeight - compactCardRemainder)
+        let additionalRows = CGFloat(size.rows - 1) * (gridDensity.rowHeight + gridDensity.spacing)
+        return compact + compactFill + additionalRows
     }
 
     private func percent(_ value: Double) -> String {

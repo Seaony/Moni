@@ -29,7 +29,8 @@ final class AlertMonitor {
                 title: "CPU temperature is high",
                 value: temperature,
                 enabled: alertsEnabled,
-                threshold: threshold(PreferenceKey.temperatureAlertThreshold, fallback: 80)
+                threshold: threshold(PreferenceKey.temperatureAlertThreshold, fallback: 80),
+                unit: "°C"
             )
         }
         evaluate(
@@ -41,12 +42,27 @@ final class AlertMonitor {
         )
     }
 
+    /// `bool(forKey:)` reads an unset key as `false`, which would silence the
+    /// sound the settings screen shows as enabled by default.
+    private func flag(_ key: String, fallback: Bool) -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: key) != nil else { return fallback }
+        return defaults.bool(forKey: key)
+    }
+
     private func threshold(_ key: String, fallback: Double) -> Double {
         let value = UserDefaults.standard.double(forKey: key)
         return value == 0 ? fallback : value
     }
 
-    private func evaluate(id: String, title: String, value: Double, enabled: Bool, threshold: Double) {
+    private func evaluate(
+        id: String,
+        title: String,
+        value: Double,
+        enabled: Bool,
+        threshold: Double,
+        unit: String = "%"
+    ) {
         guard enabled else {
             activeAlerts.remove(id)
             lastNotification.removeValue(forKey: id)
@@ -74,8 +90,8 @@ final class AlertMonitor {
 
         let content = UNMutableNotificationContent()
         content.title = title
-        content.body = "Current usage is \(Int(value.rounded()))%; the configured threshold is \(Int(threshold.rounded()))%."
-        if defaults.bool(forKey: PreferenceKey.alertSounds) {
+        content.body = "Now at \(Int(value.rounded()))\(unit); the configured threshold is \(Int(threshold.rounded()))\(unit)."
+        if flag(PreferenceKey.alertSounds, fallback: true) {
             content.sound = .default
         }
         let request = UNNotificationRequest(identifier: "moni.\(id).\(Date().timeIntervalSince1970)", content: content, trigger: nil)
