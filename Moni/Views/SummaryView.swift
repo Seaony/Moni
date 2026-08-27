@@ -1216,8 +1216,12 @@ struct SummaryView: View {
     }
 
     private func formatUptime(_ interval: TimeInterval) -> String {
-        let days = Int(interval) / 86_400
-        let hours = (Int(interval) % 86_400) / 3_600
-        return MoniLocalization.format("%@d %@h", String(days), String(hours))
+        let days = max(0, interval) / 86_400
+        let value = days.formatted(
+            .number
+                .locale(MoniLocalization.currentLanguage.locale)
+                .precision(.fractionLength(1))
+        )
+        return MoniLocalization.format("%@d", value)
     }
 }
