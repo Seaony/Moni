@@ -92,6 +92,7 @@ fi
 
 echo "Building $app_name $version ($build_number)..."
 xcodebuild \
+    -quiet \
     -project "$project" \
     -scheme "$scheme" \
     -configuration Release \
