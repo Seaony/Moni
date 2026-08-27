@@ -251,7 +251,7 @@ private struct NetworkDetailView: View {
                                 "Link speed",
                                 activeInterface.flatMap { $0.linkSpeedBitsPerSecond > 0 ? bitRate($0.linkSpeedBitsPerSecond) : nil } ?? "Unknown"
                             )
-                            secondaryStat("Latency", latency)
+                            secondaryStat("IP lookup", ipLookupDuration)
                             secondaryStat("Received total", bytes(activeInterface?.receivedBytes ?? network.totalReceivedBytes))
                             secondaryStat("Sent total", bytes(activeInterface?.sentBytes ?? network.totalSentBytes))
                         }
@@ -372,9 +372,9 @@ private struct NetworkDetailView: View {
         monitor.publicIPAddress ?? (monitor.isLoadingNetworkExternalDetails ? "Querying…" : "Unavailable")
     }
 
-    private var latency: String {
+    private var ipLookupDuration: String {
         monitor.networkLatencyMilliseconds.map { "\(Int($0.rounded())) ms" }
-            ?? (monitor.isLoadingNetworkExternalDetails ? "Measuring…" : "Unavailable")
+            ?? (monitor.isLoadingNetworkExternalDetails ? "Looking up…" : "Unavailable")
     }
 }
 
@@ -435,6 +435,12 @@ private struct StorageDetailView: View {
                                 color: MoniPalette.cyan,
                                 showsFill: true,
                                 formatValue: rate
+                            ),
+                            InteractiveSparklineSeries(
+                                name: "Write",
+                                values: monitor.diskWriteHistory,
+                                color: MoniPalette.orange,
+                                formatValue: rate
                             )
                         ],
                         dates: monitor.recentHistoryDates
@@ -452,6 +458,11 @@ private struct StorageDetailView: View {
                             }
                             .font(.system(size: 12.5))
                             .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
+                        } else if monitor.largestFolders.isEmpty {
+                            Text("Folder sizes unavailable")
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
                         } else {
                             VStack(spacing: 0) {
                                 HStack(spacing: 12) {

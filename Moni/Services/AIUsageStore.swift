@@ -39,7 +39,6 @@ final class AIUsageStore: ObservableObject {
         let query: Query
         let includeQuotas: Bool
         let allowKeychainPrompt: Bool
-        let allowBrowserKeychainPrompt: Bool
 
         /// Whether `self` asks for something `other` does not already cover.
         func exceeds(_ other: Request?) -> Bool {
@@ -47,7 +46,6 @@ final class AIUsageStore: ObservableObject {
             return query != other.query
                 || (includeQuotas && !other.includeQuotas)
                 || (allowKeychainPrompt && !other.allowKeychainPrompt)
-                || (allowBrowserKeychainPrompt && !other.allowBrowserKeychainPrompt)
         }
     }
 
@@ -72,6 +70,13 @@ final class AIUsageStore: ObservableObject {
     static let dashboardWindowDays = 30
 
     private static var dashboardQuery: Query { .days(dashboardWindowDays) }
+
+    var dashboardSummary: AIUsageSummary {
+        if let cached = cachedSummaries[Self.dashboardQuery.cacheKey]?.summary {
+            return cached
+        }
+        return displayedQuery == Self.dashboardQuery ? summary : AIUsageSummary()
+    }
 
     static func storedRange() -> AIUsageRange {
         AIUsageRange(rawValue: UserDefaults.standard.string(forKey: PreferenceKey.aiUsageRange) ?? "")
@@ -110,8 +115,7 @@ final class AIUsageStore: ObservableObject {
         refresh(
             query: displayedQuery ?? Self.dashboardQuery,
             includeQuotas: includeQuotas,
-            allowKeychainPrompt: allowKeychainPrompt,
-            allowBrowserKeychainPrompt: allowKeychainPrompt
+            allowKeychainPrompt: allowKeychainPrompt
         )
     }
 
@@ -123,8 +127,7 @@ final class AIUsageStore: ObservableObject {
         refresh(
             query: .range(range),
             includeQuotas: includeQuotas,
-            allowKeychainPrompt: allowKeychainPrompt,
-            allowBrowserKeychainPrompt: allowKeychainPrompt
+            allowKeychainPrompt: allowKeychainPrompt
         )
     }
 
@@ -140,33 +143,29 @@ final class AIUsageStore: ObservableObject {
         // A Set, not a single value: the dashboard and the AI screen alternate, and
         // a scalar made every switch look like a new window and rescan.
         guard !completedQueries.contains(query) || refreshQuotas else { return }
-        // Browser cookie stores can each raise a Keychain dialog; an automatic
-        // refresh on panel open is not the moment for that, so only explicit
-        // refreshes (⌘R, Rescan now) may prompt for them.
         refresh(
             query: query,
             includeQuotas: refreshQuotas,
-            allowKeychainPrompt: shouldPrompt,
-            allowBrowserKeychainPrompt: false
+            allowKeychainPrompt: shouldPrompt
         )
     }
 
     private func refresh(
         query: Query,
         includeQuotas: Bool,
-        allowKeychainPrompt: Bool,
-        allowBrowserKeychainPrompt: Bool
+        allowKeychainPrompt: Bool
     ) {
         presentCachedSummary(for: query)
         let request = Request(
             query: query,
             includeQuotas: includeQuotas,
-            allowKeychainPrompt: allowKeychainPrompt,
-            allowBrowserKeychainPrompt: allowBrowserKeychainPrompt
+            allowKeychainPrompt: allowKeychainPrompt
         )
         guard !isLoading else {
             if request.exceeds(activeRequest) {
                 pendingRequest = request
+            } else {
+                pendingRequest = nil
             }
             return
         }
@@ -192,7 +191,6 @@ final class AIUsageStore: ObservableObject {
                 let refreshed = await scanner.refreshQuotas(
                     in: localSummaryWithWeeklyCosts,
                     allowKeychainPrompt: allowKeychainPrompt,
-                    allowBrowserKeychainPrompt: allowBrowserKeychainPrompt,
                     disabledProviders: Self.disabledProviders()
                 )
                 publish(preservingValidQuotaData(in: refreshed, from: localSummaryWithWeeklyCosts), for: query)
@@ -205,8 +203,7 @@ final class AIUsageStore: ObservableObject {
                 refresh(
                     query: pendingRequest.query,
                     includeQuotas: pendingRequest.includeQuotas,
-                    allowKeychainPrompt: pendingRequest.allowKeychainPrompt,
-                    allowBrowserKeychainPrompt: pendingRequest.allowBrowserKeychainPrompt
+                    allowKeychainPrompt: pendingRequest.allowKeychainPrompt
                 )
             }
         }
@@ -243,7 +240,8 @@ final class AIUsageStore: ObservableObject {
             return true
         }
         if cached.providers.flatMap(\.quotaWindows).contains(where: {
-            $0.resetsAt.map { $0 <= now } ?? false
+            !$0.label.localizedCaseInsensitiveContains("code review")
+                && ($0.resetsAt.map { $0 <= now } ?? false)
         }) {
             return true
         }
@@ -266,7 +264,8 @@ final class AIUsageStore: ObservableObject {
                 let oldProvider = previous.providers.first(where: { $0.provider == provider.provider })
             else { return provider }
             let windows = oldProvider.quotaWindows.filter {
-                $0.resetsAt.map { $0 > now } ?? recentUntimedQuota
+                !$0.label.localizedCaseInsensitiveContains("code review")
+                    && ($0.resetsAt.map { $0 > now } ?? recentUntimedQuota)
             }
             guard !windows.isEmpty else { return provider }
             return AIProviderUsage(

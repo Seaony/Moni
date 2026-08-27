@@ -523,7 +523,7 @@ actor SystemSampler {
             .volumeLocalizedNameKey,
             .volumeLocalizedFormatDescriptionKey,
             .volumeTotalCapacityKey,
-            .volumeAvailableCapacityForImportantUsageKey
+            .volumeAvailableCapacityKey
         ]
         let urls = FileManager.default.mountedVolumeURLs(
             includingResourceValuesForKeys: Array(keys),
@@ -533,7 +533,7 @@ actor SystemSampler {
         return urls.compactMap { url in
             guard let values = try? url.resourceValues(forKeys: keys),
                   let total = values.volumeTotalCapacity,
-                  let available = values.volumeAvailableCapacityForImportantUsage else {
+                  let available = values.volumeAvailableCapacity else {
                 return nil
             }
             return VolumeUsage(
@@ -541,7 +541,7 @@ actor SystemSampler {
                 mountPath: url.path,
                 format: values.volumeLocalizedFormatDescription,
                 totalBytes: Int64(total),
-                availableBytes: available
+                availableBytes: Int64(available)
             )
         }
         .sorted { lhs, rhs in

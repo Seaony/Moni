@@ -310,7 +310,7 @@ struct NetworkDetailLargeWidgetView: View {
             .padding(.top, 10)
             Spacer(minLength: 8)
             HStack(spacing: 8) {
-                detailTile("Latency", snapshot.network.latencyMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "—")
+                detailTile("IP lookup", snapshot.network.latencyMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "—")
                 detailTile("Wi-Fi", snapshot.network.signalStrengthDBm.map { "\($0) dBm" } ?? "—")
                 detailTile("Link", snapshot.network.transmitRateBitsPerSecond.map { "\($0 / 1_000_000)M" } ?? "—")
             }

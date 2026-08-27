@@ -3,11 +3,9 @@ import SwiftUI
 private enum DashboardSizing {
     static let designWidth: CGFloat = 900
     static let designHeight: CGFloat = 850
-    static let interfaceScale: CGFloat = 1.0
     static let toolbarContentSpacing: CGFloat = 10
     static let contentTopPadding: CGFloat = 14
     static let contentBottomPadding: CGFloat = 18
-    static let renderedWidth = designWidth * interfaceScale
 }
 
 enum MonitorSection: String, CaseIterable, Identifiable {
@@ -79,6 +77,7 @@ struct ContentView: View {
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
     @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
+    @AppStorage(PreferenceKey.windowZoom) private var windowZoom = 1.0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -153,13 +152,17 @@ struct ContentView: View {
         .onChange(of: showDockIcon) { _, value in
             NSApp.setActivationPolicy(value ? .regular : .accessory)
         }
-        .scaleEffect(DashboardSizing.interfaceScale, anchor: .topLeading)
+        .scaleEffect(renderedScale, anchor: .topLeading)
         .frame(
-            width: DashboardSizing.renderedWidth,
-            height: windowHeight * DashboardSizing.interfaceScale,
+            width: DashboardSizing.designWidth * renderedScale,
+            height: windowHeight * renderedScale,
             alignment: .topLeading
         )
         .clipped()
+    }
+
+    private var renderedScale: CGFloat {
+        CGFloat(windowZoom)
     }
 
     private var windowHeight: CGFloat {

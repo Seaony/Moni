@@ -554,6 +554,7 @@ private struct GeneralSettings: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(PreferenceKey.appearance) private var appearance = AppAppearance.system.rawValue
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
+    @AppStorage(PreferenceKey.windowZoom) private var windowZoom = 1.0
     @AppStorage(PreferenceKey.notificationAlerts) private var notificationAlerts = false
     @AppStorage(PreferenceKey.showDockIcon) private var showDockIcon = false
     @AppStorage(PreferenceKey.compactMenuBar) private var compactMenuBar = false
@@ -601,6 +602,32 @@ private struct GeneralSettings: View {
                         .foregroundStyle(.tertiary)
                 }
 
+                DetailPanel("Zoom") {
+                    HStack(spacing: 12) {
+                        Text("0.5×")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.tertiary)
+
+                        Slider(value: $windowZoom, in: 0.5...1.5, step: 0.1)
+
+                        Text(String(format: "%.1f×", windowZoom))
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .frame(width: 38, alignment: .trailing)
+
+                        Button("Reset") {
+                            windowZoom = 1.0
+                        }
+                        .buttonStyle(MoniPressButtonStyle())
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(windowZoom == 1.0 ? MoniPalette.foregroundTertiary : MoniPalette.blue)
+                        .disabled(windowZoom == 1.0)
+                    }
+                    Text("Scales the entire pop-up window. The default size is 1.0×.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                }
+
                 DetailPanel("Behavior") {
                     VStack(spacing: 2) {
                         SettingsToggleRow(
@@ -627,7 +654,7 @@ private struct GeneralSettings: View {
                         }
                         SettingsToggleRow(
                             title: "Compact menu bar",
-                            hint: "Percentage only, no mini graph",
+                            hint: "Show only the first selected item",
                             isOn: compactMenuBar
                         ) {
                             compactMenuBar.toggle()
@@ -691,6 +718,8 @@ private struct GeneralSettings: View {
 
 private struct MenuBarSettings: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @EnvironmentObject private var aiUsage: AIUsageStore
+    @AppStorage(PreferenceKey.compactMenuBar) private var compactMenuBar = false
     @AppStorage(PreferenceKey.menuBarMetric) private var metric = MenuBarMetric.cpu.rawValue
     @AppStorage(PreferenceKey.menuBarItems) private var itemValue = "cpu,memory"
     @AppStorage(PreferenceKey.menuBarDisplayStyle) private var styleValue = MenuBarDisplayStyle.valueOnly.rawValue
@@ -701,14 +730,22 @@ private struct MenuBarSettings: View {
                 DetailPanel("Preview") {
                     HStack(spacing: 14) {
                         Spacer()
-                        ForEach(Array(selectedMetrics.prefix(3))) { item in
+                        ForEach(previewMetrics) { item in
                             HStack(spacing: 5) {
-                                Text(previewTag(item))
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(metricColor(item))
-                                Text(previewValue(item))
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .monospacedDigit()
+                                if displayStyle != .valueOnly {
+                                    MenuBarMiniGraph(
+                                        values: previewHistory(item),
+                                        color: metricColor(item)
+                                    )
+                                }
+                                if displayStyle != .graphOnly {
+                                    Text(previewTag(item))
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(metricColor(item))
+                                    Text(previewValue(item))
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .monospacedDigit()
+                                }
                             }
                         }
                         Text(Date.now.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
@@ -784,6 +821,10 @@ private struct MenuBarSettings: View {
         MenuBarDisplayStyle(rawValue: styleValue) ?? .valueOnly
     }
 
+    private var previewMetrics: [MenuBarMetric] {
+        compactMenuBar ? Array(selectedMetrics.prefix(1)) : selectedMetrics
+    }
+
     private func toggle(_ item: MenuBarMetric) {
         var values = selectedMetrics
         if let index = values.firstIndex(of: item) {
@@ -800,7 +841,11 @@ private struct MenuBarSettings: View {
     }
 
     private func previewTag(_ item: MenuBarMetric) -> String {
-        item == .temperature ? "TMP" : String(item.title.prefix(3)).uppercased()
+        switch item {
+        case .temperature: "TMP"
+        case .aiUsage: "AI"
+        default: String(item.title.prefix(3)).uppercased()
+        }
     }
 
     private func previewValue(_ item: MenuBarMetric) -> String {
@@ -816,7 +861,25 @@ private struct MenuBarSettings: View {
         case .battery: monitor.snapshot.power.batteryPercent.map { "\(Int($0.rounded()))%" } ?? "—"
         case .temperature:
             monitor.snapshot.power.cpuTemperatureCelsius.map { "\(Int($0.rounded()))°" } ?? "—"
+        case .aiUsage:
+            todayAITokens.formatted(.number.notation(.compactName))
         }
+    }
+
+    private func previewHistory(_ item: MenuBarMetric) -> [Double] {
+        switch item {
+        case .cpu: monitor.cpuHistory
+        case .memory: monitor.memoryHistory
+        case .network: monitor.downloadHistory
+        case .disk: monitor.diskReadHistory
+        case .battery: monitor.batteryHistory
+        case .temperature: monitor.cpuTemperatureHistory
+        case .aiUsage: aiUsage.dashboardSummary.daily.map { Double($0.tokens) }
+        }
+    }
+
+    private var todayAITokens: UInt64 {
+        aiUsage.dashboardSummary.daily.first { Calendar.current.isDateInToday($0.date) }?.tokens ?? 0
     }
 
     private func metricColor(_ item: MenuBarMetric) -> Color {
@@ -826,6 +889,7 @@ private struct MenuBarSettings: View {
         case .network: MoniPalette.cyan
         case .disk, .temperature: MoniPalette.orange
         case .battery: MoniPalette.green
+        case .aiUsage: MoniPalette.indigo
         }
     }
 }

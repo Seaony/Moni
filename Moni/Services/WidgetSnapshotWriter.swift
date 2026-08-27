@@ -154,9 +154,11 @@ extension WidgetAISnapshot {
                     totalTokens: provider.totalTokens,
                     estimatedCostUSD: provider.estimatedCostUSD,
                     cacheHitPercent: provider.cacheHitPercent,
-                    quotas: provider.quotaWindows.map { quota in
-                        .init(label: quota.label, remainingPercent: quota.remainingPercent, resetsAt: quota.resetsAt)
-                    }
+                    quotas: provider.quotaWindows
+                        .filter { !$0.label.localizedCaseInsensitiveContains("code review") }
+                        .map { quota in
+                            .init(label: quota.label, remainingPercent: quota.remainingPercent, resetsAt: quota.resetsAt)
+                        }
                 )
             },
             daily: summary.daily.map { .init(date: $0.date, tokens: $0.tokens, costUSD: $0.costUSD) }

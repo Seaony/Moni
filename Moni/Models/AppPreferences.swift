@@ -9,6 +9,7 @@ enum PreferenceKey {
     static let launchAtLogin = "launchAtLogin"
     static let menuBarMetric = "menuBarMetric"
     static let samplingInterval = "samplingInterval"
+    static let windowZoom = "windowZoom"
     static let cpuAlertThreshold = "cpuAlertThreshold"
     static let memoryAlertThreshold = "memoryAlertThreshold"
     static let diskAlertThreshold = "diskAlertThreshold"
@@ -66,7 +67,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 }
 
 enum MenuBarMetric: String, CaseIterable, Identifiable {
-    case cpu, memory, network, disk, battery, temperature
+    case cpu, memory, network, disk, battery, temperature, aiUsage
 
     var id: String { rawValue }
 
@@ -78,6 +79,7 @@ enum MenuBarMetric: String, CaseIterable, Identifiable {
         case .disk: "Disk"
         case .battery: "Battery"
         case .temperature: "Temp"
+        case .aiUsage: "AI Usage"
         }
     }
 
@@ -89,6 +91,7 @@ enum MenuBarMetric: String, CaseIterable, Identifiable {
         case .disk: "internaldrive"
         case .battery: "battery.75percent"
         case .temperature: "thermometer.medium"
+        case .aiUsage: "sparkles"
         }
     }
 }

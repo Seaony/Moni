@@ -304,7 +304,7 @@ private struct MemoryDetailView: View {
                 }
 
                 HStack(alignment: .top, spacing: 12) {
-                    DetailPanel("Memory pressure") {
+                    DetailPanel("Memory usage") {
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text(percent(snapshot.memory.usedPercent))
                                 .font(.system(size: 30, weight: .bold, design: .rounded))

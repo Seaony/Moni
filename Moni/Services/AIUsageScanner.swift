@@ -345,13 +345,11 @@ actor AIUsageScanner {
         in summary: AIUsageSummary,
         now: Date = Date(),
         allowKeychainPrompt: Bool = false,
-        allowBrowserKeychainPrompt: Bool = false,
         disabledProviders: Set<String> = []
     ) async -> AIUsageSummary {
         let fetched = await AIQuotaFetcher.fetchAll(
             homeDirectory: homeDirectory,
             allowKeychainPrompt: allowKeychainPrompt,
-            allowBrowserKeychainPrompt: allowBrowserKeychainPrompt,
             disabledProviders: disabledProviders
         )
         var refreshed = summary
@@ -381,7 +379,8 @@ actor AIUsageScanner {
 
         for provider in summary.providers {
             guard let quota = provider.quotaWindows.first(where: {
-                $0.windowMinutes == 10_080 || $0.label.localizedCaseInsensitiveContains("week")
+                !$0.label.localizedCaseInsensitiveContains("code review")
+                    && ($0.windowMinutes == 10_080 || $0.label.localizedCaseInsensitiveContains("week"))
             }),
                 let resetsAt = quota.resetsAt,
                 let windowMinutes = quota.windowMinutes,
@@ -447,7 +446,9 @@ actor AIUsageScanner {
             models: provider.models,
             lastUpdated: provider.lastUpdated,
             planName: quota.planName ?? provider.planName,
-            quotaWindows: quota.windows,
+            quotaWindows: quota.windows.filter {
+                !$0.label.localizedCaseInsensitiveContains("code review")
+            },
             quotaMessage: quota.message
         )
     }

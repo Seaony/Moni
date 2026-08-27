@@ -31,15 +31,11 @@ nonisolated enum AIQuotaFetcher {
     static func fetchAll(
         homeDirectory: URL,
         allowKeychainPrompt: Bool = false,
-        allowBrowserKeychainPrompt: Bool = false,
         disabledProviders: Set<String> = []
     ) async -> [String: AIQuotaFetchResult] {
         async let codex = disabledProviders.contains("Codex")
             ? nil
-            : fetchCodex(
-                homeDirectory: homeDirectory,
-                allowBrowserKeychainPrompt: allowBrowserKeychainPrompt
-            )
+            : fetchCodex(homeDirectory: homeDirectory)
         async let claude = disabledProviders.contains("Claude")
             ? nil
             : fetchClaude(
@@ -52,27 +48,17 @@ nonisolated enum AIQuotaFetcher {
         return results
     }
 
-    private static func fetchCodex(
-        homeDirectory: URL,
-        allowBrowserKeychainPrompt: Bool
-    ) async -> AIQuotaFetchResult {
-        async let webQuotaTask = OpenAIWebQuotaFetcher.shared.fetch(
-            allowKeychainPrompt: allowBrowserKeychainPrompt
-        )
+    private static func fetchCodex(homeDirectory: URL) async -> AIQuotaFetchResult {
         let authURL = homeDirectory.appending(path: ".codex/auth.json")
         guard let authData = try? Data(contentsOf: authURL),
             let root = try? JSONSerialization.jsonObject(with: authData) as? [String: Any],
             let tokens = root["tokens"] as? [String: Any],
             let accessToken = nonEmptyString(tokens["access_token"])
         else {
-            let webQuota = await webQuotaTask
             return AIQuotaFetchResult(
                 planName: nil,
-                windows: webQuota.window.map { [$0] } ?? [],
-                message: joinedMessage(
-                    "Codex API quota unavailable: sign in to Codex first.",
-                    webQuota.message
-                )
+                windows: [],
+                message: "Codex API quota unavailable: sign in to Codex first."
             )
         }
 
@@ -90,7 +76,6 @@ nonisolated enum AIQuotaFetcher {
 
         do {
             let json = try await responseJSON(for: request)
-            let webQuota = await webQuotaTask
             var windows: [AIQuotaWindow] = []
             if let rateLimit = json["rate_limit"] as? [String: Any] {
                 appendCodexWindows(
@@ -106,6 +91,7 @@ nonisolated enum AIQuotaFetcher {
                     let title = nonEmptyString(limit["limit_name"])
                         ?? nonEmptyString(limit["metered_feature"])
                         ?? "Additional limit"
+                    guard !title.localizedCaseInsensitiveContains("code review") else { continue }
                     appendCodexWindows(
                         from: rateLimit,
                         title: title,
@@ -114,39 +100,29 @@ nonisolated enum AIQuotaFetcher {
                     )
                 }
             }
-            if let window = webQuota.window,
-               !windows.contains(where: { $0.id == window.id })
-            {
-                windows.append(window)
-            }
             guard !windows.isEmpty else {
                 return AIQuotaFetchResult(
                     planName: codexPlan(nonEmptyString(json["plan_type"])),
                     windows: [],
-                    message: joinedMessage(
-                        "Codex did not return any quota windows.",
-                        webQuota.message
-                    )
+                    message: "Codex did not return any quota windows."
                 )
             }
             return AIQuotaFetchResult(
                 planName: codexPlan(nonEmptyString(json["plan_type"])),
                 windows: windows,
-                message: webQuota.message
+                message: nil
             )
         } catch let error as QuotaFetchError {
-            let webQuota = await webQuotaTask
             return AIQuotaFetchResult(
                 planName: nil,
-                windows: webQuota.window.map { [$0] } ?? [],
-                message: joinedMessage(error.codexMessage, webQuota.message)
+                windows: [],
+                message: error.codexMessage
             )
         } catch {
-            let webQuota = await webQuotaTask
             return AIQuotaFetchResult(
                 planName: nil,
-                windows: webQuota.window.map { [$0] } ?? [],
-                message: joinedMessage("Codex quota request failed.", webQuota.message)
+                windows: [],
+                message: "Codex quota request failed."
             )
         }
     }
@@ -459,16 +435,6 @@ nonisolated enum AIQuotaFetcher {
     private static func formattedPlan(_ value: String?) -> String? {
         guard let value else { return nil }
         return value.replacingOccurrences(of: "_", with: " ").capitalized
-    }
-
-    private static func joinedMessage(_ first: String?, _ second: String?) -> String? {
-        let messages: [String] = [first, second]
-            .compactMap { value in
-                guard let value else { return nil }
-                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? nil : trimmed
-            }
-        return messages.isEmpty ? nil : messages.joined(separator: " ")
     }
 
     private static func responseJSON(for request: URLRequest) async throws -> [String: Any] {

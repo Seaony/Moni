@@ -31,12 +31,12 @@ struct MoniApp: App {
                 )
         } label: {
             HStack(spacing: 7) {
-                ForEach(Array(selectedMetrics.prefix(compactMenuBar ? 1 : 3))) { metric in
+                ForEach(compactMenuBar ? Array(selectedMetrics.prefix(1)) : selectedMetrics) { metric in
                     HStack(spacing: 3) {
-                        if !compactMenuBar && displayStyle != .valueOnly {
+                        if displayStyle != .valueOnly {
                             MenuBarMiniGraph(values: history(metric))
                         }
-                        if compactMenuBar || displayStyle != .graphOnly {
+                        if displayStyle != .graphOnly {
                             Text(menuBarValue(metric))
                                 .monospacedDigit()
                                 .moniNumericTransition(menuBarValue(metric))
@@ -46,6 +46,12 @@ struct MoniApp: App {
             }
             .moniAnimation(value: menuBarItems)
             .moniAnimation(value: menuBarDisplayStyle)
+            .onAppear {
+                loadMenuBarAIIfNeeded()
+            }
+            .onChange(of: menuBarItems) {
+                loadMenuBarAIIfNeeded()
+            }
         }
         .menuBarExtraStyle(.window)
         .commands {
@@ -94,6 +100,8 @@ struct MoniApp: App {
             return monitor.snapshot.power.batteryPercent.map { "\(Int($0.rounded()))%" } ?? "—"
         case .temperature:
             return monitor.snapshot.power.cpuTemperatureCelsius.map { "\(Int($0.rounded()))°" } ?? "—"
+        case .aiUsage:
+            return todayAITokens.formatted(.number.notation(.compactName))
         }
     }
 
@@ -105,7 +113,17 @@ struct MoniApp: App {
         case .disk: monitor.diskReadHistory
         case .battery: monitor.batteryHistory
         case .temperature: monitor.cpuTemperatureHistory
+        case .aiUsage: aiUsage.dashboardSummary.daily.map { Double($0.tokens) }
         }
+    }
+
+    private var todayAITokens: UInt64 {
+        aiUsage.dashboardSummary.daily.first { Calendar.current.isDateInToday($0.date) }?.tokens ?? 0
+    }
+
+    private func loadMenuBarAIIfNeeded() {
+        guard selectedMetrics.contains(.aiUsage) else { return }
+        aiUsage.loadDashboardIfNeeded()
     }
 
     private func rate(_ value: Double) -> String {
@@ -113,8 +131,9 @@ struct MoniApp: App {
     }
 }
 
-private struct MenuBarMiniGraph: View {
+struct MenuBarMiniGraph: View {
     let values: [Double]
+    var color: Color = .primary
 
     var body: some View {
         GeometryReader { proxy in
@@ -135,7 +154,7 @@ private struct MenuBarMiniGraph: View {
                     }
                 }
             }
-            .stroke(.primary, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+            .stroke(color, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
         }
         .frame(width: 22, height: 12)
     }

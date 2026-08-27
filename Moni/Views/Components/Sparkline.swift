@@ -19,10 +19,16 @@ struct InteractiveSparkline: View {
     var body: some View {
         GeometryReader { geometry in
             let sampleCount = series.map(\.values.count).max() ?? 0
+            let bounds = sharedBounds
 
             ZStack(alignment: .topLeading) {
                 ForEach(Array(series.enumerated()), id: \.offset) { _, item in
-                    seriesPath(item, in: geometry.size)
+                    seriesPath(
+                        item,
+                        in: geometry.size,
+                        minimum: bounds.minimum,
+                        maximum: bounds.maximum
+                    )
                 }
 
                 if let hoveredIndex, sampleCount > 1 {
@@ -42,7 +48,9 @@ struct InteractiveSparkline: View {
                         if let point = point(
                             for: hoveredIndex,
                             values: item.values,
-                            in: geometry.size
+                            in: geometry.size,
+                            minimum: bounds.minimum,
+                            maximum: bounds.maximum
                         ) {
                             Circle()
                                 .fill(item.color)
@@ -89,8 +97,18 @@ struct InteractiveSparkline: View {
     }
 
     @ViewBuilder
-    private func seriesPath(_ item: InteractiveSparklineSeries, in size: CGSize) -> some View {
-        let points = normalizedPoints(values: item.values, in: size)
+    private func seriesPath(
+        _ item: InteractiveSparklineSeries,
+        in size: CGSize,
+        minimum: Double,
+        maximum: Double
+    ) -> some View {
+        let points = normalizedPoints(
+            values: item.values,
+            in: size,
+            minimum: minimum,
+            maximum: maximum
+        )
         if points.count > 1 {
             if item.showsFill {
                 Path { path in
@@ -175,10 +193,26 @@ struct InteractiveSparkline: View {
         CGFloat(index) / CGFloat(max(1, sampleCount - 1)) * width
     }
 
-    private func point(for index: Int, values: [Double], in size: CGSize) -> CGPoint? {
+    private var sharedBounds: (minimum: Double, maximum: Double) {
+        var minimum: Double?
+        var maximum: Double?
+        for item in series {
+            for value in item.values {
+                minimum = min(minimum ?? value, value)
+                maximum = max(maximum ?? value, value)
+            }
+        }
+        return (minimum ?? 0, maximum ?? 1)
+    }
+
+    private func point(
+        for index: Int,
+        values: [Double],
+        in size: CGSize,
+        minimum: Double,
+        maximum: Double
+    ) -> CGPoint? {
         guard values.indices.contains(index), values.count > 1 else { return nil }
-        let minimum = values.min() ?? 0
-        let maximum = values.max() ?? 1
         let range = max(1, maximum - minimum)
         return CGPoint(
             x: xPosition(for: index, sampleCount: values.count, width: size.width),
@@ -186,10 +220,13 @@ struct InteractiveSparkline: View {
         )
     }
 
-    private func normalizedPoints(values: [Double], in size: CGSize) -> [CGPoint] {
+    private func normalizedPoints(
+        values: [Double],
+        in size: CGSize,
+        minimum: Double,
+        maximum: Double
+    ) -> [CGPoint] {
         guard values.count > 1 else { return [] }
-        let minimum = values.min() ?? 0
-        let maximum = values.max() ?? 1
         let range = max(1, maximum - minimum)
 
         return values.enumerated().map { index, value in

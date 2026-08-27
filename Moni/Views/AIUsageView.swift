@@ -140,7 +140,8 @@ struct AIUsageView: View {
 
             DailyUsageChart(
                 values: store.summary.daily,
-                maximumDayCount: chartDayLimit
+                maximumDayCount: chartDayLimit,
+                tooltipAvoidsPointer: true
             )
                 .frame(height: 92)
 
@@ -679,7 +680,19 @@ struct DailyUsageChart: View {
         let barCenter = CGFloat(index) * (barWidth + spacing) + barWidth / 2
         if tooltipAvoidsPointer {
             let pointerClearance: CGFloat = 14
-            return barCenter + pointerClearance + tooltipHalfWidth
+            let right = barCenter + barWidth / 2 + pointerClearance + tooltipHalfWidth
+            if right + tooltipHalfWidth <= chartWidth {
+                return right
+            }
+            let left = barCenter - barWidth / 2 - pointerClearance - tooltipHalfWidth
+            if left - tooltipHalfWidth >= 0 {
+                return left
+            }
+            let preferred = chartWidth - barCenter >= barCenter ? right : left
+            return min(
+                max(preferred, tooltipHalfWidth),
+                max(tooltipHalfWidth, chartWidth - tooltipHalfWidth)
+            )
         }
         return min(
             max(barCenter, tooltipHalfWidth),
