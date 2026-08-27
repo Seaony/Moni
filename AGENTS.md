@@ -3,9 +3,9 @@
 ## 项目概览
 
 - Moni 是使用 SwiftUI 与 AppKit 开发的 macOS 菜单栏应用，入口位于 `Moni/MoniApp.swift`。
-- 工程文件为 `Moni.xcodeproj`，当前只有 `Moni` 一个 Target 和 Scheme。
+- 工程文件为 `Moni.xcodeproj`，包含 `Moni` 应用 Target 与 `MoniWidgets` 小组件 Target，主 Scheme 为 `Moni`。
 - 当前 Swift 版本为 5.0，最低系统版本由工程中的 `MACOSX_DEPLOYMENT_TARGET` 定义。
-- Swift Package 依赖包括 Sparkle 和 SweetCookieKit。
+- Swift Package 依赖包括 Sparkle。
 - `Moni/Models` 存放数据模型与偏好键，`Moni/Services` 存放采样和系统服务，`Moni/Views` 存放页面，`Moni/Views/Components` 存放共用组件。
 - 发布流程以 `docs/RELEASING.md` 为准，不得手工修改生成的 appcast。
 
@@ -37,3 +37,12 @@ xcodebuild -project Moni.xcodeproj -scheme Moni -configuration Debug -derivedDat
 - 终止进程前必须先通过完整可执行文件路径确认 PID，只关闭 Moni 实例，不得使用会误伤其他应用的宽泛进程匹配。
 - 启动后再次检查进程列表，确保只运行一个来自项目内 Debug 构建目录的 Moni 实例，便于用户直接验收最新效果。
 - 仅文档变更不要求重新构建或重启应用。
+
+## 发布版本
+
+- 完整发布说明以 `docs/RELEASING.md` 为准；任何发布方式都不得手工修改生成的 `appcast.xml`，不得移动已经发布的版本标签。
+- 没有 Developer ID 与 Apple 公证凭据时，必须使用 `scripts/publish-unsigned-release.sh <MAJOR.MINOR.PATCH>` 发布未签名版本，不得手工重复脚本中的构建、打包、签名 appcast、打标签和创建 GitHub Release 步骤。
+- 运行未签名发布脚本前，必须确认当前位于 `master`、工作区干净、`HEAD` 已推送并与 `origin/master` 完全一致，`gh auth status` 有效，并且登录钥匙串内存在账户名为 `com.seaony.Moni` 的 Sparkle 私钥。
+- 发布脚本会从最新 appcast 推导递增的 bundle build number，构建 `arm64` 与 `x86_64` 通用应用，执行 ad hoc 签名，生成 ZIP、DMG 和带 EdDSA 签名的 appcast，完成验证后推送注释标签并创建 GitHub Release；产物保存在 `build/releases/vMAJOR.MINOR.PATCH/`。
+- 发布脚本不会替代源码的 commit 与 `master` push。用户要求“发版本”时，应先完成并推送当前源码提交，再运行发布脚本；若脚本在创建标签前失败，只修复已确认的失败原因，然后以同一版本号重试。
+- 只有 Developer ID、Apple 公证和 Sparkle 所需凭据均已配置时，才使用 `vMAJOR.MINOR.PATCH` 标签触发 `.github/workflows/release.yml` 的签名发布流程。
