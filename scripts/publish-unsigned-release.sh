@@ -64,7 +64,6 @@ if [[ -e "$output_dir" ]]; then
     echo "Release output already exists: $output_dir" >&2
     exit 1
 fi
-mkdir -p "$output_dir"
 
 build_number=1
 latest_tag="$(gh release list \
@@ -106,6 +105,7 @@ xcodebuild \
     build
 
 app_path="$derived_data/Build/Products/Release/$app_name.app"
+codesign --force --deep --sign - "$app_path"
 scripts/validate-release.sh "$app_path"
 if [[ "$(lipo -archs "$app_path/Contents/MacOS/$app_name")" != *arm64* ]] || \
    [[ "$(lipo -archs "$app_path/Contents/MacOS/$app_name")" != *x86_64* ]]; then
@@ -122,6 +122,7 @@ fi
 
 zip_name="$app_name-$version-unsigned.zip"
 dmg_name="$app_name-$version-unsigned.dmg"
+mkdir -p "$output_dir"
 ditto -c -k --sequesterRsrc --keepParent "$app_path" "$output_dir/$zip_name"
 ditto "$app_path" "$dmg_root/$app_name.app"
 ln -s /Applications "$dmg_root/Applications"
