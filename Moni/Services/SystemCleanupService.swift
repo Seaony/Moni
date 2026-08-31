@@ -15,6 +15,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case crashReports
     case systemLogs
     case thirdPartyLogs
+    case staleWallpaperDownloads
 
     var titleKey: String {
         switch self {
@@ -22,6 +23,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .crashReports: "System crash reports"
         case .systemLogs: "System logs"
         case .thirdPartyLogs: "Third-party system logs"
+        case .staleWallpaperDownloads: "Stale wallpaper downloads"
         }
     }
 }
@@ -425,6 +427,20 @@ nonisolated enum SystemCleanupService {
                     && canonicalPathIsInside(url, root: root)
                     && pathDepth(url.path, root: root) <= 5
             }
+        case .staleWallpaperDownloads:
+            let root = "/private/var/folders"
+            let components = url.pathComponents
+            guard let temporaryIndex = components.firstIndex(of: "T"),
+                  temporaryIndex == 6,
+                  components.indices.contains(temporaryIndex + 1),
+                  components[temporaryIndex + 1] == "com.apple.idleassetsd" else {
+                return false
+            }
+            return pathIsInside(url.path, root: root)
+                && canonicalPathIsInside(url, root: root)
+                && pathDepth(url.path, root: root) <= 10
+                && url.lastPathComponent.hasPrefix("CFNetworkDownload_")
+                && url.pathExtension.lowercased() == "tmp"
         }
     }
 
@@ -571,6 +587,10 @@ nonisolated enum SystemCleanupService {
                     *) return 1 ;;
                 esac
                 ;;
+            staleWallpaperDownloads)
+                printf '%s\n' "$candidate_path" | /usr/bin/awk -F/ 'NF >= 9 && NF <= 13 && $2 == "private" && $3 == "var" && $4 == "folders" && $7 == "T" && $8 == "com.apple.idleassetsd" { valid=1 } END { exit valid ? 0 : 1 }' || return 1
+                case "$candidate_name" in CFNetworkDownload_*.tmp) return 0 ;; *) return 1 ;; esac
+                ;;
             *)
                 return 1
                 ;;
@@ -639,6 +659,9 @@ nonisolated enum SystemCleanupService {
             adobeGCLog)
                 /usr/bin/find "$scan_root" -maxdepth 1 -type f -name 'adobegc.log' -mtime +7 -print0 > "$scan_file"
                 ;;
+            staleWallpaperDownloads)
+                /usr/bin/find "$scan_root" -maxdepth 10 -type f -name 'CFNetworkDownload_*.tmp' -mtime +7 -path '*/T/com.apple.idleassetsd/*' -print0 > "$scan_file"
+                ;;
             *)
                 return 1
                 ;;
@@ -678,5 +701,6 @@ nonisolated enum SystemCleanupService {
     scan_family thirdPartyLogs /Library/Logs/Adobe
     scan_family thirdPartyLogs /Library/Logs/CreativeCloud
     scan_family adobeGCLog /Library/Logs
+    scan_family staleWallpaperDownloads /private/var/folders
     """#
 }
