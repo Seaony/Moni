@@ -33,7 +33,13 @@ struct MaintenanceView: View {
         brokenLaunchAgentPaths: [],
         unreadableItemCount: 0
     )
+    @State private var settingsSnapshot = MaintenanceSettingsSnapshot(
+        dsStoreKeysToEnable: [],
+        legacyOverrides: [],
+        launchServicesAvailable: false
+    )
     @State private var pendingAction: PendingMaintenanceAction?
+    @State private var confirmsLaunchServicesRepair = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -106,6 +112,17 @@ struct MaintenanceView: View {
                         }
                     }
 
+                    commandCard(
+                        title: "LaunchServices Repair",
+                        description: "Rebuild file associations and the Open With menu.",
+                        symbol: "doc.badge.gearshape",
+                        status: settingsSnapshot.launchServicesAvailable ? "Available" : "Unavailable",
+                        buttonTitle: "Review Repair",
+                        isAvailable: settingsSnapshot.launchServicesAvailable
+                    ) {
+                        confirmsLaunchServicesRepair = true
+                    }
+
                     catalogSummary
                 }
             }
@@ -125,6 +142,18 @@ struct MaintenanceView: View {
             Button("OK") { resultMessage = nil }
         } message: {
             Text(resultMessage ?? "")
+        }
+        .confirmationDialog(
+            "Rebuild LaunchServices?",
+            isPresented: $confirmsLaunchServicesRepair,
+            titleVisibility: .visible
+        ) {
+            Button("Run Maintenance") {
+                Task { await rebuildLaunchServices() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("macOS will rebuild file associations and the Open With menu. No documents or applications will be removed.")
         }
     }
 
@@ -216,6 +245,56 @@ struct MaintenanceView: View {
         }
     }
 
+    private func commandCard(
+        title: String,
+        description: String,
+        symbol: String,
+        status: String,
+        buttonTitle: String,
+        isAvailable: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(MoniPalette.purple)
+                    .frame(width: 36, height: 36)
+                    .background(MoniPalette.selection)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(MoniLocalization.string(title))
+                        .font(.system(size: 14.5, weight: .bold))
+                    Text(MoniLocalization.string(description))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 10) {
+                Text(MoniLocalization.string(status))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(isAvailable ? MoniPalette.green : MoniPalette.foregroundTertiary)
+                Spacer(minLength: 8)
+                Button(MoniLocalization.string(buttonTitle), action: action)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!isAvailable || isScanning || isRunning)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .background(MoniPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+        }
+    }
+
     private var catalogSummary: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -235,7 +314,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "5", MoniPalette.green)
+                catalogMetric("Available now", "6", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -292,12 +371,16 @@ struct MaintenanceView: View {
         async let finderResult = MaintenanceService.scanFinderMaintenance()
         async let preferenceResult = MaintenanceService.scanBrokenPreferences()
         async let repairResult = MaintenanceService.scanFileRepairs()
-        let (finder, preferences, repairs) = await (finderResult, preferenceResult, repairResult)
+        async let settingsResult = MaintenanceSettingsService.scan()
+        let (finder, preferences, repairs, settings) = await (
+            finderResult, preferenceResult, repairResult, settingsResult
+        )
         guard !Task.isCancelled else { return }
         snapshot = finder
         brokenPreferencePaths = preferences.paths
         preferenceUnreadableItemCount = preferences.unreadableItemCount
         fileRepairSnapshot = repairs
+        settingsSnapshot = settings
         isScanning = false
     }
 
@@ -359,6 +442,19 @@ struct MaintenanceView: View {
         case .brokenPreferences: "No damaged preference files needed repair."
         case .sharedFileLists: "Shared file lists are healthy."
         case .launchAgents: "Launch Agents are healthy."
+        }
+    }
+
+    private func rebuildLaunchServices() async {
+        isRunning = true
+        let result = await MaintenanceSettingsService.rebuildLaunchServices()
+        isRunning = false
+        if result.unavailable {
+            resultMessage = MoniLocalization.string("LaunchServices repair is unavailable.")
+        } else if result.failedCount > 0 {
+            resultMessage = MoniLocalization.string("LaunchServices could not be rebuilt.")
+        } else {
+            resultMessage = MoniLocalization.string("LaunchServices and file associations were rebuilt.")
         }
     }
 }

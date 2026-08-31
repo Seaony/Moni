@@ -562,3 +562,12 @@
 "Clean broken LaunchAgents?" = "清理失效启动代理？";
 "No damaged shared file lists were found." = "未找到损坏的共享文件列表。";
 "No LaunchAgents with missing executables were found." = "未找到可执行文件缺失的启动代理。";
+"LaunchServices Repair" = "LaunchServices 修复";
+"Rebuild file associations and the Open With menu." = "重建文件关联与“打开方式”菜单。";
+"Available" = "可用";
+"Unavailable" = "不可用";
+"Rebuild LaunchServices?" = "重建 LaunchServices？";
+"macOS will rebuild file associations and the Open With menu. No documents or applications will be removed." = "macOS 将重建文件关联与“打开方式”菜单，不会移除文稿或应用。";
+"LaunchServices repair is unavailable." = "LaunchServices 修复不可用。";
+"LaunchServices could not be rebuilt." = "未能重建 LaunchServices。";
+"LaunchServices and file associations were rebuilt." = "LaunchServices 与文件关联已重建。";
