@@ -1257,7 +1257,12 @@ nonisolated enum CacheCleanupService {
             home + "/.oh-my-zsh/cache",
             home + "/.cache/pre-commit",
             home + "/.cache/curl",
-            home + "/.cache/wget"
+            home + "/.cache/wget",
+            home + "/.hex/cache",
+            home + "/.opam/download-cache",
+            home + "/.composer/cache",
+            home + "/.cache/bazel",
+            home + "/.cache/zig"
         ]
         if let githubRoot = githubCLICacheRoot() {
             roots.append(githubRoot)
