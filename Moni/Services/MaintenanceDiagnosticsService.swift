@@ -39,6 +39,10 @@ nonisolated enum MaintenanceDiagnosticsService {
     private static let sqliteExecutable = "/usr/bin/sqlite3"
     private static let diskutilExecutable = "/usr/sbin/diskutil"
 
+    static var diskVerificationIsAvailable: Bool {
+        FileManager.default.isExecutableFile(atPath: diskutilExecutable)
+    }
+
     static func scanQuarantineHistory() async -> QuarantineMaintenanceSnapshot {
         await Task.detached(priority: .utility) {
             quarantineSnapshot()

@@ -22,6 +22,11 @@ private struct LegacyOverrideReview: Identifiable {
     let overrides: [LegacySystemOverride]
 }
 
+private struct DiskVerificationReport: Identifiable {
+    let id = UUID()
+    let result: DiskVerificationResult
+}
+
 struct MaintenanceView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var snapshot = FinderMaintenanceSnapshot(
@@ -53,6 +58,8 @@ struct MaintenanceView: View {
     @State private var confirmsDSStorePrevention = false
     @State private var confirmsQuarantineCleanup = false
     @State private var legacyOverrideReview: LegacyOverrideReview?
+    @State private var confirmsDiskVerification = false
+    @State private var diskVerificationReport: DiskVerificationReport?
     @State private var resultMessage: String?
 
     var body: some View {
@@ -174,6 +181,17 @@ struct MaintenanceView: View {
                         confirmsQuarantineCleanup = true
                     }
 
+                    commandCard(
+                        title: "Disk Health",
+                        description: "Verify the startup filesystem without modifying or repairing it.",
+                        symbol: "internaldrive",
+                        status: diskVerificationStatus,
+                        buttonTitle: "Review Verify",
+                        isAvailable: MaintenanceDiagnosticsService.diskVerificationIsAvailable
+                    ) {
+                        confirmsDiskVerification = true
+                    }
+
                     catalogSummary
                 }
             }
@@ -197,6 +215,12 @@ struct MaintenanceView: View {
                     legacyOverrideReview = nil
                     Task { await removeLegacyOverrides(review.overrides) }
                 }
+            )
+        }
+        .sheet(item: $diskVerificationReport) { report in
+            DiskVerificationReportView(
+                report: report,
+                onClose: { diskVerificationReport = nil }
             )
         }
         .alert("Maintenance result", isPresented: resultMessageBinding) {
@@ -243,6 +267,18 @@ struct MaintenanceView: View {
                 quarantineSnapshot.entryCount.formatted(),
                 quarantineSnapshot.databasePath
             ))
+        }
+        .confirmationDialog(
+            "Verify the startup volume?",
+            isPresented: $confirmsDiskVerification,
+            titleVisibility: .visible
+        ) {
+            Button("Start Verification") {
+                Task { await verifyStartupVolume() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This read-only APFS check can create sustained disk activity and may take several minutes. It will not repair the volume.")
         }
     }
 
@@ -404,7 +440,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "9", MoniPalette.green)
+                catalogMetric("Available now", "10", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -488,6 +524,18 @@ struct MaintenanceView: View {
             MoniLocalization.string("Protected by whitelist")
         case .failed:
             MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var diskVerificationStatus: String {
+        guard let outcome = diskVerificationReport?.result.outcome else {
+            return MoniLocalization.string("Not verified")
+        }
+        return switch outcome {
+        case .healthy: MoniLocalization.string("Verified healthy")
+        case .attention: MoniLocalization.string("Needs attention")
+        case .failed: MoniLocalization.string("Verification failed")
+        case .unavailable: MoniLocalization.string("Unavailable")
         }
     }
 
@@ -643,6 +691,13 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("Gatekeeper download history could not be cleared.")
         }
     }
+
+    private func verifyStartupVolume() async {
+        isRunning = true
+        let result = await MaintenanceDiagnosticsService.verifyStartupVolume()
+        isRunning = false
+        diskVerificationReport = DiskVerificationReport(result: result)
+    }
 }
 
 private struct MaintenanceConfirmationView: View {
@@ -795,5 +850,82 @@ private struct LegacyOverrideConfirmationView: View {
         }
         .padding(20)
         .frame(width: 580)
+    }
+}
+
+private struct DiskVerificationReportView: View {
+    let report: DiskVerificationReport
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: reportSymbol)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(reportColor)
+                    .frame(width: 42, height: 42)
+                    .background(MoniPalette.insetSecondary)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Startup Volume Verification")
+                        .font(.system(size: 18, weight: .bold))
+                    Text(MoniLocalization.string(reportTitle))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(reportColor)
+                }
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(report.result.detail.isEmpty
+                    ? MoniLocalization.string("No diagnostic output was returned.")
+                    : report.result.detail)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+            }
+            .frame(height: 280)
+            .background(MoniPalette.insetSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            if report.result.outcome == .attention {
+                Label("Open Disk Utility and run First Aid before making further disk changes.", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(MoniPalette.orange)
+            }
+
+            HStack {
+                Spacer()
+                Button("Close", action: onClose)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 620)
+    }
+
+    private var reportTitle: String {
+        switch report.result.outcome {
+        case .healthy: "Filesystem appears healthy"
+        case .attention: "Filesystem needs attention"
+        case .failed: "Verification did not complete successfully"
+        case .unavailable: "Disk verification is unavailable"
+        }
+    }
+
+    private var reportSymbol: String {
+        switch report.result.outcome {
+        case .healthy: "checkmark.circle.fill"
+        case .attention: "exclamationmark.triangle.fill"
+        case .failed, .unavailable: "xmark.circle.fill"
+        }
+    }
+
+    private var reportColor: Color {
+        switch report.result.outcome {
+        case .healthy: MoniPalette.green
+        case .attention: MoniPalette.orange
+        case .failed, .unavailable: MoniPalette.red
+        }
     }
 }
