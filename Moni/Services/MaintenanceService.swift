@@ -53,6 +53,12 @@ nonisolated struct BrokenPreferenceSnapshot: Sendable {
     let unreadableItemCount: Int
 }
 
+nonisolated struct MaintenanceFileRepairSnapshot: Sendable {
+    let brokenSharedFileListPaths: [String]
+    let brokenLaunchAgentPaths: [String]
+    let unreadableItemCount: Int
+}
+
 nonisolated enum MaintenanceService {
     private struct FinderMaintenanceScan: Sendable {
         let cachePaths: [String]
@@ -266,6 +272,23 @@ nonisolated enum MaintenanceService {
         )
     }
 
+    static func scanFileRepairs() async -> MaintenanceFileRepairSnapshot {
+        let scan = await Task.detached(priority: .utility) {
+            scanFileRepairPaths()
+        }.value
+        let paths = scan.brokenSharedFileListPaths + scan.brokenLaunchAgentPaths
+        let eligiblePaths = await CleanupService.shared.eligiblePaths(paths)
+        return MaintenanceFileRepairSnapshot(
+            brokenSharedFileListPaths: scan.brokenSharedFileListPaths
+                .filter(eligiblePaths.contains)
+                .sorted(by: localizedPathOrder),
+            brokenLaunchAgentPaths: scan.brokenLaunchAgentPaths
+                .filter(eligiblePaths.contains)
+                .sorted(by: localizedPathOrder),
+            unreadableItemCount: scan.unreadableItemCount
+        )
+    }
+
     private static func task(
         _ id: String,
         _ titleKey: String,
@@ -377,5 +400,103 @@ nonisolated enum MaintenanceService {
             return false
         }
         return values.isRegularFile == true && values.isSymbolicLink != true
+    }
+
+    private static func scanFileRepairPaths() -> MaintenanceFileRepairSnapshot {
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser
+        let sharedFileListRoot = home.appendingPathComponent(
+            "Library/Application Support/com.apple.sharedfilelist",
+            isDirectory: true
+        )
+        var sharedFileLists: [String] = []
+        var launchAgents: [String] = []
+        var unreadableItemCount = 0
+
+        if let enumerator = fileManager.enumerator(
+            at: sharedFileListRoot,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in
+                unreadableItemCount += 1
+                return true
+            }
+        ) {
+            for case let url as URL in enumerator {
+                guard !Task.isCancelled else { break }
+                guard !url.path.contains("ApplicationRecentDocuments"),
+                      ["sfl2", "sfl3"].contains(url.pathExtension.lowercased()),
+                      isRegularNonSymlink(url) else { continue }
+                guard fileManager.isReadableFile(atPath: url.path) else {
+                    unreadableItemCount += 1
+                    continue
+                }
+                if !run("/usr/bin/plutil", arguments: ["-lint", url.path]) {
+                    sharedFileLists.append(url.standardizedFileURL.path)
+                }
+            }
+        } else if fileManager.fileExists(atPath: sharedFileListRoot.path) {
+            unreadableItemCount += 1
+        }
+
+        let launchAgentRoot = home.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+        do {
+            let items = try fileManager.contentsOfDirectory(
+                at: launchAgentRoot,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            )
+            for url in items where url.pathExtension.lowercased() == "plist" && isRegularNonSymlink(url) {
+                guard !Task.isCancelled else { break }
+                guard fileManager.isReadableFile(atPath: url.path) else {
+                    unreadableItemCount += 1
+                    continue
+                }
+                guard let executablePath = launchAgentExecutablePath(in: url) else { continue }
+                guard executablePath.hasPrefix("/"),
+                      !fileManager.fileExists(atPath: executablePath),
+                      launchAgentVolumeIsMounted(executablePath) else { continue }
+                launchAgents.append(url.standardizedFileURL.path)
+            }
+        } catch {
+            if fileManager.fileExists(atPath: launchAgentRoot.path) {
+                unreadableItemCount += 1
+            }
+        }
+
+        return MaintenanceFileRepairSnapshot(
+            brokenSharedFileListPaths: sharedFileLists,
+            brokenLaunchAgentPaths: launchAgents,
+            unreadableItemCount: unreadableItemCount
+        )
+    }
+
+    private static func isRegularNonSymlink(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
+            return false
+        }
+        return values.isRegularFile == true && values.isSymbolicLink != true
+    }
+
+    private static func launchAgentExecutablePath(in url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let values = plist as? [String: Any] else { return nil }
+        if let arguments = values["ProgramArguments"] as? [String],
+           let executable = arguments.first,
+           !executable.isEmpty {
+            return executable
+        }
+        if let executable = values["Program"] as? String, !executable.isEmpty {
+            return executable
+        }
+        return nil
+    }
+
+    private static func launchAgentVolumeIsMounted(_ executablePath: String) -> Bool {
+        guard executablePath.hasPrefix("/Volumes/") else { return true }
+        let components = executablePath.split(separator: "/", omittingEmptySubsequences: true)
+        guard components.count >= 2 else { return false }
+        return FileManager.default.fileExists(atPath: "/Volumes/" + components[1])
     }
 }
