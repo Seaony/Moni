@@ -16,7 +16,7 @@ private enum StatusBarAction {
 }
 
 enum MonitorSection: String, CaseIterable, Identifiable {
-    case summary, host, cpu, memory, gpu, network, storage, processes, sensors, docker, applications, cleaner, disks, settings
+    case summary, host, cpu, memory, gpu, network, storage, processes, sensors, docker, applications, cleaner, maintenance, disks, settings
 
     var id: String { rawValue }
 
@@ -34,6 +34,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .docker: "Docker"
         case .applications: "Applications"
         case .cleaner: "Cleaner"
+        case .maintenance: "Maintenance"
         case .disks: "Disk Browser"
         case .settings: "Settings"
         }
@@ -54,6 +55,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .docker: "cube"
         case .applications: "app.badge"
         case .cleaner: "sparkles"
+        case .maintenance: "stethoscope"
         case .disks: "folder"
         case .settings: "gearshape"
         }
@@ -70,6 +72,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .processes, .applications: MoniPalette.purple
         case .sensors: MoniPalette.yellow
         case .cleaner: MoniPalette.green
+        case .maintenance: MoniPalette.yellow
         case .disks, .settings: MoniPalette.foregroundTertiary
         }
     }
@@ -119,6 +122,8 @@ struct ContentView: View {
                             ApplicationManagerView()
                         } else if selection == .cleaner {
                             CleanerView()
+                        } else if selection == .maintenance {
+                            MaintenanceView()
                         } else if selection == .settings {
                             SettingsView(section: $settingsSection)
                         } else {
