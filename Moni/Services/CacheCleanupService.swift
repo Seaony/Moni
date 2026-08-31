@@ -1337,7 +1337,12 @@ nonisolated enum CacheCleanupService {
             home + "/.cache/ruff",
             home + "/.cache/mypy",
             home + "/.pytest_cache",
-            home + "/.jupyter/runtime"
+            home + "/.jupyter/runtime",
+            home + "/.rustup/downloads",
+            home + "/.rbenv/cache",
+            home + "/.gem/specs",
+            home + "/.bundle/cache",
+            home + "/.cpan/build"
         ]
         if let githubRoot = githubCLICacheRoot() {
             roots.append(githubRoot)
