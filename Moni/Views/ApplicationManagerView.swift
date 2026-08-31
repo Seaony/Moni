@@ -431,6 +431,7 @@ struct ApplicationManagerView: View {
         }
         if let cask = removalPreview?.homebrewCask {
             let useZap = removalPreview?.warnings.contains(.sharedBundleIdentifier) != true
+                && removalPreview?.warnings.contains(.incompleteApplicationInventory) != true
             pendingCaskRemoval = HomebrewCaskRemovalRequest(
                 application: application,
                 token: cask,
@@ -557,6 +558,7 @@ struct ApplicationManagerView: View {
             inventory: currentInventory
         )
         let currentUseZap = !currentPreview.warnings.contains(.sharedBundleIdentifier)
+            && !currentPreview.warnings.contains(.incompleteApplicationInventory)
         guard currentPreview.homebrewCask == request.token,
               !currentPreview.homebrewProbeUnavailable,
               currentUseZap == request.useZap else {
@@ -703,7 +705,7 @@ private struct HomebrewCaskRemovalConfirmationView: View {
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(MoniPalette.orange)
             } else {
-                Label("Zap is disabled because another installed application shares this Bundle ID.", systemImage: "shield.fill")
+                Label("Zap is disabled because shared application data could not be ruled out.", systemImage: "shield.fill")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(MoniPalette.orange)
             }
