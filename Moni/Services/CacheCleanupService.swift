@@ -44,6 +44,8 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case miseCache
     case rustCargoCache
     case rustupDownloadsCache
+    case goBuildCache
+    case goModuleCache
     case clangModuleCache
 
     var titleKey: String {
@@ -90,6 +92,8 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .miseCache: "mise cache"
         case .rustCargoCache: "Rust cargo cache"
         case .rustupDownloadsCache: "Rustup downloads cache"
+        case .goBuildCache: "Go build cache"
+        case .goModuleCache: "Go module cache"
         case .clangModuleCache: "Clang module cache"
         }
     }
@@ -136,6 +140,11 @@ nonisolated enum CacheCleanupService {
     private struct RustCacheRoots: Sendable {
         let cargoRegistryCache: String?
         let rustupDownloads: String?
+    }
+
+    private struct GoCacheRoots: Sendable {
+        let build: String?
+        let modules: String?
     }
 
     static func scan() async -> CacheCleanupSnapshot {
@@ -410,6 +419,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: rustCaches.items)
         unreadableItemCount += rustCaches.unreadableItemCount
 
+        let goCaches = await scanGoCaches()
+        discoveredItems.append(contentsOf: goCaches.items)
+        unreadableItemCount += goCaches.unreadableItemCount
+
         let clangModuleCache = await scanClangModuleCache()
         discoveredItems.append(contentsOf: clangModuleCache.items)
         unreadableItemCount += clangModuleCache.unreadableItemCount
@@ -580,10 +593,35 @@ nonisolated enum CacheCleanupService {
         )
         let rustBuildIsSafe = !items.contains { $0.category == .rustCargoCache }
             || rustBuildToolsAreInactive()
+        let requiresGoValidation = items.contains {
+            $0.category == .goBuildCache || $0.category == .goModuleCache
+        }
+        let goRoots = requiresGoValidation ? goCacheRoots() : GoCacheRoots(build: nil, modules: nil)
+        let goModuleIsSafe = !items.contains { $0.category == .goModuleCache }
+            || goModuleToolsAreInactive()
         let requiresClangProbe = items.contains { $0.category == .clangModuleCache }
         let clangRoot = requiresClangProbe ? clangModuleCacheRoot() : nil
         let clangIsSafe = !requiresClangProbe || clangModuleCacheIsInactive()
         for item in items {
+            if item.category == .goBuildCache {
+                guard let root = goRoots.build,
+                      goCacheItemIsAllowed(item.path, root: root) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .goModuleCache {
+                guard goModuleIsSafe,
+                      let root = goRoots.modules,
+                      goCacheItemIsAllowed(item.path, root: root) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .rustCargoCache {
                 guard rustBuildIsSafe,
                       let root = rustRoots.cargoRegistryCache,
@@ -1478,6 +1516,112 @@ nonisolated enum CacheCleanupService {
             ["-x", "rustdoc"],
             ["-x", "clippy-driver"],
             ["-x", "cargo-nextest"]
+        ])
+    }
+
+    private static func scanGoCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let roots = goCacheRoots()
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        if let root = roots.build {
+            let result = await scanGoCache(root: root, category: .goBuildCache)
+            items.append(contentsOf: result.items)
+            unreadableItemCount += result.unreadableItemCount
+        }
+        if goModuleToolsAreInactive(), let root = roots.modules {
+            let result = await scanGoCache(root: root, category: .goModuleCache)
+            items.append(contentsOf: result.items)
+            unreadableItemCount += result.unreadableItemCount
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func scanGoCache(
+        root: String,
+        category: CacheCleanupCategory
+    ) async -> (items: [CacheCleanupItem], unreadableItemCount: Int) {
+        let children: [URL]
+        do {
+            children = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: []
+            )
+        } catch {
+            return ([], 1)
+        }
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for child in children {
+            guard !Task.isCancelled else { return ([], 0) }
+            let path = child.standardizedFileURL.path
+            guard goCacheItemIsAllowed(path, root: root),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: category,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func goCacheItemIsAllowed(_ path: String, root: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return isRealDirectory(at: root)
+            && currentUserOwnsDirectory(at: root)
+            && isRealFileOrDirectory(at: url.path)
+            && !isSymbolicLink(at: url.path)
+            && pathsEqual(url.deletingLastPathComponent().path, root)
+    }
+
+    private static func goCacheRoots() -> GoCacheRoots {
+        GoCacheRoots(
+            build: goCacheRoot(kind: "GOCACHE", permitsLeafSymlink: true),
+            modules: goCacheRoot(kind: "GOMODCACHE", permitsLeafSymlink: false)
+        )
+    }
+
+    private static func goCacheRoot(kind: String, permitsLeafSymlink: Bool) -> String? {
+        guard ["GOCACHE", "GOMODCACHE"].contains(kind),
+              let reported = commandOutput(["go", "env", kind]),
+              reported.hasPrefix("/"),
+              !reported.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              !reported.contains("//"),
+              !reported.split(separator: "/", omittingEmptySubsequences: false).contains("."),
+              !reported.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+            return nil
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let lexical = URL(fileURLWithPath: reported, isDirectory: true).standardizedFileURL.path
+        let excludedRoots = [
+            "/", home, home + "/Library", home + "/Library/Caches", home + "/.cache", home + "/go"
+        ]
+        guard !excludedRoots.contains(where: { pathsEqual(lexical, $0) }),
+              permitsLeafSymlink || !isSymbolicLink(at: lexical) else {
+            return nil
+        }
+        let physical = URL(fileURLWithPath: lexical, isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        guard !excludedRoots.contains(where: { pathsEqual(physical, $0) }),
+              isRealDirectory(at: physical),
+              currentUserOwnsDirectory(at: physical) else {
+            return nil
+        }
+        return physical
+    }
+
+    private static func goModuleToolsAreInactive() -> Bool {
+        processProbesAreInactive([
+            ["-x", "go"],
+            ["-x", "gopls"]
         ])
     }
 
