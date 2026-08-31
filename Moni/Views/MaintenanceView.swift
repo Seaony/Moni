@@ -100,6 +100,7 @@ struct MaintenanceView: View {
     )
     @State private var networkStackState: NetworkStackState = .unavailable
     @State private var permissionRepairState: PermissionRepairState = .unavailable
+    @State private var spotlightOptimizationState: SpotlightOptimizationState = .unavailable
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -116,6 +117,7 @@ struct MaintenanceView: View {
     @State private var confirmsNetworkCacheRefresh = false
     @State private var confirmsNetworkStackRefresh = false
     @State private var confirmsPermissionRepair = false
+    @State private var confirmsSpotlightOptimization = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -232,6 +234,18 @@ struct MaintenanceView: View {
                         isActionEnabled: permissionRepairState == .needsRepair
                     ) {
                         confirmsPermissionRepair = true
+                    }
+
+                    commandCard(
+                        title: "Spotlight Optimization",
+                        description: "Inspect Spotlight and rebuild the startup volume index only when needed.",
+                        symbol: "magnifyingglass.circle",
+                        status: spotlightOptimizationStatus,
+                        buttonTitle: spotlightOptimizationButtonTitle,
+                        isAvailable: spotlightOptimizationIsAvailable,
+                        isActionEnabled: spotlightOptimizationState == .slow
+                    ) {
+                        confirmsSpotlightOptimization = true
                     }
 
                     commandCard(
@@ -554,6 +568,18 @@ struct MaintenanceView: View {
         } message: {
             Text("macOS will request administrator approval to reset permissions for the current user on the startup volume. The operation may take several minutes.")
         }
+        .confirmationDialog(
+            "Rebuild the Spotlight index?",
+            isPresented: $confirmsSpotlightOptimization,
+            titleVisibility: .visible
+        ) {
+            Button("Start Index Rebuild") {
+                Task { await optimizeSpotlight() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Two consecutive searches exceeded the speed threshold. macOS will request administrator approval to rebuild the startup volume index; indexing continues in the background and may take 1–2 hours.")
+        }
     }
 
     private var header: some View {
@@ -714,7 +740,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "19", MoniPalette.green)
+                catalogMetric("Available now", "20", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -983,6 +1009,32 @@ struct MaintenanceView: View {
         }
     }
 
+    private var spotlightOptimizationStatus: String {
+        switch spotlightOptimizationState {
+        case .optimal: MoniLocalization.string("Spotlight search is responsive")
+        case .slow: MoniLocalization.string("Slow searches detected")
+        case .rebuilding: MoniLocalization.string("Index rebuild in progress")
+        case .indexingDisabled: MoniLocalization.string("Spotlight indexing disabled")
+        case .batteryPower: MoniLocalization.string("Connect power to inspect speed")
+        case .unavailable: MoniLocalization.string("Unavailable")
+        case .failed: MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var spotlightOptimizationButtonTitle: String {
+        switch spotlightOptimizationState {
+        case .slow: MoniLocalization.string("Review Rebuild")
+        case .optimal, .rebuilding: MoniLocalization.string("No action needed")
+        case .indexingDisabled: MoniLocalization.string("Indexing disabled")
+        case .batteryPower: MoniLocalization.string("Power required")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
+    private var spotlightOptimizationIsAvailable: Bool {
+        spotlightOptimizationState != .unavailable && spotlightOptimizationState != .failed
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -998,10 +1050,12 @@ struct MaintenanceView: View {
         async let systemMaintenanceResult = AdministratorMaintenanceService.scanSystemMaintenance()
         async let networkStackResult = AdministratorMaintenanceService.scanNetworkStack()
         async let permissionRepairResult = AdministratorMaintenanceService.scanPermissionRepair()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair) = await (
+        async let spotlightOptimizationResult = AdministratorMaintenanceService.scanSpotlightOptimization()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
-            systemMaintenanceResult, networkStackResult, permissionRepairResult
+            systemMaintenanceResult, networkStackResult, permissionRepairResult,
+            spotlightOptimizationResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -1018,6 +1072,7 @@ struct MaintenanceView: View {
         systemMaintenanceSnapshot = systemMaintenance
         networkStackState = networkStack
         permissionRepairState = permissionRepair
+        spotlightOptimizationState = spotlightOptimization
         isScanning = false
     }
 
@@ -1337,6 +1392,34 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("User directory permissions were repaired.")
         case .notCompleted:
             resultMessage = MoniLocalization.string("Permission repair was not completed. Administrator approval may have been cancelled, or diskutil reported an error.")
+        }
+    }
+
+    private func optimizeSpotlight() async {
+        isRunning = true
+        let outcome = await AdministratorMaintenanceService.optimizeSpotlight()
+        if case .rebuildStarted = outcome {
+            spotlightOptimizationState = .rebuilding
+        } else {
+            spotlightOptimizationState = await AdministratorMaintenanceService.scanSpotlightOptimization()
+        }
+        isRunning = false
+
+        switch outcome {
+        case .alreadyOptimal:
+            resultMessage = MoniLocalization.string("The Spotlight index is already responsive.")
+        case .indexingDisabled:
+            resultMessage = MoniLocalization.string("Spotlight optimization was skipped because indexing is disabled.")
+        case .batteryPower:
+            resultMessage = MoniLocalization.string("Spotlight optimization was skipped while the Mac is using battery power.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Spotlight optimization is unavailable on this system.")
+        case .inspectionFailed:
+            resultMessage = MoniLocalization.string("Spotlight optimization was skipped because index health could not be verified.")
+        case .rebuildStarted:
+            resultMessage = MoniLocalization.string("The Spotlight index rebuild started and will continue in the background.")
+        case .notCompleted:
+            resultMessage = MoniLocalization.string("Spotlight index rebuild was not started. Administrator approval may have been cancelled, or mdutil reported an error.")
         }
     }
 }

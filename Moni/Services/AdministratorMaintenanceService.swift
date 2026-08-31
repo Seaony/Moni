@@ -54,6 +54,7 @@ nonisolated enum PermissionRepairOutcome: Sendable {
 nonisolated enum SpotlightOptimizationState: Sendable {
     case optimal
     case slow
+    case rebuilding
     case indexingDisabled
     case batteryPower
     case unavailable
@@ -183,7 +184,7 @@ nonisolated enum AdministratorMaintenanceService {
     static func optimizeSpotlight() async -> SpotlightOptimizationOutcome {
         await Task.detached(priority: .userInitiated) {
             switch inspectSpotlightOptimization() {
-            case .optimal:
+            case .optimal, .rebuilding:
                 return .alreadyOptimal
             case .indexingDisabled:
                 return .indexingDisabled
