@@ -4,6 +4,7 @@ import Foundation
 nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case userCaches
     case userLogs
+    case applicationSupportCaches
     case diagnosticReports
     case oldCrashReports
     case messagesPreviewCaches
@@ -39,6 +40,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         switch self {
         case .userCaches: "User app caches"
         case .userLogs: "User app logs"
+        case .applicationSupportCaches: "Application Support caches"
         case .diagnosticReports: "Diagnostic reports"
         case .oldCrashReports: "Old crash reports"
         case .messagesPreviewCaches: "Messages preview caches"
@@ -285,6 +287,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: sharedContainerCaches.items)
         unreadableItemCount += sharedContainerCaches.unreadableItemCount
 
+        let applicationSupportCaches = await scanApplicationSupportCaches()
+        discoveredItems.append(contentsOf: applicationSupportCaches.items)
+        unreadableItemCount += applicationSupportCaches.unreadableItemCount
+
         let virtualizationTemporaryData = await scanVirtualizationTemporaryData()
         discoveredItems.append(contentsOf: virtualizationTemporaryData.items)
         unreadableItemCount += virtualizationTemporaryData.unreadableItemCount
@@ -485,6 +491,14 @@ nonisolated enum CacheCleanupService {
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
+            if item.category == .applicationSupportCaches {
+                guard applicationSupportCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .sharedContainerCaches {
                 guard sharedContainerCacheItemIsAllowed(
                     item.path,
@@ -736,6 +750,139 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanApplicationSupportCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let rootPath = applicationSupportRoot()
+        guard isRealDirectory(at: rootPath) else {
+            return ([], FileManager.default.fileExists(atPath: rootPath) ? 1 : 0)
+        }
+
+        let appDirectories: [URL]
+        do {
+            appDirectories = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: rootPath, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for appDirectory in appDirectories {
+            guard !Task.isCancelled else { return ([], 0) }
+            let appName = appDirectory.lastPathComponent
+            guard applicationSupportDirectoryIsAllowed(appDirectory.path, name: appName) else {
+                continue
+            }
+
+            for candidate in applicationSupportCacheRoots(appDirectory.path)
+                where isRealDirectory(at: candidate) {
+                var finalUpdate: DiskAnalysisUpdate?
+                for await update in DiskAnalyzer.updates(for: candidate) {
+                    guard !Task.isCancelled else { return ([], 0) }
+                    if update.isComplete { finalUpdate = update }
+                }
+                guard let finalUpdate else {
+                    unreadableItemCount += 1
+                    continue
+                }
+                unreadableItemCount += finalUpdate.unreadableItemCount
+                items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                    guard applicationSupportCacheItemIsAllowed(path) else { return nil }
+                    return CacheCleanupItem(
+                        path: path,
+                        category: .applicationSupportCaches,
+                        sizeBytes: size
+                    )
+                })
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func applicationSupportCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard isRealFileOrDirectory(at: url.path),
+              !holdsCompiledModelCache(url.path),
+              ContainerCacheSafety.hasNoVisibleOpenHandles(at: url.path) else {
+            return false
+        }
+
+        let candidate = url.deletingLastPathComponent()
+        let appDirectory: URL
+        if candidate.lastPathComponent == "completed",
+           candidate.deletingLastPathComponent().lastPathComponent == "Crashpad" {
+            appDirectory = candidate.deletingLastPathComponent().deletingLastPathComponent()
+            guard isRealDirectory(at: candidate.deletingLastPathComponent().path) else {
+                return false
+            }
+        } else {
+            appDirectory = candidate.deletingLastPathComponent()
+        }
+        let appName = appDirectory.lastPathComponent
+        return applicationSupportDirectoryIsAllowed(appDirectory.path, name: appName)
+            && applicationSupportCacheRoots(appDirectory.path).contains {
+                pathsEqual($0, candidate.path) && isRealDirectory(at: $0)
+            }
+    }
+
+    private static func applicationSupportDirectoryIsAllowed(_ path: String, name: String) -> Bool {
+        let ownName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+        guard isRealDirectory(at: applicationSupportRoot()),
+              isRealDirectory(at: path),
+              pathsEqual(
+                URL(fileURLWithPath: path).deletingLastPathComponent().path,
+                applicationSupportRoot()
+              ),
+              ownName?.caseInsensitiveCompare(name) != .orderedSame else {
+            return false
+        }
+        return SandboxContainerProtection.permits(name)
+    }
+
+    private static func applicationSupportCacheRoots(_ appDirectory: String) -> [String] {
+        var roots = [
+            appDirectory + "/Code Cache",
+            appDirectory + "/GPUCache",
+            appDirectory + "/DawnCache",
+            appDirectory + "/GrShaderCache",
+            appDirectory + "/GraphiteDawnCache",
+            appDirectory + "/DawnGraphiteCache",
+            appDirectory + "/DawnWebGPUCache",
+            appDirectory + "/Crashpad/completed"
+        ]
+        if applicationSupportCacheMarkers(appDirectory).contains(
+            where: FileManager.default.fileExists(atPath:)
+        ) {
+            roots.append(appDirectory + "/Cache")
+            roots.append(appDirectory + "/CachedData")
+        }
+        return roots
+    }
+
+    private static func applicationSupportCacheMarkers(_ appDirectory: String) -> [String] {
+        [
+            appDirectory + "/Code Cache",
+            appDirectory + "/GPUCache",
+            appDirectory + "/DawnCache",
+            appDirectory + "/GrShaderCache",
+            appDirectory + "/GraphiteDawnCache",
+            appDirectory + "/DawnGraphiteCache",
+            appDirectory + "/DawnWebGPUCache",
+            appDirectory + "/Crashpad"
+        ]
+    }
+
+    private static func applicationSupportRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+            .standardizedFileURL.path
     }
 
     private static func scanVirtualizationTemporaryData() async -> (
