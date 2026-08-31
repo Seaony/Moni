@@ -501,6 +501,12 @@ struct ApplicationManagerView: View {
             hasSharedBundleIdentifier: currentPreview.warnings.contains(.sharedBundleIdentifier)
         )
         let result = await CleanupService.shared.execute(finalPlan)
+        if result.trashedPaths.contains(currentApplication.path) {
+            await ApplicationPostRemovalService.finish(
+                application: currentApplication,
+                allowBundleIdentifierMatch: !currentPreview.warnings.contains(.sharedBundleIdentifier)
+            )
+        }
         isPreparing = false
         monitor.refresh(forceSlowMetrics: true)
 
@@ -574,8 +580,10 @@ struct ApplicationManagerView: View {
             application: currentApplication,
             useZap: request.useZap
         )
+        var removalSucceeded = false
         switch result {
         case .removed:
+            removalSucceeded = true
             cleanupMessage = MoniLocalization.string("Homebrew removed the application.")
         case .caskRemovedApplicationRemains:
             guard matchesIdentity(currentApplication) else {
@@ -587,6 +595,7 @@ struct ApplicationManagerView: View {
                 scope: .applications
             )
             let fallbackResult = await CleanupService.shared.execute(fallbackPlan)
+            removalSucceeded = fallbackResult.trashedPaths.contains(currentApplication.path)
             cleanupMessage = fallbackResult.trashedPaths.isEmpty
                 ? MoniLocalization.string("Homebrew removed the Cask record, but the application could not be moved to Trash.")
                 : MoniLocalization.string("Homebrew removed the Cask record and the remaining application was moved to Trash.")
@@ -596,6 +605,12 @@ struct ApplicationManagerView: View {
             cleanupMessage = MoniLocalization.string("The selected application changed. No removal was performed.")
         case .unavailable:
             cleanupMessage = MoniLocalization.string("Homebrew removal state could not be verified. No fallback removal was performed.")
+        }
+        if removalSucceeded {
+            await ApplicationPostRemovalService.finish(
+                application: currentApplication,
+                allowBundleIdentifierMatch: !currentPreview.warnings.contains(.sharedBundleIdentifier)
+            )
         }
         if teardown.failedActionCount > 0 {
             cleanupMessage = (cleanupMessage ?? "") + " "

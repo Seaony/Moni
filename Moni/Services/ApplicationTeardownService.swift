@@ -13,11 +13,15 @@ nonisolated enum ApplicationTeardownService {
         hasSharedBundleIdentifier: Bool
     ) async -> ApplicationTeardownResult {
         await Task.detached(priority: .utility) {
+            var failures = 0
+            if matchesIdentity(application),
+               application.path.lowercased().hasSuffix(".app") {
+                let lsregister = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+                _ = run(lsregister, arguments: ["-u", application.path])
+            }
             guard !hasSharedBundleIdentifier else {
                 return ApplicationTeardownResult(failedActionCount: 0)
             }
-
-            var failures = 0
             for candidate in confirmedCandidates where isUserLaunchAgent(candidate.path) {
                 guard matchesIdentity(candidate) else {
                     failures += 1
@@ -141,6 +145,12 @@ nonisolated enum ApplicationTeardownService {
         var value = stat()
         guard candidate.path.withCString({ lstat($0, &value) }) == 0 else { return false }
         return UInt64(value.st_dev) == candidate.device && UInt64(value.st_ino) == candidate.inode
+    }
+
+    private static func matchesIdentity(_ application: InstalledApplication) -> Bool {
+        var value = stat()
+        guard application.path.withCString({ lstat($0, &value) }) == 0 else { return false }
+        return UInt64(value.st_dev) == application.device && UInt64(value.st_ino) == application.inode
     }
 
     private static func isValidBundleIdentifier(_ value: String) -> Bool {
