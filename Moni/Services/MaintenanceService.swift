@@ -48,6 +48,11 @@ nonisolated struct FinderRefreshResult: Sendable {
     let unavailable: Bool
 }
 
+nonisolated struct BrokenPreferenceSnapshot: Sendable {
+    let paths: [String]
+    let unreadableItemCount: Int
+}
+
 nonisolated enum MaintenanceService {
     private struct FinderMaintenanceScan: Sendable {
         let cachePaths: [String]
@@ -250,6 +255,17 @@ nonisolated enum MaintenanceService {
         }.value
     }
 
+    static func scanBrokenPreferences() async -> BrokenPreferenceSnapshot {
+        let scan = await Task.detached(priority: .utility) {
+            scanPreferencePaths()
+        }.value
+        let eligiblePaths = await CleanupService.shared.eligiblePaths(scan.paths)
+        return BrokenPreferenceSnapshot(
+            paths: scan.paths.filter(eligiblePaths.contains).sorted(by: localizedPathOrder),
+            unreadableItemCount: scan.unreadableItemCount
+        )
+    }
+
     private static func task(
         _ id: String,
         _ titleKey: String,
@@ -287,5 +303,79 @@ nonisolated enum MaintenanceService {
 
     private static func localizedPathOrder(_ lhs: String, _ rhs: String) -> Bool {
         lhs.localizedStandardCompare(rhs) == .orderedAscending
+    }
+
+    private static func scanPreferencePaths() -> BrokenPreferenceSnapshot {
+        let fileManager = FileManager.default
+        let preferencesURL = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences", isDirectory: true)
+        var candidates: [URL] = []
+        var unreadableItemCount = 0
+
+        do {
+            let topLevel = try fileManager.contentsOfDirectory(
+                at: preferencesURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            )
+            candidates.append(contentsOf: topLevel.filter {
+                isPreferenceCandidate($0, protectLoginWindow: true)
+            })
+        } catch {
+            if fileManager.fileExists(atPath: preferencesURL.path) {
+                unreadableItemCount += 1
+            }
+        }
+
+        let byHostURL = preferencesURL.appendingPathComponent("ByHost", isDirectory: true)
+        if let enumerator = fileManager.enumerator(
+            at: byHostURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in
+                unreadableItemCount += 1
+                return true
+            }
+        ) {
+            for case let url as URL in enumerator {
+                guard !Task.isCancelled else { break }
+                if isPreferenceCandidate(url, protectLoginWindow: false) {
+                    candidates.append(url)
+                }
+            }
+        } else if fileManager.fileExists(atPath: byHostURL.path) {
+            unreadableItemCount += 1
+        }
+
+        var brokenPaths: [String] = []
+        for url in candidates {
+            guard !Task.isCancelled else { break }
+            guard fileManager.isReadableFile(atPath: url.path) else {
+                unreadableItemCount += 1
+                continue
+            }
+            if !run("/usr/bin/plutil", arguments: ["-lint", url.path]) {
+                brokenPaths.append(url.standardizedFileURL.path)
+            }
+        }
+
+        return BrokenPreferenceSnapshot(
+            paths: brokenPaths,
+            unreadableItemCount: unreadableItemCount
+        )
+    }
+
+    private static func isPreferenceCandidate(_ url: URL, protectLoginWindow: Bool) -> Bool {
+        guard url.pathExtension == "plist" else { return false }
+        let filename = url.lastPathComponent
+        guard !filename.hasPrefix("com.apple."),
+              !filename.hasPrefix(".GlobalPreferences"),
+              !(protectLoginWindow && filename == "loginwindow.plist") else {
+            return false
+        }
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
+            return false
+        }
+        return values.isRegularFile == true && values.isSymbolicLink != true
     }
 }
