@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 nonisolated enum HomebrewCaskOwnership: Sendable, Equatable {
@@ -6,10 +7,55 @@ nonisolated enum HomebrewCaskOwnership: Sendable, Equatable {
     case unavailable
 }
 
+nonisolated enum HomebrewCaskUninstallResult: Sendable {
+    case removed
+    case caskRemovedApplicationRemains
+    case stillInstalled
+    case applicationChanged
+    case unavailable
+}
+
 nonisolated enum HomebrewCaskService {
     static func ownership(of application: InstalledApplication) async -> HomebrewCaskOwnership {
         await Task.detached(priority: .utility) {
             detectOwnership(of: application)
+        }.value
+    }
+
+    static func uninstall(
+        token: String,
+        application: InstalledApplication,
+        useZap: Bool
+    ) async -> HomebrewCaskUninstallResult {
+        await Task.detached(priority: .userInitiated) {
+            guard isValidCaskToken(token),
+                  let brew = brewExecutable() else { return .unavailable }
+            guard matchesIdentity(application) else { return .applicationChanged }
+
+            var arguments = ["uninstall", "--cask"]
+            if useZap { arguments.append("--zap") }
+            arguments.append(token)
+            let timeout: TimeInterval
+            switch application.sizeBytes ?? 0 {
+            case (15 * 1_024 * 1_024 * 1_024)...:
+                timeout = 900
+            case (5 * 1_024 * 1_024 * 1_024)...:
+                timeout = 600
+            default:
+                timeout = 300
+            }
+            _ = runBrew(brew, arguments: arguments, timeout: timeout)
+
+            switch installedCasks(using: brew) {
+            case .failure:
+                return .unavailable
+            case let .success(installed) where installed.contains(token):
+                return .stillInstalled
+            case .success:
+                return FileManager.default.fileExists(atPath: application.path)
+                    ? .caskRemovedApplicationRemains
+                    : .removed
+            }
         }.value
     }
 
@@ -115,7 +161,11 @@ nonisolated enum HomebrewCaskService {
         return .success(Set(tokens))
     }
 
-    private static func runBrew(_ executable: String, arguments: [String]) -> String? {
+    private static func runBrew(
+        _ executable: String,
+        arguments: [String],
+        timeout timeoutInterval: TimeInterval = 8
+    ) -> String? {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -123,6 +173,7 @@ nonisolated enum HomebrewCaskService {
         var environment = ProcessInfo.processInfo.environment
         environment["HOMEBREW_NO_AUTO_UPDATE"] = "1"
         environment["HOMEBREW_NO_ENV_HINTS"] = "1"
+        environment["NONINTERACTIVE"] = "1"
         process.environment = environment
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
@@ -135,7 +186,7 @@ nonisolated enum HomebrewCaskService {
         let timeout = DispatchWorkItem {
             if process.isRunning { process.terminate() }
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8, execute: timeout)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutInterval, execute: timeout)
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         timeout.cancel()
@@ -160,6 +211,16 @@ nonisolated enum HomebrewCaskService {
             return String(token)
         }
         return nil
+    }
+
+    private static func isValidCaskToken(_ token: String) -> Bool {
+        token.range(of: "^[a-z0-9][a-z0-9-]*$", options: .regularExpression) != nil
+    }
+
+    private static func matchesIdentity(_ application: InstalledApplication) -> Bool {
+        var value = stat()
+        guard application.path.withCString({ lstat($0, &value) }) == 0 else { return false }
+        return UInt64(value.st_dev) == application.device && UInt64(value.st_ino) == application.inode
     }
 
     private enum CaskProbeError: Error {

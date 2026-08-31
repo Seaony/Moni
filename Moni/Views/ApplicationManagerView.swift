@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import SwiftUI
 
 struct ApplicationManagerView: View {
@@ -11,6 +12,7 @@ struct ApplicationManagerView: View {
     @State private var isScanning = false
     @State private var isPreparing = false
     @State private var pendingPlan: CleanupPlan?
+    @State private var pendingCaskRemoval: HomebrewCaskRemovalRequest?
     @State private var cleanupMessage: String?
 
     var body: some View {
@@ -29,6 +31,16 @@ struct ApplicationManagerView: View {
                 onConfirm: {
                     pendingPlan = nil
                     Task { await execute(plan) }
+                }
+            )
+        }
+        .sheet(item: $pendingCaskRemoval) { request in
+            HomebrewCaskRemovalConfirmationView(
+                request: request,
+                onCancel: { pendingCaskRemoval = nil },
+                onConfirm: {
+                    pendingCaskRemoval = nil
+                    Task { await executeCaskRemoval(request) }
                 }
             )
         }
@@ -198,7 +210,6 @@ struct ApplicationManagerView: View {
                 selectedRemovalPaths.isEmpty
                     || isPreparing
                     || officialVendor != nil
-                    || removalPreview?.homebrewCask != nil
                     || removalPreview?.homebrewProbeUnavailable == true
             )
         }
@@ -362,13 +373,21 @@ struct ApplicationManagerView: View {
             cleanupMessage = MoniLocalization.string("This application requires its official uninstaller.")
             return
         }
-        guard removalPreview?.homebrewCask == nil,
-              removalPreview?.homebrewProbeUnavailable != true else {
+        guard removalPreview?.homebrewProbeUnavailable != true else {
             cleanupMessage = MoniLocalization.string("Homebrew-managed applications require Homebrew removal.")
             return
         }
         guard !isRunning(application) else {
             cleanupMessage = MoniLocalization.format("Quit %@ before uninstalling it.", application.name)
+            return
+        }
+        if let cask = removalPreview?.homebrewCask {
+            let useZap = removalPreview?.warnings.contains(.sharedBundleIdentifier) != true
+            pendingCaskRemoval = HomebrewCaskRemovalRequest(
+                application: application,
+                token: cask,
+                useZap: useZap
+            )
             return
         }
         let plan = await CleanupService.shared.preview(
@@ -438,6 +457,74 @@ struct ApplicationManagerView: View {
         await scanApplications()
     }
 
+    private func executeCaskRemoval(_ request: HomebrewCaskRemovalRequest) async {
+        guard !isRunning(request.application) else {
+            cleanupMessage = MoniLocalization.format("Quit %@ before uninstalling it.", request.application.name)
+            return
+        }
+
+        isPreparing = true
+        let currentInventory = await ApplicationInventoryService.scan()
+        guard let currentApplication = currentInventory.applications.first(where: {
+            $0.path == request.application.path
+                && $0.device == request.application.device
+                && $0.inode == request.application.inode
+        }) else {
+            isPreparing = false
+            cleanupMessage = MoniLocalization.string("The selected application changed. Review it again before removal.")
+            return
+        }
+        guard !isRunning(currentApplication) else {
+            isPreparing = false
+            cleanupMessage = MoniLocalization.format("Quit %@ before uninstalling it.", currentApplication.name)
+            return
+        }
+        let currentPreview = await ApplicationUninstallService.preview(
+            application: currentApplication,
+            inventory: currentInventory
+        )
+        let currentUseZap = !currentPreview.warnings.contains(.sharedBundleIdentifier)
+        guard currentPreview.homebrewCask == request.token,
+              !currentPreview.homebrewProbeUnavailable,
+              currentUseZap == request.useZap else {
+            isPreparing = false
+            cleanupMessage = MoniLocalization.string("The Homebrew removal plan changed. Review it again before removal.")
+            return
+        }
+
+        let result = await HomebrewCaskService.uninstall(
+            token: request.token,
+            application: currentApplication,
+            useZap: request.useZap
+        )
+        switch result {
+        case .removed:
+            cleanupMessage = MoniLocalization.string("Homebrew removed the application.")
+        case .caskRemovedApplicationRemains:
+            guard matchesIdentity(currentApplication) else {
+                cleanupMessage = MoniLocalization.string("The Cask record was removed, but the application changed and was left untouched.")
+                break
+            }
+            let fallbackPlan = await CleanupService.shared.preview(
+                paths: [currentApplication.path],
+                scope: .applications
+            )
+            let fallbackResult = await CleanupService.shared.execute(fallbackPlan)
+            cleanupMessage = fallbackResult.trashedPaths.isEmpty
+                ? MoniLocalization.string("Homebrew removed the Cask record, but the application could not be moved to Trash.")
+                : MoniLocalization.string("Homebrew removed the Cask record and the remaining application was moved to Trash.")
+        case .stillInstalled:
+            cleanupMessage = MoniLocalization.string("Homebrew could not remove the Cask. It remains installed.")
+        case .applicationChanged:
+            cleanupMessage = MoniLocalization.string("The selected application changed. No removal was performed.")
+        case .unavailable:
+            cleanupMessage = MoniLocalization.string("Homebrew removal state could not be verified. No fallback removal was performed.")
+        }
+        isPreparing = false
+        monitor.refresh(forceSlowMetrics: true)
+        await scanApplications()
+    }
+
     private func isRunning(_ application: InstalledApplication) -> Bool {
         NSWorkspace.shared.runningApplications.contains { running in
             if let bundleIdentifier = application.bundleIdentifier,
@@ -446,6 +533,12 @@ struct ApplicationManagerView: View {
             }
             return running.bundleURL?.resolvingSymlinksInPath().standardizedFileURL.path == application.canonicalPath
         }
+    }
+
+    private func matchesIdentity(_ application: InstalledApplication) -> Bool {
+        var value = stat()
+        guard application.path.withCString({ lstat($0, &value) }) == 0 else { return false }
+        return UInt64(value.st_dev) == application.device && UInt64(value.st_ino) == application.inode
     }
 
     private func selectedSize(in preview: ApplicationUninstallPreview) -> UInt64 {
@@ -466,6 +559,73 @@ struct ApplicationManagerView: View {
             "Some related-file locations could not be read and were left untouched."
         }
         return MoniLocalization.string(key)
+    }
+}
+
+private struct HomebrewCaskRemovalRequest: Identifiable {
+    let id = UUID()
+    let application: InstalledApplication
+    let token: String
+    let useZap: Bool
+}
+
+private struct HomebrewCaskRemovalConfirmationView: View {
+    let request: HomebrewCaskRemovalRequest
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "shippingbox.circle.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(MoniPalette.orange)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Review Homebrew Removal")
+                        .font(.system(size: 20, weight: .bold))
+                    Text("Homebrew will run the command below. Moni will verify both the Cask record and application afterward.")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Text(command)
+                .font(.system(size: 12.5, weight: .medium, design: .monospaced))
+                .textSelection(.enabled)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(MoniPalette.inset)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            if request.useZap {
+                Label("Homebrew-defined zap files, preferences, and caches may also be removed.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(MoniPalette.orange)
+            } else {
+                Label("Zap is disabled because another installed application shares this Bundle ID.", systemImage: "shield.fill")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(MoniPalette.orange)
+            }
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button(MoniLocalization.string("Cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(MoniLocalization.string("Uninstall"), role: .destructive, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .tint(MoniPalette.red)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 620)
+        .background(MoniPalette.card)
+    }
+
+    private var command: String {
+        "brew uninstall --cask " + (request.useZap ? "--zap " : "") + request.token
     }
 }
 
