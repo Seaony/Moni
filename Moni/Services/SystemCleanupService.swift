@@ -17,6 +17,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case thirdPartyLogs
     case staleWallpaperDownloads
     case rebuildableServiceCaches
+    case browserCodeSignatureCaches
 
     var titleKey: String {
         switch self {
@@ -26,6 +27,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .thirdPartyLogs: "Third-party system logs"
         case .staleWallpaperDownloads: "Stale wallpaper downloads"
         case .rebuildableServiceCaches: "Rebuildable system caches"
+        case .browserCodeSignatureCaches: "Browser code signature caches"
         }
     }
 }
@@ -387,8 +389,11 @@ nonisolated enum SystemCleanupService {
             return nil
         }
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard (category == .rebuildableServiceCaches && kind == .directory)
-                || (category != .rebuildableServiceCaches && kind == .file),
+        let directoryCategories: Set<SystemCleanupCategory> = [
+            .rebuildableServiceCaches, .browserCodeSignatureCaches
+        ]
+        guard (directoryCategories.contains(category) && kind == .directory)
+                || (!directoryCategories.contains(category) && kind == .file),
               categoryAllows(url: url, category: category),
               let metadata = fileMetadata(at: url),
               (kind == .file && metadata.isRegularFile)
@@ -400,6 +405,7 @@ nonisolated enum SystemCleanupService {
               kind == .directory || metadata.sizeBytes == expectedSizeBytes,
               kind == .directory
                 || referenceDate.timeIntervalSince(metadata.modifiedDate) >= minimumAge,
+              !isEndpointSecurityPath(url.path),
               !CleanupPreferences.isWhitelisted(url.path) else {
             return nil
         }
@@ -463,6 +469,17 @@ nonisolated enum SystemCleanupService {
         case .rebuildableServiceCaches:
             return pathsEqual(url.path, "/Library/Caches/com.apple.iconservices.store")
                 && canonicalPathIsInside(url, root: "/Library/Caches")
+        case .browserCodeSignatureCaches:
+            let root = "/private/var/folders"
+            let components = url.pathComponents
+            guard let cloneRootIndex = components.firstIndex(of: "X"),
+                  cloneRootIndex == 6 else {
+                return false
+            }
+            return pathIsInside(url.path, root: root)
+                && canonicalPathIsInside(url, root: root)
+                && pathDepth(url.path, root: root) <= 5
+                && url.lastPathComponent.hasSuffix(".code_sign_clone")
         }
     }
 
@@ -498,6 +515,17 @@ nonisolated enum SystemCleanupService {
     private static func canonicalPathIsInside(_ url: URL, root: String) -> Bool {
         let canonical = url.resolvingSymlinksInPath().standardizedFileURL.path
         return pathIsInside(canonical, root: root)
+    }
+
+    private static func isEndpointSecurityPath(_ path: String) -> Bool {
+        guard path.lowercased().hasPrefix("/private/var/folders/") else { return false }
+        let lowercased = path.lowercased()
+        let prefixes = [
+            "com.crowdstrike.", "com.sentinelone.", "com.sentinel-labs.", "com.eset.",
+            "com.jamf.", "com.jamfsoftware.", "com.paloaltonetworks.",
+            "com.cisco.anyconnect", "com.cisco.secureclient"
+        ]
+        return prefixes.contains(where: lowercased.contains)
     }
 
     private static func pathDepth(_ path: String, root: String) -> Int {
@@ -622,9 +650,21 @@ nonisolated enum SystemCleanupService {
             rebuildableServiceCaches)
                 [ "$candidate_path" = '/Library/Caches/com.apple.iconservices.store' ]
                 ;;
+            browserCodeSignatureCaches)
+                printf '%s\n' "$candidate_path" | /usr/bin/awk -F/ 'NF >= 8 && NF <= 9 && $2 == "private" && $3 == "var" && $4 == "folders" && $7 == "X" { valid=1 } END { exit valid ? 0 : 1 }' || return 1
+                case "$candidate_name" in *.code_sign_clone) return 0 ;; *) return 1 ;; esac
+                ;;
             *)
                 return 1
                 ;;
+        esac
+    }
+
+    endpoint_security_path() {
+        security_path=$(printf '%s' "$1" | /usr/bin/tr '[:upper:]' '[:lower:]') || return 0
+        case "$security_path" in
+            *com.crowdstrike.*|*com.sentinelone.*|*com.sentinel-labs.*|*com.eset.*|*com.jamf.*|*com.jamfsoftware.*|*com.paloaltonetworks.*|*com.cisco.anyconnect*|*com.cisco.secureclient*) return 0 ;;
+            *) return 1 ;;
         esac
     }
 
@@ -655,9 +695,11 @@ nonisolated enum SystemCleanupService {
         move_category=$5
         move_kind=$6
         system_candidate_path "$move_source" "$move_category" || return 1
+        endpoint_security_path "$move_source" && return 1
         case "$move_kind:$move_category" in
             directory:rebuildableServiceCaches) [ -d "$move_source" ] || return 1 ;;
-            file:rebuildableServiceCaches) return 1 ;;
+            directory:browserCodeSignatureCaches) [ -d "$move_source" ] || return 1 ;;
+            file:rebuildableServiceCaches|file:browserCodeSignatureCaches) return 1 ;;
             file:*) [ -f "$move_source" ] || return 1 ;;
             *) return 1 ;;
         esac
@@ -783,6 +825,20 @@ nonisolated enum SystemCleanupService {
         printf 'ITEM\tdirectory\t%s\t%s\t%s\t%s\t%s\t%s\n' "$scan_category" "$scan_device" "$scan_inode" "$scan_mtime" "$scan_size" "$scan_encoded"
     }
 
+    scan_code_signature_directories() {
+        scan_root=/private/var/folders
+        [ -d "$scan_root" ] && [ ! -L "$scan_root" ] || return 0
+        /usr/bin/find "$scan_root" -maxdepth 5 -type d \( -depth 3 ! -name X \) -prune -o -type d -name '*.code_sign_clone' -path '*/X/*' -print0 > "$scan_file"
+        scan_result=$?
+        if [ "$scan_result" -ne 0 ]; then
+            printf 'ERROR\tbrowserCodeSignatureCaches\n'
+            return 0
+        fi
+        while IFS= read -r -d '' scan_path; do
+            scan_directory browserCodeSignatureCaches "$scan_path"
+        done < "$scan_file"
+    }
+
     scan_family systemCaches /Library/Caches
     scan_family crashReports /Library/Logs/DiagnosticReports
     scan_family systemLogs /private/var/log
@@ -791,5 +847,6 @@ nonisolated enum SystemCleanupService {
     scan_family adobeGCLog /Library/Logs
     scan_family staleWallpaperDownloads /private/var/folders
     scan_directory rebuildableServiceCaches /Library/Caches/com.apple.iconservices.store
+    scan_code_signature_directories
     """#
 }
