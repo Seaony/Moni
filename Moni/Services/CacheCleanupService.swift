@@ -40,6 +40,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case cachedDeviceFirmware
     case nodePackageCaches
     case pythonPackageCaches
+    case developerToolCaches
 
     var titleKey: String {
         switch self {
@@ -81,6 +82,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .cachedDeviceFirmware: "Cached device firmware"
         case .nodePackageCaches: "Node package caches"
         case .pythonPackageCaches: "Python package caches"
+        case .developerToolCaches: "Developer tool caches"
         }
     }
 }
@@ -379,6 +381,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: pythonPackageCaches.items)
         unreadableItemCount += pythonPackageCaches.unreadableItemCount
 
+        let developerToolCaches = await scanDeveloperToolCaches()
+        discoveredItems.append(contentsOf: developerToolCaches.items)
+        unreadableItemCount += developerToolCaches.unreadableItemCount
+
         let eligiblePaths = await CleanupService.shared.eligiblePaths(discoveredItems.map(\.path))
         let items = discoveredItems
             .filter { eligiblePaths.contains($0.path) }
@@ -528,7 +534,18 @@ nonisolated enum CacheCleanupService {
             || nodePackageToolsAreInactive()
         let pythonPackageToolsAreSafe = !items.contains { $0.category == .pythonPackageCaches }
             || pythonPackageToolsAreInactive()
+        let developerToolsAreSafe = !items.contains { $0.category == .developerToolCaches }
+            || githubCLIIsAvailable() && githubCLIIsInactive()
         for item in items {
+            if item.category == .developerToolCaches {
+                guard developerToolsAreSafe,
+                      developerToolCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .pythonPackageCaches {
                 guard pythonPackageToolsAreSafe,
                       pythonPackageCacheItemIsAllowed(item.path) else {
@@ -1161,6 +1178,108 @@ nonisolated enum CacheCleanupService {
 
     private static func pythonPackageToolsAreInactive() -> Bool {
         processProbesAreInactive([["-f", "(^|/)uv([[:space:]]|$)"]])
+    }
+
+    private static func scanDeveloperToolCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard githubCLIIsAvailable(),
+              githubCLIIsInactive(),
+              let root = githubCLICacheRoot(),
+              isRealDirectory(at: root) else {
+            return ([], 0)
+        }
+        let children: [URL]
+        do {
+            children = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for child in children {
+            guard !Task.isCancelled else { return ([], 0) }
+            let path = child.standardizedFileURL.path
+            guard developerToolCacheItemIsAllowed(path),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .developerToolCaches,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func developerToolCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard let root = githubCLICacheRoot() else { return false }
+        return !url.lastPathComponent.hasPrefix(".")
+            && isRealDirectory(at: root)
+            && isRealFileOrDirectory(at: url.path)
+            && !isSymbolicLink(at: url.path)
+            && pathsEqual(url.deletingLastPathComponent().path, root)
+    }
+
+    private static func githubCLICacheRoot() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let configured = ProcessInfo.processInfo.environment["XDG_CACHE_HOME"]
+        let rawRoot = configured?.isEmpty == false ? configured! : home + "/.cache"
+        guard rawRoot.hasPrefix("/"),
+              !rawRoot.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              !rawRoot.contains("//"),
+              !rawRoot.split(separator: "/", omittingEmptySubsequences: false).contains("."),
+              !rawRoot.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+            return nil
+        }
+        let normalized = URL(fileURLWithPath: rawRoot).standardizedFileURL
+        guard !pathsEqual(normalized.path, "/"),
+              !pathsEqual(normalized.path, home) else {
+            return nil
+        }
+        let physical = normalized.resolvingSymlinksInPath().standardizedFileURL.path
+        guard physical.hasPrefix("/"),
+              !pathsEqual(physical, "/"),
+              !pathsEqual(physical, home) else {
+            return nil
+        }
+        return URL(fileURLWithPath: physical, isDirectory: true)
+            .appendingPathComponent("gh", isDirectory: true)
+            .path
+    }
+
+    private static func githubCLIIsAvailable() -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["gh", "config", "clear-cache", "--help"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+        return process.terminationReason == .exit && process.terminationStatus == 0
+    }
+
+    private static func githubCLIIsInactive() -> Bool {
+        processProbesAreInactive([["-x", "gh"]])
     }
 
     private static func scanVirtualizationTemporaryData() async -> (
