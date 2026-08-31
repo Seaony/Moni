@@ -1343,6 +1343,7 @@ nonisolated enum CacheCleanupService {
             home + "/.gem/specs",
             home + "/.bundle/cache",
             home + "/.cpan/build",
+            home + "/.docker/buildx/cache",
             home + "/.android/build-cache",
             home + "/.android/cache",
             home + "/.cache/swift-package-manager",
