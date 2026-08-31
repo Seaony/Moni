@@ -116,6 +116,10 @@ struct MaintenanceView: View {
         state: .unavailable
     )
     @State private var nixGarbageCollectionState: NixGarbageCollectionState = .unavailable
+    @State private var pnpmStoreSnapshot = PnpmStoreMaintenanceSnapshot(
+        stores: [],
+        state: .unavailable
+    )
     @State private var timeMachineSnapshotReport = TimeMachineSnapshotReport(
         state: .unavailable,
         snapshotCount: 0,
@@ -151,6 +155,7 @@ struct MaintenanceView: View {
     @State private var confirmsTartCachePrune = false
     @State private var confirmsCondaCacheCleanup = false
     @State private var confirmsNixGarbageCollection = false
+    @State private var confirmsPnpmStorePrune = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -332,6 +337,19 @@ struct MaintenanceView: View {
                         isActionEnabled: nixGarbageCollectionState == .ready
                     ) {
                         confirmsNixGarbageCollection = true
+                    }
+
+                    commandCard(
+                        title: "pnpm Store Pruning",
+                        description: "Prune unreferenced packages from every installed pnpm store.",
+                        symbol: "shippingbox.circle",
+                        status: pnpmStoreStatus,
+                        buttonTitle: pnpmStoreButtonTitle,
+                        isAvailable: pnpmStoreSnapshot.state != .unavailable
+                            && pnpmStoreSnapshot.state != .failed,
+                        isActionEnabled: pnpmStoreSnapshot.state == .ready
+                    ) {
+                        confirmsPnpmStorePrune = true
                     }
 
                     commandCard(
@@ -772,6 +790,22 @@ struct MaintenanceView: View {
         } message: {
             Text("Nix will delete profile generations older than 30 days, then remove store paths that are no longer reachable. Current and recent generations are retained.")
         }
+        .confirmationDialog(
+            "Prune pnpm stores?",
+            isPresented: $confirmsPnpmStorePrune,
+            titleVisibility: .visible
+        ) {
+            Button("Prune pnpm Stores", role: .destructive) {
+                Task { await prunePnpmStores() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MoniLocalization.format(
+                "pnpm will prune unreferenced packages from %@ stores using each installed pnpm version's own command. Current combined store size: %@.",
+                pnpmStoreSnapshot.stores.count.formatted(),
+                maintenanceBytes(pnpmStoreSize)
+            ))
+        }
     }
 
     private var header: some View {
@@ -932,7 +966,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "23", MoniPalette.green)
+                catalogMetric("Available now", "24", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1323,6 +1357,39 @@ struct MaintenanceView: View {
         }
     }
 
+    private var pnpmStoreSize: UInt64 {
+        pnpmStoreSnapshot.stores.reduce(UInt64(0)) { total, store in
+            let (sum, overflow) = total.addingReportingOverflow(store.sizeBytes)
+            return overflow ? UInt64.max : sum
+        }
+    }
+
+    private var pnpmStoreStatus: String {
+        switch pnpmStoreSnapshot.state {
+        case .ready:
+            MoniLocalization.format(
+                "%@ stores · %@",
+                pnpmStoreSnapshot.stores.count.formatted(),
+                maintenanceBytes(pnpmStoreSize)
+            )
+        case .healthy: MoniLocalization.string("No pnpm stores found")
+        case .protected: MoniLocalization.string("Protected by whitelist")
+        case .busy: MoniLocalization.string("pnpm is running")
+        case .unavailable: MoniLocalization.string("pnpm command unavailable")
+        case .failed: MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var pnpmStoreButtonTitle: String {
+        switch pnpmStoreSnapshot.state {
+        case .ready: MoniLocalization.string("Review Prune")
+        case .healthy: MoniLocalization.string("No action needed")
+        case .protected: MoniLocalization.string("Protected")
+        case .busy: MoniLocalization.string("Close pnpm first")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
     private var timeMachineSnapshotStatus: String {
         switch timeMachineSnapshotReport.state {
         case .ready:
@@ -1569,12 +1636,14 @@ struct MaintenanceView: View {
         async let periodicMaintenanceResult = AdministratorMaintenanceService.scanPeriodicMaintenance()
         async let tartCacheResult = TartCacheMaintenanceService.scan()
         async let condaCacheResult = CondaCacheMaintenanceService.scan()
+        async let pnpmStoreResult = PnpmStoreMaintenanceService.scan()
         async let timeMachineSnapshotResult = TimeMachineSnapshotService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, timeMachineSnapshots) = await (
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, timeMachineSnapshots) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
             spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult, condaCacheResult,
+            pnpmStoreResult,
             timeMachineSnapshotResult
         )
         guard !Task.isCancelled else { return }
@@ -1597,6 +1666,7 @@ struct MaintenanceView: View {
         tartCacheSnapshot = tartCache
         condaCacheSnapshot = condaCache
         nixGarbageCollectionState = NixGarbageCollectionService.scan()
+        pnpmStoreSnapshot = pnpmStores
         timeMachineSnapshotReport = timeMachineSnapshots
         isScanning = false
     }
@@ -2029,6 +2099,36 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("Nix garbage collection is unavailable because the command or store could not be found.")
         case .failed:
             resultMessage = MoniLocalization.string("Nix garbage collection did not complete successfully.")
+        }
+    }
+
+    private func prunePnpmStores() async {
+        isRunning = true
+        let outcome = await PnpmStoreMaintenanceService.prune(pnpmStoreSnapshot)
+        pnpmStoreSnapshot = await PnpmStoreMaintenanceService.scan()
+        isRunning = false
+
+        switch outcome {
+        case let .pruned(storeCount, reclaimedBytes, failedCount):
+            var message = MoniLocalization.format(
+                "Pruned %@ pnpm stores and reclaimed %@.",
+                storeCount.formatted(),
+                maintenanceBytes(reclaimedBytes)
+            )
+            if failedCount > 0 {
+                message += " " + MoniLocalization.format("%@ stores could not be pruned.", failedCount.formatted())
+            }
+            resultMessage = message
+        case .noAction:
+            resultMessage = MoniLocalization.string("No pnpm stores needed pruning.")
+        case .protected:
+            resultMessage = MoniLocalization.string("pnpm store pruning was skipped because every store is protected by the whitelist.")
+        case .busy:
+            resultMessage = MoniLocalization.string("pnpm store pruning was skipped because pnpm is running.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("pnpm store pruning is unavailable because no installed pnpm command could be found.")
+        case .failed:
+            resultMessage = MoniLocalization.string("pnpm store pruning did not complete successfully.")
         }
     }
 }

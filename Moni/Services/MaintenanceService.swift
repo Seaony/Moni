@@ -154,6 +154,11 @@ nonisolated enum MaintenanceService {
             "arrow.trianglehead.2.clockwise.rotate.90", .storage
         ),
         task(
+            "pnpm_store_prune", "pnpm Store Pruning",
+            "Prune unreferenced packages from every installed pnpm store.",
+            "shippingbox.circle", .storage, policy: .requiresInactiveApplications
+        ),
+        task(
             "time_machine_snapshots", "Time Machine",
             "Report local snapshots and review incomplete backups for removal with tmutil.",
             "clock.arrow.trianglehead.counterclockwise.rotate.90", .storage
