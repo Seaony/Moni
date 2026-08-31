@@ -9,6 +9,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case messagesPreviewCaches
     case identityAndSuggestionCaches
     case calendarCache
+    case addressBookPhotoCaches
     case utmCaches
     case savedApplicationState
     case recentItems
@@ -26,6 +27,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .messagesPreviewCaches: "Messages preview caches"
         case .identityAndSuggestionCaches: "Identity and suggestion caches"
         case .calendarCache: "Calendar cache"
+        case .addressBookPhotoCaches: "Address Book photo caches"
         case .utmCaches: "UTM sandbox caches"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
@@ -149,6 +151,10 @@ nonisolated enum CacheCleanupService {
         let calendarCache = await scanCalendarCache()
         discoveredItems.append(contentsOf: calendarCache.items)
         unreadableItemCount += calendarCache.unreadableItemCount
+
+        let addressBookPhotoCaches = await scanAddressBookPhotoCaches()
+        discoveredItems.append(contentsOf: addressBookPhotoCaches.items)
+        unreadableItemCount += addressBookPhotoCaches.unreadableItemCount
 
         let handoffClipboard = await scanHandoffClipboard(referenceDate: Date())
         discoveredItems.append(contentsOf: handoffClipboard.items)
@@ -280,6 +286,14 @@ nonisolated enum CacheCleanupService {
         }
         let utmIsSafe = !requiresUTMProbe || utmIsInactive()
         for item in items {
+            if item.category == .addressBookPhotoCaches {
+                guard addressBookPhotoCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .calendarCache {
                 guard calendarCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -369,35 +383,101 @@ nonisolated enum CacheCleanupService {
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
     }
 
+    private static func scanAddressBookPhotoCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let rootPath = addressBookSourcesRoot()
+        guard isRealDirectory(at: rootPath) else {
+            return ([], FileManager.default.fileExists(atPath: rootPath) ? 1 : 0)
+        }
+        let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+        let sourceURLs: [URL]
+        do {
+            sourceURLs = try FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+            )
+        } catch {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for sourceURL in sourceURLs where !sourceURL.lastPathComponent.hasPrefix(".") {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard isRealDirectory(at: sourceURL.path) else { continue }
+            let candidate = sourceURL.appendingPathComponent("Photos.cache").standardizedFileURL.path
+            guard FileManager.default.fileExists(atPath: candidate) else { continue }
+            guard addressBookPhotoCacheItemIsAllowed(candidate),
+                  let measurement = await cacheTargetSize(at: candidate) else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: candidate,
+                category: .addressBookPhotoCaches,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func addressBookPhotoCacheItemIsAllowed(_ path: String) -> Bool {
+        let root = addressBookSourcesRoot()
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let source = url.deletingLastPathComponent()
+        return url.lastPathComponent == "Photos.cache"
+            && !source.lastPathComponent.hasPrefix(".")
+            && isRealDirectory(at: root)
+            && isRealDirectory(at: source.path)
+            && pathsEqual(source.deletingLastPathComponent().path, root)
+            && !isSymbolicLink(at: url.path)
+    }
+
+    private static func addressBookSourcesRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/AddressBook/Sources", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
     private static func scanCalendarCache() async -> (
         items: [CacheCleanupItem],
         unreadableItemCount: Int
     ) {
         let path = calendarCachePath()
         guard FileManager.default.fileExists(atPath: path) else { return ([], 0) }
-        guard calendarCacheItemIsAllowed(path) else { return ([], 1) }
-
-        var value = stat()
-        guard path.withCString({ lstat($0, &value) }) == 0 else { return ([], 1) }
-        let kind = value.st_mode & S_IFMT
-        let size: UInt64
-        var unreadableItemCount = 0
-        if kind == S_IFREG {
-            size = value.st_blocks > 0 ? UInt64(value.st_blocks) * 512 : 0
-        } else if kind == S_IFDIR {
-            var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: path) {
-                guard !Task.isCancelled else { return ([], 0) }
-                if update.isComplete { finalUpdate = update }
-            }
-            guard let finalUpdate else { return ([], 1) }
-            size = finalUpdate.scannedBytes
-            unreadableItemCount = finalUpdate.unreadableItemCount
-        } else {
+        guard calendarCacheItemIsAllowed(path),
+              let measurement = await cacheTargetSize(at: path) else {
             return ([], 1)
         }
+        return ([CacheCleanupItem(
+            path: path,
+            category: .calendarCache,
+            sizeBytes: measurement.sizeBytes
+        )], measurement.unreadableItemCount)
+    }
 
-        return ([CacheCleanupItem(path: path, category: .calendarCache, sizeBytes: size)], unreadableItemCount)
+    private static func cacheTargetSize(at path: String) async -> (
+        sizeBytes: UInt64,
+        unreadableItemCount: Int
+    )? {
+        var value = stat()
+        guard path.withCString({ lstat($0, &value) }) == 0 else { return nil }
+        let kind = value.st_mode & S_IFMT
+        if kind == S_IFREG {
+            let size = value.st_blocks > 0 ? UInt64(value.st_blocks) * 512 : 0
+            return (size, 0)
+        }
+        guard kind == S_IFDIR else { return nil }
+        var finalUpdate: DiskAnalysisUpdate?
+        for await update in DiskAnalyzer.updates(for: path) {
+            guard !Task.isCancelled else { return nil }
+            if update.isComplete { finalUpdate = update }
+        }
+        guard let finalUpdate else { return nil }
+        return (finalUpdate.scannedBytes, finalUpdate.unreadableItemCount)
     }
 
     private static func calendarCacheItemIsAllowed(_ path: String) -> Bool {
