@@ -149,6 +149,11 @@ nonisolated enum MaintenanceService {
             "clock.arrow.trianglehead.counterclockwise.rotate.90", .storage
         ),
         task(
+            "deep_system_cleanup", "System Cleanup",
+            "Scan old system caches and logs before approving cleanup.",
+            "externaldrive.badge.minus", .storage, authorization: .administrator
+        ),
+        task(
             "shared_file_list_repair", "Shared File Lists",
             "Repair malformed Finder favorites and recent-item lists.", "list.bullet.rectangle",
             .finder

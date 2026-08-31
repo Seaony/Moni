@@ -42,6 +42,11 @@ private struct LoginItemsReview: Identifiable {
     let items: [BrokenLoginItem]
 }
 
+private struct SystemCleanupReview: Identifiable {
+    let id = UUID()
+    let snapshot: SystemCleanupSnapshot
+}
+
 struct MaintenanceView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var snapshot = FinderMaintenanceSnapshot(
@@ -117,6 +122,12 @@ struct MaintenanceView: View {
         unreadableItemCount: 0
     )
     @State private var pendingTimeMachineCleanup: TimeMachineBackupCleanupPlan?
+    @State private var systemCleanupSnapshot = SystemCleanupSnapshot(
+        state: .notScanned,
+        items: [],
+        unreadableItemCount: 0
+    )
+    @State private var systemCleanupReview: SystemCleanupReview?
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -304,6 +315,18 @@ struct MaintenanceView: View {
                         isActionEnabled: !timeMachineSnapshotReport.incompleteBackups.isEmpty
                     ) {
                         Task { await prepareTimeMachineCleanup() }
+                    }
+
+                    commandCard(
+                        title: "System Cleanup",
+                        description: "Scan old system caches and logs before approving cleanup.",
+                        symbol: "externaldrive.badge.minus",
+                        status: systemCleanupStatus,
+                        buttonTitle: systemCleanupButtonTitle,
+                        isAvailable: systemCleanupSnapshot.state != .unavailable,
+                        isActionEnabled: systemCleanupSnapshot.state != .unavailable
+                    ) {
+                        Task { await scanSystemCleanup() }
                     }
 
                     commandCard(
@@ -497,6 +520,12 @@ struct MaintenanceView: View {
                     pendingTimeMachineCleanup = nil
                     Task { await executeTimeMachineCleanup(plan) }
                 }
+            )
+        }
+        .sheet(item: $systemCleanupReview) { review in
+            SystemCleanupScanReviewView(
+                snapshot: review.snapshot,
+                onClose: { systemCleanupReview = nil }
             )
         }
         .alert("Maintenance result", isPresented: resultMessageBinding) {
@@ -886,6 +915,7 @@ struct MaintenanceView: View {
         snapshot.unreadableItemCount
             + preferenceUnreadableItemCount
             + fileRepairSnapshot.unreadableItemCount
+            + systemCleanupSnapshot.unreadableItemCount
     }
 
     private var dsStoreStatus: String {
@@ -1235,6 +1265,65 @@ struct MaintenanceView: View {
             return MoniLocalization.string("Not configured")
         case .unavailable, .failed:
             return MoniLocalization.string("Unavailable")
+        }
+    }
+
+    private var systemCleanupStatus: String {
+        switch systemCleanupSnapshot.state {
+        case .notScanned:
+            return MoniLocalization.string("Administrator scan required")
+        case .ready:
+            let total = systemCleanupSnapshot.items.reduce(UInt64(0)) { partial, item in
+                let (sum, overflow) = partial.addingReportingOverflow(item.sizeBytes)
+                return overflow ? UInt64.max : sum
+            }
+            return MoniLocalization.format(
+                "%@ files · %@",
+                systemCleanupSnapshot.items.count.formatted(),
+                maintenanceBytes(total)
+            )
+        case .empty:
+            return MoniLocalization.string("No old system files")
+        case .unavailable:
+            return MoniLocalization.string("Unavailable")
+        case .cancelled:
+            return MoniLocalization.string("Scan cancelled")
+        case .failed:
+            return MoniLocalization.string("Scan failed")
+        }
+    }
+
+    private var systemCleanupButtonTitle: String {
+        switch systemCleanupSnapshot.state {
+        case .ready:
+            return MoniLocalization.string("Review Scan")
+        case .empty:
+            return MoniLocalization.string("Rescan")
+        case .notScanned, .cancelled, .failed:
+            return MoniLocalization.string("Start Scan")
+        case .unavailable:
+            return MoniLocalization.string("Unavailable")
+        }
+    }
+
+    private func scanSystemCleanup() async {
+        isRunning = true
+        let result = await SystemCleanupService.scan()
+        isRunning = false
+        systemCleanupSnapshot = result
+        switch result.state {
+        case .ready:
+            systemCleanupReview = SystemCleanupReview(snapshot: result)
+        case .empty:
+            resultMessage = MoniLocalization.string("No old system caches or logs were found.")
+        case .cancelled:
+            resultMessage = MoniLocalization.string("System cleanup scan was cancelled.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("System cleanup scan is unavailable.")
+        case .failed:
+            resultMessage = MoniLocalization.string("System cleanup scan did not complete.")
+        case .notScanned:
+            break
         }
     }
 
@@ -2159,6 +2248,105 @@ private struct TimeMachineBackupCleanupConfirmationView: View {
 
     private var totalSize: UInt64 {
         readyItems.reduce(0) { partial, item in
+            let (sum, overflow) = partial.addingReportingOverflow(item.sizeBytes)
+            return overflow ? UInt64.max : sum
+        }
+    }
+
+    private func relativeDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = MoniLocalization.currentLanguage.locale
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+private struct SystemCleanupScanReviewView: View {
+    let snapshot: SystemCleanupSnapshot
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("System Cleanup Scan")
+                    .font(.system(size: 18, weight: .bold))
+                Text("This read-only scan found old system cache and log files. No files have been changed.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(SystemCleanupCategory.allCases, id: \.self) { category in
+                        let categoryItems = snapshot.items.filter { $0.category == category }
+                        if !categoryItems.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    Text(MoniLocalization.string(category.titleKey))
+                                        .font(.system(size: 12.5, weight: .bold))
+                                    Spacer(minLength: 8)
+                                    Text(MoniLocalization.format(
+                                        "%@ files · %@",
+                                        categoryItems.count.formatted(),
+                                        maintenanceBytes(totalSize(of: categoryItems))
+                                    ))
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                                }
+
+                                ForEach(categoryItems) { item in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack(spacing: 8) {
+                                            Text(item.name)
+                                                .font(.system(size: 12, weight: .semibold))
+                                                .lineLimit(1)
+                                            Spacer(minLength: 8)
+                                            Text(maintenanceBytes(item.sizeBytes))
+                                                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                                                .foregroundStyle(MoniPalette.orange)
+                                        }
+                                        Text(item.path)
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                                            .lineLimit(2)
+                                            .truncationMode(.middle)
+                                            .textSelection(.enabled)
+                                        Text(relativeDate(item.modifiedDate))
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                                    }
+                                    .padding(10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(MoniPalette.insetSecondary)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(1)
+            }
+            .frame(maxHeight: 360)
+
+            HStack {
+                Text(MoniLocalization.format(
+                    "%@ files · %@",
+                    snapshot.items.count.formatted(),
+                    maintenanceBytes(totalSize(of: snapshot.items))
+                ))
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(MoniPalette.foregroundSecondary)
+                Spacer()
+                Button("Close", action: onClose)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 680)
+    }
+
+    private func totalSize(of items: [SystemCleanupItem]) -> UInt64 {
+        items.reduce(0) { partial, item in
             let (sum, overflow) = partial.addingReportingOverflow(item.sizeBytes)
             return overflow ? UInt64.max : sum
         }
