@@ -47,6 +47,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case goBuildCache
     case goModuleCache
     case clangModuleCache
+    case xcodeBuildCaches
 
     var titleKey: String {
         switch self {
@@ -95,6 +96,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .goBuildCache: "Go build cache"
         case .goModuleCache: "Go module cache"
         case .clangModuleCache: "Clang module cache"
+        case .xcodeBuildCaches: "Xcode build caches"
         }
     }
 }
@@ -204,6 +206,7 @@ nonisolated enum CacheCleanupService {
                     || pathsEqual(item.path, vivaldiGeneralCacheRoot())
                     || pathsEqual(item.path, qqBrowserGeneralCacheRoot())
                     || pathsEqual(item.path, heliumGeneralCacheRoot())
+                    || pathsEqual(item.path, xcodeApplicationCacheRoot())
                     || resolvedPythonPackageCacheRoots.contains(where: { pathsEqual(item.path, $0) })
                     || resolvedMiseCacheRoot.map { pathsEqual(item.path, $0) } == true)
         }
@@ -427,6 +430,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: clangModuleCache.items)
         unreadableItemCount += clangModuleCache.unreadableItemCount
 
+        let xcodeBuildCaches = await scanXcodeBuildCaches()
+        discoveredItems.append(contentsOf: xcodeBuildCaches.items)
+        unreadableItemCount += xcodeBuildCaches.unreadableItemCount
+
         let developerBackupFiles = scanDeveloperBackupFiles()
         discoveredItems.append(contentsOf: developerBackupFiles.items)
         unreadableItemCount += developerBackupFiles.unreadableItemCount
@@ -602,7 +609,18 @@ nonisolated enum CacheCleanupService {
         let requiresClangProbe = items.contains { $0.category == .clangModuleCache }
         let clangRoot = requiresClangProbe ? clangModuleCacheRoot() : nil
         let clangIsSafe = !requiresClangProbe || clangModuleCacheIsInactive()
+        let xcodeBuildIsSafe = !items.contains { $0.category == .xcodeBuildCaches }
+            || xcodeBuildToolsAreInactive()
         for item in items {
+            if item.category == .xcodeBuildCaches {
+                guard xcodeBuildIsSafe,
+                      xcodeBuildCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .goBuildCache {
                 guard let root = goRoots.build,
                       goCacheItemIsAllowed(item.path, root: root) else {
@@ -1745,6 +1763,85 @@ nonisolated enum CacheCleanupService {
             ["-x", "swiftc"],
             ["-x", "sourcekit-lsp"],
             ["-x", "SourceKitService"]
+        ])
+    }
+
+    private static func scanXcodeBuildCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard xcodeBuildToolsAreInactive() else { return ([], 0) }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in xcodeBuildCacheRoots() where isRealDirectory(at: root) {
+            let children: [URL]
+            do {
+                children = try FileManager.default.contentsOfDirectory(
+                    at: URL(fileURLWithPath: root, isDirectory: true),
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                unreadableItemCount += 1
+                continue
+            }
+            for child in children {
+                guard !Task.isCancelled else { return ([], 0) }
+                let path = child.standardizedFileURL.path
+                guard xcodeBuildCacheItemIsAllowed(path),
+                      let measurement = await cacheTargetSize(at: path),
+                      measurement.sizeBytes > 0 else {
+                    continue
+                }
+                unreadableItemCount += measurement.unreadableItemCount
+                items.append(CacheCleanupItem(
+                    path: path,
+                    category: .xcodeBuildCaches,
+                    sizeBytes: measurement.sizeBytes
+                ))
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func xcodeBuildCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return !url.lastPathComponent.hasPrefix(".")
+            && isRealFileOrDirectory(at: url.path)
+            && !isSymbolicLink(at: url.path)
+            && !holdsCompiledModelCache(url.path)
+            && xcodeBuildCacheRoots().contains { root in
+                isRealDirectory(at: root)
+                    && currentUserOwnsDirectory(at: root)
+                    && pathsEqual(url.deletingLastPathComponent().path, root)
+            }
+    }
+
+    private static func xcodeBuildCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return [
+            xcodeApplicationCacheRoot(),
+            home + "/Library/Developer/Xcode/Products",
+            home + "/Library/Developer/Xcode/DerivedData",
+            home + "/Library/Developer/Xcode/UserData/IB Support"
+        ]
+    }
+
+    private static func xcodeApplicationCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/com.apple.dt.Xcode", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func xcodeBuildToolsAreInactive() -> Bool {
+        processProbesAreInactive([
+            ["-x", "Xcode"],
+            ["-x", "xcodebuild"],
+            ["-x", "xctest"],
+            ["-x", "XCTRunner"],
+            ["-x", "XCBBuildService"],
+            ["-x", "swift-frontend"]
         ])
     }
 
