@@ -3,6 +3,7 @@ import SwiftUI
 private enum FinderMaintenanceAction: String, Identifiable {
     case finderCache
     case savedApplicationStates
+    case brokenPreferences
 
     var id: String { rawValue }
 }
@@ -23,6 +24,8 @@ struct MaintenanceView: View {
     )
     @State private var isScanning = false
     @State private var isRunning = false
+    @State private var brokenPreferencePaths: [String] = []
+    @State private var preferenceUnreadableItemCount = 0
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var resultMessage: String?
 
@@ -50,6 +53,16 @@ struct MaintenanceView: View {
                 ) {
                     Task { await prepare(.savedApplicationStates, paths: snapshot.staleSavedStatePaths) }
                 }
+            }
+
+            maintenanceCard(
+                title: "Broken Config Repair",
+                description: "Find malformed third-party preference files and move them to Trash.",
+                symbol: "wrench.and.screwdriver",
+                count: brokenPreferencePaths.count,
+                buttonTitle: "Review Repair"
+            ) {
+                Task { await prepare(.brokenPreferences, paths: brokenPreferencePaths) }
             }
 
             catalogSummary
@@ -84,9 +97,9 @@ struct MaintenanceView: View {
 
             Spacer(minLength: 12)
 
-            if snapshot.unreadableItemCount > 0 {
+            if unreadableItemCount > 0 {
                 Label(
-                    MoniLocalization.format("%@ unreadable", snapshot.unreadableItemCount.formatted()),
+                    MoniLocalization.format("%@ unreadable", unreadableItemCount.formatted()),
                     systemImage: "exclamationmark.triangle"
                 )
                 .font(.system(size: 11.5, weight: .semibold))
@@ -179,7 +192,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "2", MoniPalette.green)
+                catalogMetric("Available now", "3", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -225,11 +238,19 @@ struct MaintenanceView: View {
         )
     }
 
+    private var unreadableItemCount: Int {
+        snapshot.unreadableItemCount + preferenceUnreadableItemCount
+    }
+
     private func scan() async {
         isScanning = true
-        let result = await MaintenanceService.scanFinderMaintenance()
+        async let finderResult = MaintenanceService.scanFinderMaintenance()
+        async let preferenceResult = MaintenanceService.scanBrokenPreferences()
+        let (finder, preferences) = await (finderResult, preferenceResult)
         guard !Task.isCancelled else { return }
-        snapshot = result
+        snapshot = finder
+        brokenPreferencePaths = preferences.paths
+        preferenceUnreadableItemCount = preferences.unreadableItemCount
         isScanning = false
     }
 
@@ -272,7 +293,10 @@ struct MaintenanceView: View {
                 parts.append(MoniLocalization.string("One or more Finder services could not be refreshed."))
             }
         } else if parts.isEmpty {
-            parts.append(MoniLocalization.string("No old application states needed cleanup."))
+            let message = pending.action == .savedApplicationStates
+                ? "No old application states needed cleanup."
+                : "No damaged preference files needed repair."
+            parts.append(MoniLocalization.string(message))
         }
 
         await scan()
@@ -290,7 +314,7 @@ private struct MaintenanceConfirmationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(pending.action == .finderCache ? "Refresh Finder caches?" : "Clean old application states?")
+                Text(MoniLocalization.string(confirmationTitle))
                     .font(.system(size: 18, weight: .bold))
                 Text(confirmationDescription)
                     .font(.system(size: 12))
@@ -301,9 +325,7 @@ private struct MaintenanceConfirmationView: View {
                 ContentUnavailableView(
                     "No files to move",
                     systemImage: "checkmark.circle",
-                    description: Text(pending.action == .finderCache
-                        ? "Finder services can still be refreshed."
-                        : "No saved application states older than 30 days were found.")
+                    description: Text(MoniLocalization.string(emptyDescription))
                 )
                 .frame(maxWidth: .infinity, minHeight: 170)
             } else {
@@ -339,7 +361,7 @@ private struct MaintenanceConfirmationView: View {
                 Button("Cancel", action: onCancel)
                 Button("Run Maintenance", role: .destructive, action: onConfirm)
                     .buttonStyle(.borderedProminent)
-                    .disabled(pending.action == .savedApplicationStates && pending.plan.candidates.isEmpty)
+                    .disabled(pending.action != .finderCache && pending.plan.candidates.isEmpty)
             }
         }
         .padding(20)
@@ -347,9 +369,29 @@ private struct MaintenanceConfirmationView: View {
     }
 
     private var confirmationDescription: String {
-        if pending.action == .finderCache {
-            return MoniLocalization.string("Listed cache files will be moved to Trash before Finder services are refreshed.")
+        switch pending.action {
+        case .finderCache:
+            MoniLocalization.string("Listed cache files will be moved to Trash before Finder services are refreshed.")
+        case .savedApplicationStates:
+            MoniLocalization.string("Listed saved states will be moved to Trash. Applications can recreate them when needed.")
+        case .brokenPreferences:
+            MoniLocalization.string("Listed malformed preference files will be moved to Trash. Applications can recreate them when needed.")
         }
-        return MoniLocalization.string("Listed saved states will be moved to Trash. Applications can recreate them when needed.")
+    }
+
+    private var confirmationTitle: String {
+        switch pending.action {
+        case .finderCache: "Refresh Finder caches?"
+        case .savedApplicationStates: "Clean old application states?"
+        case .brokenPreferences: "Repair broken preferences?"
+        }
+    }
+
+    private var emptyDescription: String {
+        switch pending.action {
+        case .finderCache: "Finder services can still be refreshed."
+        case .savedApplicationStates: "No saved application states older than 30 days were found."
+        case .brokenPreferences: "No damaged third-party preference files were found."
+        }
     }
 }

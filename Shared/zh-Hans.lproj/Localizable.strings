@@ -541,3 +541,10 @@
 "Run Maintenance" = "运行维护";
 "Listed cache files will be moved to Trash before Finder services are refreshed." = "刷新 Finder 服务前，列出的缓存文件会被移到废纸篓。";
 "Listed saved states will be moved to Trash. Applications can recreate them when needed." = "列出的已存储状态会被移到废纸篓，应用可在需要时重新创建。";
+"Broken Config Repair" = "损坏配置修复";
+"Find malformed third-party preference files and move them to Trash." = "查找格式损坏的第三方偏好设置文件并移到废纸篓。";
+"Review Repair" = "检查修复内容";
+"No damaged preference files needed repair." = "没有需要修复的损坏偏好设置文件。";
+"Repair broken preferences?" = "修复损坏的偏好设置？";
+"No damaged third-party preference files were found." = "未找到损坏的第三方偏好设置文件。";
+"Listed malformed preference files will be moved to Trash. Applications can recreate them when needed." = "列出的损坏偏好设置文件会被移到废纸篓，应用可在需要时重新创建。";
