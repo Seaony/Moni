@@ -172,6 +172,7 @@
 "Calendar cache" = "日历缓存";
 "Address Book photo caches" = "通讯录照片缓存";
 "UTM sandbox caches" = "UTM 沙盒缓存";
+"Shared container logs" = "共享容器日志";
 "Virtualization temporary data" = "虚拟化临时数据";
 "Saved application states" = "已保存的应用状态";
 "Recent items" = "最近使用项目";

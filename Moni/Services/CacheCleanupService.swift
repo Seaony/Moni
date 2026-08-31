@@ -11,6 +11,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case calendarCache
     case addressBookPhotoCaches
     case utmCaches
+    case sharedContainerLogs
     case virtualizationTemporaryData
     case savedApplicationState
     case recentItems
@@ -30,6 +31,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .calendarCache: "Calendar cache"
         case .addressBookPhotoCaches: "Address Book photo caches"
         case .utmCaches: "UTM sandbox caches"
+        case .sharedContainerLogs: "Shared container logs"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
@@ -117,6 +119,10 @@ nonisolated enum CacheCleanupService {
             discoveredItems.append(contentsOf: utmCaches.items)
             unreadableItemCount += utmCaches.unreadableItemCount
         }
+
+        let sharedContainerLogs = await scanSharedContainerLogs()
+        discoveredItems.append(contentsOf: sharedContainerLogs.items)
+        unreadableItemCount += sharedContainerLogs.unreadableItemCount
 
         let virtualizationTemporaryData = await scanVirtualizationTemporaryData()
         discoveredItems.append(contentsOf: virtualizationTemporaryData.items)
@@ -292,6 +298,16 @@ nonisolated enum CacheCleanupService {
         }
         let utmIsSafe = !requiresUTMProbe || utmIsInactive()
         for item in items {
+            if item.category == .sharedContainerLogs {
+                guard sharedContainerLogItemIsAllowed(item.path),
+                      !holdsCompiledModelCache(item.path),
+                      ContainerCacheSafety.isConclusivelyIdle(at: item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .virtualizationTemporaryData {
                 guard virtualizationTemporaryItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -662,6 +678,147 @@ nonisolated enum CacheCleanupService {
             })
         }
         return (items, unreadableItemCount)
+    }
+
+    private static func scanSharedContainerLogs() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let root = sharedContainerRoot()
+        guard isRealDirectory(at: root) else { return ([], 0) }
+
+        let containers: [URL]
+        do {
+            containers = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isReadableKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for container in containers {
+            guard !Task.isCancelled else { return ([], 0) }
+            let identifier = container.lastPathComponent
+            guard sharedContainerIsAllowed(container.path, identifier: identifier) else { continue }
+
+            for logRoot in sharedContainerLogRoots(container.path) where isRealDirectory(at: logRoot) {
+                var finalUpdate: DiskAnalysisUpdate?
+                for await update in DiskAnalyzer.updates(for: logRoot) {
+                    guard !Task.isCancelled else { return ([], 0) }
+                    if update.isComplete { finalUpdate = update }
+                }
+                guard let finalUpdate else {
+                    unreadableItemCount += 1
+                    continue
+                }
+                unreadableItemCount += finalUpdate.unreadableItemCount
+                items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                    guard sharedContainerLogItemIsAllowed(path),
+                          !holdsCompiledModelCache(path),
+                          ContainerCacheSafety.isConclusivelyIdle(at: path) else {
+                        return nil
+                    }
+                    return CacheCleanupItem(
+                        path: path,
+                        category: .sharedContainerLogs,
+                        sizeBytes: size
+                    )
+                })
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func sharedContainerLogItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !isSymbolicLink(at: url.path) else { return false }
+
+        let root = sharedContainerRoot()
+        let parent = url.deletingLastPathComponent().path
+        guard parent.hasPrefix(root + "/") else { return false }
+        let relativeParent = parent
+            .dropFirst(root.count + 1)
+            .split(separator: "/")
+            .map(String.init)
+        let identifier: String
+        let containerPath: String
+        if relativeParent.count == 2, relativeParent[1] == "Logs" {
+            identifier = relativeParent[0]
+            containerPath = root + "/" + identifier
+        } else if relativeParent.count == 3,
+                  relativeParent[1] == "Library",
+                  relativeParent[2] == "Logs" {
+            identifier = relativeParent[0]
+            containerPath = root + "/" + identifier
+        } else {
+            return false
+        }
+        return sharedContainerIsAllowed(containerPath, identifier: identifier)
+            && sharedContainerLogRoots(containerPath).contains {
+                pathsEqual($0, url.deletingLastPathComponent().path) && isRealDirectory(at: $0)
+            }
+    }
+
+    private static func sharedContainerIsAllowed(_ path: String, identifier: String) -> Bool {
+        let lowercased = identifier.lowercased()
+        guard isRealDirectory(at: path),
+              access(path, R_OK) == 0,
+              !lowercased.hasPrefix("com.apple."),
+              !lowercased.hasPrefix("group.com.apple."),
+              !lowercased.hasPrefix("systemgroup.com.apple.") else {
+            return false
+        }
+        return !isSafariExtensionContainer(identifier)
+    }
+
+    private static func isSafariExtensionContainer(_ identifier: String) -> Bool {
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Containers", isDirectory: true)
+            .appendingPathComponent(identifier, isDirectory: true)
+            .standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return false
+        }
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: path,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) else {
+            return true
+        }
+        return entries.contains {
+            $0.lastPathComponent.localizedCaseInsensitiveContains("safari")
+        }
+    }
+
+    private static func holdsCompiledModelCache(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        if url.lastPathComponent == "com.apple.e5rt.e5bundlecache" {
+            return true
+        }
+        var isDirectory: ObjCBool = false
+        let child = url.appendingPathComponent("com.apple.e5rt.e5bundlecache", isDirectory: true)
+        return FileManager.default.fileExists(atPath: child.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
+    private static func sharedContainerLogRoots(_ containerPath: String) -> [String] {
+        [
+            containerPath + "/Logs",
+            containerPath + "/Library/Logs"
+        ]
+    }
+
+    private static func sharedContainerRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Group Containers", isDirectory: true)
+            .standardizedFileURL.path
     }
 
     private static func utmCacheItemIsAllowed(_ path: String) -> Bool {
