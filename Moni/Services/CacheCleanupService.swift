@@ -7,6 +7,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case diagnosticReports
     case oldCrashReports
     case messagesPreviewCaches
+    case utmCaches
     case savedApplicationState
     case recentItems
     case incompleteDownloads
@@ -21,6 +22,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .diagnosticReports: "Diagnostic reports"
         case .oldCrashReports: "Old crash reports"
         case .messagesPreviewCaches: "Messages preview caches"
+        case .utmCaches: "UTM sandbox caches"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
         case .incompleteDownloads: "Incomplete downloads"
@@ -93,6 +95,19 @@ nonisolated enum CacheCleanupService {
                 guard size > 0, !name.hasPrefix(".") else { return nil }
                 return CacheCleanupItem(path: path, category: source.category, sizeBytes: size)
             })
+        }
+
+        let utmIsSafe = await Task.detached(priority: .utility) {
+            utmIsInactive()
+        }.value
+        if !utmIsSafe {
+            discoveredItems.removeAll { item in
+                item.category == .userCaches && pathsEqual(item.path, utmApplicationCacheRoot())
+            }
+        } else {
+            let utmCaches = await scanUTMCaches()
+            discoveredItems.append(contentsOf: utmCaches.items)
+            unreadableItemCount += utmCaches.unreadableItemCount
         }
 
         let incompleteDownloads = await Task.detached(priority: .utility) {
@@ -247,7 +262,22 @@ nonisolated enum CacheCleanupService {
         var rejectedItems: [CleanupRejectedItem] = []
         let requiresMailProbe = items.contains { $0.category == .oldMailAttachments }
         let mailIsSafe = !requiresMailProbe || mailIsInactive()
+        let requiresUTMProbe = items.contains {
+            $0.category == .utmCaches
+                || ($0.category == .userCaches && pathsEqual($0.path, utmApplicationCacheRoot()))
+        }
+        let utmIsSafe = !requiresUTMProbe || utmIsInactive()
         for item in items {
+            if item.category == .utmCaches
+                || (item.category == .userCaches && pathsEqual(item.path, utmApplicationCacheRoot())) {
+                guard utmIsSafe,
+                      item.category == .userCaches || utmCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .messagesPreviewCaches {
                 guard messagePreviewCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -309,6 +339,82 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanUTMCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for rootPath in utmSandboxCacheRoots() where isRealDirectory(at: rootPath) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: rootPath) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                guard !name.hasPrefix("."), utmCacheItemIsAllowed(path) else { return nil }
+                return CacheCleanupItem(path: path, category: .utmCaches, sizeBytes: size)
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func utmCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path) else {
+            return false
+        }
+        return utmSandboxCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func utmSandboxCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let container = home + "/Library/Containers/com.utmapp.UTM/Data"
+        return [
+            container + "/Library/Caches",
+            container + "/tmp"
+        ]
+    }
+
+    private static func utmApplicationCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches", isDirectory: true)
+            .appendingPathComponent("com.utmapp.UTM", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func utmIsInactive() -> Bool {
+        let executable = "/usr/bin/pgrep"
+        guard FileManager.default.isExecutableFile(atPath: executable) else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["-x", "UTM"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let timeout = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5, execute: timeout)
+        process.waitUntilExit()
+        timeout.cancel()
+        return process.terminationStatus == 1
     }
 
     private static func scanMessagesPreviewCaches() async -> (
