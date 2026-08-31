@@ -150,6 +150,58 @@ nonisolated enum ApplicationUninstallService {
             add(home + "/Library/Saved Application State/" + name + ".savedState", .savedState)
         }
 
+        let pluginPaths: [(String, ApplicationRemovalKind)] = [
+            (home + "/Library/Services/" + application.name + ".workflow", .other),
+            (home + "/Library/QuickLook/" + application.name + ".qlgenerator", .other),
+            (home + "/Library/Internet Plug-Ins/" + application.name + ".plugin", .other),
+            (home + "/Library/Audio/Plug-Ins/Components/" + application.name + ".component", .other),
+            (home + "/Library/Audio/Plug-Ins/VST/" + application.name + ".vst", .other),
+            (home + "/Library/Audio/Plug-Ins/VST3/" + application.name + ".vst3", .other),
+            (home + "/Library/Audio/Plug-Ins/Digidesign/" + application.name + ".dpm", .other),
+            (home + "/Library/PreferencePanes/" + application.name + ".prefPane", .other),
+            (home + "/Library/Input Methods/" + application.name + ".app", .other),
+            (home + "/Library/Screen Savers/" + application.name + ".saver", .other),
+            (home + "/Library/Frameworks/" + application.name + ".framework", .other),
+            (home + "/Library/Contextual Menu Items/" + application.name + ".plugin", .other),
+            (home + "/Library/Spotlight/" + application.name + ".mdimporter", .other),
+            (home + "/Library/ColorPickers/" + application.name + ".colorPicker", .other),
+            (home + "/Library/Workflows/" + application.name + ".workflow", .other),
+            (home + "/Library/Address Book Plug-Ins/" + application.name + ".bundle", .other),
+            (home + "/Library/Accessibility/" + application.name + ".bundle", .other),
+            (home + "/Library/Mail/Bundles/" + application.name + ".mailbundle", .other)
+        ]
+        for (path, kind) in pluginPaths { add(path, kind) }
+
+        let independentCLINames: Set<String> = ["claude", "opencode", "codex", "gemini"]
+        if !independentCLINames.contains(application.name.lowercased()) {
+            let xdgNames = Set(names.flatMap { [$0, $0.lowercased()] })
+            for name in xdgNames {
+                add(home + "/.config/" + name, .applicationSupport)
+                add(home + "/.cache/" + name, .cache)
+                add(home + "/.local/share/" + name, .applicationSupport)
+            }
+        }
+
+        let launchAgentRoot = home + "/Library/LaunchAgents"
+        if application.name.count >= 5,
+           !isCommonName(application.name),
+           fileManager.fileExists(atPath: launchAgentRoot) {
+            if let launchAgents = try? fileManager.contentsOfDirectory(
+                at: URL(fileURLWithPath: launchAgentRoot, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) {
+                for launchAgent in launchAgents where
+                    launchAgent.pathExtension.caseInsensitiveCompare("plist") == .orderedSame
+                    && launchAgent.lastPathComponent.localizedCaseInsensitiveContains(application.name)
+                    && !launchAgent.lastPathComponent.lowercased().hasPrefix("com.apple.") {
+                    add(launchAgent.path, .launchAgent)
+                }
+            } else {
+                isComplete = false
+            }
+        }
+
         if let bundleIdentifier = application.bundleIdentifier,
            isValidBundleIdentifier(bundleIdentifier) {
             let exactPaths: [(String, ApplicationRemovalKind)] = [
@@ -270,11 +322,37 @@ nonisolated enum ApplicationUninstallService {
             }
             for report in reports {
                 let lowercased = report.lastPathComponent.lowercased()
-                if reportNames.contains(where: {
-                    lowercased == $0 || lowercased.hasPrefix($0 + "_") || lowercased.hasPrefix($0 + "-")
+                let allowedExtensions = ["ips", "crash", "spin", "diag"]
+                guard allowedExtensions.contains(report.pathExtension.lowercased()) else { continue }
+                if reportNames.contains(where: { name in
+                    let helperName = name + " helper"
+                    return lowercased.hasPrefix(name + ".")
+                        || lowercased.hasPrefix(name + "_")
+                        || lowercased.hasPrefix(name + "-")
+                        || lowercased.hasPrefix(helperName + ".")
+                        || lowercased.hasPrefix(helperName + "_")
+                        || lowercased.hasPrefix(helperName + "-")
                 }) {
                     add(report.path, .diagnosticReport)
                 }
+            }
+        }
+
+        let crashReporterRoot = home + "/Library/Application Support/CrashReporter"
+        if fileManager.fileExists(atPath: crashReporterRoot) {
+            if let crashReports = try? fileManager.contentsOfDirectory(
+                at: URL(fileURLWithPath: crashReporterRoot, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) {
+                let prefixes = Set([application.name, application.name.replacingOccurrences(of: " ", with: "")])
+                for report in crashReports where report.pathExtension.caseInsensitiveCompare("plist") == .orderedSame {
+                    if prefixes.contains(where: { report.lastPathComponent.hasPrefix($0 + "_") }) {
+                        add(report.path, .diagnosticReport)
+                    }
+                }
+            } else {
+                isComplete = false
             }
         }
 
@@ -434,6 +512,14 @@ nonisolated enum ApplicationUninstallService {
             if base.count >= 3 { names.append(base) }
         }
         return Array(Set(names)).sorted()
+    }
+
+    private static func isCommonName(_ name: String) -> Bool {
+        let common: Set<String> = [
+            "app", "application", "agent", "client", "daemon", "desktop", "helper",
+            "launcher", "manager", "monitor", "service", "support", "update", "updater"
+        ]
+        return common.contains(name.lowercased())
     }
 
     private static func isValidBundleIdentifier(_ value: String) -> Bool {
