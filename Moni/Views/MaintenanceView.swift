@@ -40,6 +40,7 @@ struct MaintenanceView: View {
     )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
+    @State private var confirmsDSStorePrevention = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -123,6 +124,18 @@ struct MaintenanceView: View {
                         confirmsLaunchServicesRepair = true
                     }
 
+                    commandCard(
+                        title: "Prevent Finder .DS_Store",
+                        description: "Stop Finder from writing .DS_Store files on network and USB volumes.",
+                        symbol: "externaldrive.badge.xmark",
+                        status: dsStoreStatus,
+                        buttonTitle: settingsSnapshot.dsStoreKeysToEnable.isEmpty ? "Enabled" : "Review Enable",
+                        isAvailable: true,
+                        isActionEnabled: !settingsSnapshot.dsStoreKeysToEnable.isEmpty
+                    ) {
+                        confirmsDSStorePrevention = true
+                    }
+
                     catalogSummary
                 }
             }
@@ -154,6 +167,18 @@ struct MaintenanceView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("macOS will rebuild file associations and the Open With menu. No documents or applications will be removed.")
+        }
+        .confirmationDialog(
+            "Prevent Finder .DS_Store files?",
+            isPresented: $confirmsDSStorePrevention,
+            titleVisibility: .visible
+        ) {
+            Button("Enable Prevention") {
+                Task { await enableDSStorePrevention() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Finder will stop creating .DS_Store metadata files on network shares and removable USB volumes. Local folders are unchanged.")
         }
     }
 
@@ -252,6 +277,7 @@ struct MaintenanceView: View {
         status: String,
         buttonTitle: String,
         isAvailable: Bool,
+        isActionEnabled: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -282,7 +308,7 @@ struct MaintenanceView: View {
                 Spacer(minLength: 8)
                 Button(MoniLocalization.string(buttonTitle), action: action)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!isAvailable || isScanning || isRunning)
+                    .disabled(!isAvailable || !isActionEnabled || isScanning || isRunning)
             }
         }
         .padding(16)
@@ -314,7 +340,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "6", MoniPalette.green)
+                catalogMetric("Available now", "7", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -364,6 +390,16 @@ struct MaintenanceView: View {
         snapshot.unreadableItemCount
             + preferenceUnreadableItemCount
             + fileRepairSnapshot.unreadableItemCount
+    }
+
+    private var dsStoreStatus: String {
+        if settingsSnapshot.dsStoreKeysToEnable.isEmpty {
+            return MoniLocalization.string("Enabled")
+        }
+        return MoniLocalization.format(
+            "%@ settings pending",
+            settingsSnapshot.dsStoreKeysToEnable.count.formatted()
+        )
     }
 
     private func scan() async {
@@ -455,6 +491,23 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("LaunchServices could not be rebuilt.")
         } else {
             resultMessage = MoniLocalization.string("LaunchServices and file associations were rebuilt.")
+        }
+    }
+
+    private func enableDSStorePrevention() async {
+        isRunning = true
+        let result = await MaintenanceSettingsService.enableDSStorePrevention()
+        settingsSnapshot = await MaintenanceSettingsService.scan()
+        isRunning = false
+        if result.failedCount > 0 {
+            resultMessage = MoniLocalization.format(
+                "%@ Finder settings could not be updated.",
+                result.failedCount.formatted()
+            )
+        } else if result.changedCount > 0 {
+            resultMessage = MoniLocalization.string("Finder .DS_Store prevention is enabled for network and USB volumes.")
+        } else {
+            resultMessage = MoniLocalization.string("Finder .DS_Store prevention was already enabled or protected by the whitelist.")
         }
     }
 }

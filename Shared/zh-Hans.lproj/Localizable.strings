@@ -571,3 +571,14 @@
 "LaunchServices repair is unavailable." = "LaunchServices 修复不可用。";
 "LaunchServices could not be rebuilt." = "未能重建 LaunchServices。";
 "LaunchServices and file associations were rebuilt." = "LaunchServices 与文件关联已重建。";
+"Prevent Finder .DS_Store" = "阻止 Finder 写入 .DS_Store";
+"Stop Finder from writing .DS_Store files on network and USB volumes." = "阻止 Finder 在网络与 USB 卷上写入 .DS_Store 文件。";
+"Enabled" = "已启用";
+"Review Enable" = "检查启用内容";
+"%@ settings pending" = "有 %@ 项设置待启用";
+"Prevent Finder .DS_Store files?" = "阻止 Finder 写入 .DS_Store 文件？";
+"Enable Prevention" = "启用防写";
+"Finder will stop creating .DS_Store metadata files on network shares and removable USB volumes. Local folders are unchanged." = "Finder 将停止在网络共享和可移除 USB 卷上创建 .DS_Store 元数据文件，本地文件夹不受影响。";
+"%@ Finder settings could not be updated." = "有 %@ 项 Finder 设置未能更新。";
+"Finder .DS_Store prevention is enabled for network and USB volumes." = "已为网络与 USB 卷启用 Finder .DS_Store 防写。";
+"Finder .DS_Store prevention was already enabled or protected by the whitelist." = "Finder .DS_Store 防写已启用，或相关设置受到白名单保护。";
