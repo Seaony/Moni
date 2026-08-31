@@ -1327,7 +1327,9 @@ nonisolated enum CacheCleanupService {
             home + "/.cache/gitlab-runner",
             home + "/.github/cache",
             home + "/.circleci/cache",
-            home + "/.sonar"
+            home + "/.sonar",
+            home + "/.cache/prisma",
+            home + "/.cache/opencode"
         ]
         if let githubRoot = githubCLICacheRoot() {
             roots.append(githubRoot)
