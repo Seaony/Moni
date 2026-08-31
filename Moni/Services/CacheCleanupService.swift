@@ -14,6 +14,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case sharedContainerLogs
     case diaProfileCaches
     case chromeProfileCaches
+    case googleUpdaterCaches
     case virtualizationTemporaryData
     case savedApplicationState
     case recentItems
@@ -36,6 +37,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .sharedContainerLogs: "Shared container logs"
         case .diaProfileCaches: "Dia profile caches"
         case .chromeProfileCaches: "Chrome profile caches"
+        case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
@@ -142,6 +144,10 @@ nonisolated enum CacheCleanupService {
             discoveredItems.append(contentsOf: chromeProfileCaches.items)
             unreadableItemCount += chromeProfileCaches.unreadableItemCount
         }
+
+        let googleUpdaterCaches = await scanGoogleUpdaterCaches()
+        discoveredItems.append(contentsOf: googleUpdaterCaches.items)
+        unreadableItemCount += googleUpdaterCaches.unreadableItemCount
 
         let utmIsSafe = await Task.detached(priority: .utility) {
             utmIsInactive()
@@ -341,6 +347,14 @@ nonisolated enum CacheCleanupService {
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
+            if item.category == .googleUpdaterCaches {
+                guard googleUpdaterCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .chromeProfileCaches {
                 guard chromeIsSafe,
                       chromeProfileCacheItemIsAllowed(item.path) else {
@@ -880,6 +894,96 @@ nonisolated enum CacheCleanupService {
             })
         }
         return (items, unreadableItemCount)
+    }
+
+    private static func scanGoogleUpdaterCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        let crxRoot = googleUpdaterRoot() + "/crx_cache"
+        if isRealDirectory(at: crxRoot) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: crxRoot) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            if let finalUpdate {
+                unreadableItemCount += finalUpdate.unreadableItemCount
+                items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                    guard googleUpdaterCacheItemIsAllowed(path) else { return nil }
+                    return CacheCleanupItem(
+                        path: path,
+                        category: .googleUpdaterCaches,
+                        sizeBytes: size
+                    )
+                })
+            } else {
+                unreadableItemCount += 1
+            }
+        }
+
+        for path in googleUpdaterOldFiles() {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard googleUpdaterCacheItemIsAllowed(path),
+                  let size = cacheFileSize(at: path) else {
+                unreadableItemCount += 1
+                continue
+            }
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .googleUpdaterCaches,
+                sizeBytes: size
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func googleUpdaterCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path) else {
+            return false
+        }
+        let root = googleUpdaterRoot()
+        let parent = url.deletingLastPathComponent().path
+        if pathsEqual(parent, root + "/crx_cache") {
+            return isRealDirectory(at: parent) && !holdsCompiledModelCache(url.path)
+        }
+        return pathsEqual(parent, root)
+            && url.pathExtension.lowercased() == "old"
+            && cacheFileSize(at: url.path) != nil
+    }
+
+    private static func googleUpdaterOldFiles() -> [String] {
+        let root = googleUpdaterRoot()
+        guard isRealDirectory(at: root),
+              let urls = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+        return urls
+            .filter { $0.pathExtension.lowercased() == "old" }
+            .map { $0.standardizedFileURL.path }
+    }
+
+    private static func googleUpdaterRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Google/GoogleUpdater", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func cacheFileSize(at path: String) -> UInt64? {
+        var value = stat()
+        guard path.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFREG else {
+            return nil
+        }
+        return value.st_blocks > 0 ? UInt64(value.st_blocks) * 512 : 0
     }
 
     private static func chromeProfileCacheItemIsAllowed(_ path: String) -> Bool {
