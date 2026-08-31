@@ -214,6 +214,9 @@ nonisolated enum ApplicationUninstallService {
         candidates.append(contentsOf: developer.candidates)
         if !developer.isComplete { isComplete = false }
         candidates.append(contentsOf: specializedProductCandidates(for: application, home: home))
+        let raycast = raycastCandidates(for: application, home: home)
+        candidates.append(contentsOf: raycast.candidates)
+        if !raycast.isComplete { isComplete = false }
 
         let launchAgentRoot = home + "/Library/LaunchAgents"
         if application.name.count >= 5,
@@ -715,6 +718,109 @@ nonisolated enum ApplicationUninstallService {
             add(home + "/Library/Application Support/Godot", .applicationSupport)
         }
         return candidates
+    }
+
+    private static func raycastCandidates(
+        for application: InstalledApplication,
+        home: String
+    ) -> (candidates: [Candidate], isComplete: Bool) {
+        guard application.bundleIdentifier?.lowercased() == "com.raycast.macos" else {
+            return ([], true)
+        }
+        var candidates: [Candidate] = []
+        var isComplete = true
+
+        func matches(_ url: URL) -> Bool {
+            let name = url.lastPathComponent.lowercased()
+            return name.contains("raycast") && !name.contains("raycast-x")
+        }
+
+        func add(_ path: String, _ kind: ApplicationRemovalKind) {
+            if pathExists(path) { candidates.append(Candidate(path: path, kind: kind)) }
+        }
+
+        func scanDirectChildren(of rootPath: String, kind: ApplicationRemovalKind) {
+            guard pathExists(rootPath) else { return }
+            guard let children = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: rootPath, isDirectory: true),
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                isComplete = false
+                return
+            }
+            for child in children where matches(child) {
+                guard let values = try? child.resourceValues(
+                    forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                ), values.isDirectory == true, values.isSymbolicLink != true else {
+                    continue
+                }
+                add(child.path, kind)
+            }
+        }
+
+        scanDirectChildren(
+            of: home + "/Library/Application Support",
+            kind: .applicationSupport
+        )
+        scanDirectChildren(
+            of: home + "/Library/Application Scripts",
+            kind: .container
+        )
+        scanDirectChildren(
+            of: home + "/Library/Containers",
+            kind: .container
+        )
+        add(
+            home + "/Library/Containers/com.raycast.macos.BrowserExtension",
+            .container
+        )
+        add(
+            home + "/Library/Containers/com.raycast.macos.RaycastAppIntents",
+            .container
+        )
+
+        let cachesRoot = home + "/Library/Caches"
+        if pathExists(cachesRoot) {
+            if let children = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: cachesRoot, isDirectory: true),
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            ) {
+                for child in children {
+                    guard let values = try? child.resourceValues(
+                        forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                    ), values.isDirectory == true, values.isSymbolicLink != true else {
+                        continue
+                    }
+                    if matches(child) { add(child.path, .cache) }
+                    if let grandchildren = try? FileManager.default.contentsOfDirectory(
+                        at: child,
+                        includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                        options: [.skipsHiddenFiles]
+                    ) {
+                        for grandchild in grandchildren where matches(grandchild) {
+                            guard let grandchildValues = try? grandchild.resourceValues(
+                                forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                            ), grandchildValues.isDirectory == true,
+                               grandchildValues.isSymbolicLink != true else {
+                                continue
+                            }
+                            add(grandchild.path, .cache)
+                        }
+                    } else {
+                        isComplete = false
+                    }
+                }
+            } else {
+                isComplete = false
+            }
+        }
+        scanDirectChildren(
+            of: home + "/Library/Application Support/Code/User/globalStorage",
+            kind: .applicationSupport
+        )
+        return (candidates, isComplete)
     }
 
     private static func vendorNestedCandidates(
