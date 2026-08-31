@@ -95,6 +95,9 @@ struct MaintenanceView: View {
         state: .unavailable,
         files: []
     )
+    @State private var systemMaintenanceSnapshot = SystemMaintenanceSnapshot(
+        spotlightStatus: .unavailable
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -107,6 +110,7 @@ struct MaintenanceView: View {
     @State private var loginItemsReview: LoginItemsReview?
     @State private var confirmsNotificationCleanup = false
     @State private var confirmsCoreDuetCleanup = false
+    @State private var confirmsSystemMaintenance = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -177,6 +181,17 @@ struct MaintenanceView: View {
                                 )
                             }
                         }
+                    }
+
+                    commandCard(
+                        title: "DNS & Spotlight Check",
+                        description: "Refresh DNS cache and verify Spotlight status.",
+                        symbol: "checkmark.shield",
+                        status: systemMaintenanceStatus,
+                        buttonTitle: "Review Check",
+                        isAvailable: systemMaintenanceSnapshot.spotlightStatus != .unavailable
+                    ) {
+                        confirmsSystemMaintenance = true
                     }
 
                     commandCard(
@@ -451,6 +466,18 @@ struct MaintenanceView: View {
                 maintenanceBytes(coreDuetSnapshot.totalSizeBytes)
             ))
         }
+        .confirmationDialog(
+            "Refresh DNS and check Spotlight?",
+            isPresented: $confirmsSystemMaintenance,
+            titleVisibility: .visible
+        ) {
+            Button("Run Administrator Check") {
+                Task { await runSystemMaintenance() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("macOS will request administrator approval to flush the DNS cache and restart mDNSResponder. Spotlight status is checked without changing the index.")
+        }
     }
 
     private var header: some View {
@@ -611,7 +638,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "15", MoniPalette.green)
+                catalogMetric("Available now", "16", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -823,6 +850,19 @@ struct MaintenanceView: View {
         }
     }
 
+    private var systemMaintenanceStatus: String {
+        switch systemMaintenanceSnapshot.spotlightStatus {
+        case .enabled:
+            MoniLocalization.string("Spotlight indexing enabled")
+        case .disabled:
+            MoniLocalization.string("Spotlight indexing disabled")
+        case .unavailable:
+            MoniLocalization.string("Unavailable")
+        case .failed:
+            MoniLocalization.string("Spotlight check failed")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -835,9 +875,11 @@ struct MaintenanceView: View {
         async let loginItemsResult = LoginItemsAuditService.scan()
         async let notificationResult = NotificationMaintenanceService.scan()
         async let coreDuetResult = CoreDuetMaintenanceService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet) = await (
+        async let systemMaintenanceResult = AdministratorMaintenanceService.scanSystemMaintenance()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
-            databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult
+            databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
+            systemMaintenanceResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -851,6 +893,7 @@ struct MaintenanceView: View {
         loginItemsSnapshot = loginItems
         notificationSnapshot = notifications
         coreDuetSnapshot = coreDuet
+        systemMaintenanceSnapshot = systemMaintenance
         isScanning = false
     }
 
@@ -1092,6 +1135,29 @@ struct MaintenanceView: View {
         resultMessage = parts.isEmpty
             ? MoniLocalization.string("No usage data needed cleanup.")
             : parts.joined(separator: " ")
+    }
+
+    private func runSystemMaintenance() async {
+        isRunning = true
+        let result = await AdministratorMaintenanceService.runSystemMaintenance()
+        systemMaintenanceSnapshot = SystemMaintenanceSnapshot(
+            spotlightStatus: result.spotlightStatus
+        )
+        isRunning = false
+
+        var parts: [String] = []
+        parts.append(result.dnsCacheFlushed
+            ? MoniLocalization.string("DNS cache was flushed and mDNSResponder was restarted.")
+            : MoniLocalization.string("DNS refresh was not completed. Administrator approval may have been cancelled."))
+        switch result.spotlightStatus {
+        case .enabled:
+            parts.append(MoniLocalization.string("Spotlight indexing is enabled."))
+        case .disabled:
+            parts.append(MoniLocalization.string("Spotlight indexing is disabled."))
+        case .unavailable, .failed:
+            parts.append(MoniLocalization.string("Spotlight status could not be verified."))
+        }
+        resultMessage = parts.joined(separator: " ")
     }
 }
 

@@ -696,3 +696,17 @@
 "Usage data cleanup failed because the database was busy, locked, or incompatible." = "使用数据清理失败，数据库可能正忙、已锁定或结构不兼容。";
 "Usage data cleanup was skipped because the database changed or became protected." = "使用数据库已发生变化或受到保护，本次清理已跳过。";
 "No usage data needed cleanup." = "没有使用数据需要清理。";
+"DNS & Spotlight Check" = "DNS 与 Spotlight 检查";
+"Refresh DNS cache and verify Spotlight status." = "刷新 DNS 缓存并检查 Spotlight 状态。";
+"Review Check" = "检查执行内容";
+"Spotlight indexing enabled" = "Spotlight 索引已启用";
+"Spotlight indexing disabled" = "Spotlight 索引已停用";
+"Spotlight check failed" = "Spotlight 检查失败";
+"Refresh DNS and check Spotlight?" = "刷新 DNS 并检查 Spotlight？";
+"Run Administrator Check" = "运行管理员检查";
+"macOS will request administrator approval to flush the DNS cache and restart mDNSResponder. Spotlight status is checked without changing the index." = "macOS 将请求管理员授权，以刷新 DNS 缓存并重新启动 mDNSResponder；Spotlight 状态检查不会更改索引。";
+"DNS cache was flushed and mDNSResponder was restarted." = "已刷新 DNS 缓存并重新启动 mDNSResponder。";
+"DNS refresh was not completed. Administrator approval may have been cancelled." = "DNS 刷新未完成，管理员授权可能已取消。";
+"Spotlight indexing is enabled." = "Spotlight 索引已启用。";
+"Spotlight indexing is disabled." = "Spotlight 索引已停用。";
+"Spotlight status could not be verified." = "未能确认 Spotlight 状态。";
