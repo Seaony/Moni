@@ -9,7 +9,7 @@ struct MoniWidgetEntry: TimelineEntry {
 }
 
 struct MoniWidgetProvider: TimelineProvider {
-    let kind: MoniWidgetKind
+    private static let stalenessLimit: TimeInterval = 10 * 60
 
     func placeholder(in context: Context) -> MoniWidgetEntry {
         MoniWidgetEntry(date: .now, system: .placeholder, isPlaceholder: false)
@@ -34,7 +34,7 @@ struct MoniWidgetProvider: TimelineProvider {
             date: now,
             system: system ?? .placeholder,
             isPlaceholder: system == nil,
-            isStale: system.map { now.timeIntervalSince($0.date) > kind.stalenessLimit } ?? false
+            isStale: system.map { now.timeIntervalSince($0.date) > Self.stalenessLimit } ?? false
         )
     }
 }
@@ -62,12 +62,6 @@ enum MoniWidgetKind: String {
     case networkDetailLarge = "com.seaony.Moni.widget.network-detail-large"
     case activityMonitorLarge = "com.seaony.Moni.widget.activity-monitor-large"
     case storageBreakdownLarge = "com.seaony.Moni.widget.storage-breakdown-large"
-
-    /// System metrics are written every 15s while Moni runs, so anything older
-    /// means the numbers on screen are no longer live.
-    var stalenessLimit: TimeInterval {
-        10 * 60
-    }
 }
 
 struct MoniWidgetView: View {
@@ -141,7 +135,7 @@ func moniWidgetConfiguration(
     description: String,
     family: WidgetFamily
 ) -> some WidgetConfiguration {
-    StaticConfiguration(kind: kind.rawValue, provider: MoniWidgetProvider(kind: kind)) { entry in
+    StaticConfiguration(kind: kind.rawValue, provider: MoniWidgetProvider()) { entry in
         MoniWidgetView(kind: kind, entry: entry)
             .redacted(reason: entry.isPlaceholder ? .placeholder : [])
             .overlay(alignment: .topTrailing) {

@@ -11,7 +11,6 @@ enum WidgetTheme {
     static let cyan = Color(red: 0.196, green: 0.678, blue: 0.902)
     static let orange = Color(red: 1, green: 0.624, blue: 0.039)
     static let purple = Color(red: 0.749, green: 0.353, blue: 0.941)
-    static let indigo = Color(red: 0.369, green: 0.361, blue: 0.902)
     static let red = Color(red: 1, green: 0.271, blue: 0.227)
     static let green = Color(red: 0.188, green: 0.82, blue: 0.345)
     static let yellow = Color(red: 1, green: 0.839, blue: 0.039)

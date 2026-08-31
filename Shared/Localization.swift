@@ -56,14 +56,4 @@ enum MoniLocalization {
             arguments: arguments
         )
     }
-
-    nonisolated static func compactNumber(_ value: UInt64, language: AppLanguage? = nil) -> String {
-        let selectedLanguage = language ?? currentLanguage
-        return value.formatted(
-            .number
-                .locale(selectedLanguage.locale)
-                .notation(.compactName)
-                .precision(.fractionLength(0...1))
-        )
-    }
 }

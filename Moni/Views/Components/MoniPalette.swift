@@ -47,7 +47,6 @@ enum MoniPalette {
     static let cyan = Color(nsColor: rgb(0x32ADE6))
     static let orange = Color(nsColor: rgb(0xFF9F0A))
     static let purple = Color(nsColor: rgb(0xBF5AF0))
-    static let indigo = Color(nsColor: rgb(0x5E5CE6))
     static let red = Color(nsColor: rgb(0xFF453A))
     static let green = adaptive(light: rgb(0x1F9E46), dark: rgb(0x30D158))
     static let yellow = adaptive(light: rgb(0xB8860B), dark: rgb(0xFFD60A))

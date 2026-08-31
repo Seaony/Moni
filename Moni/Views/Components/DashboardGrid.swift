@@ -5,10 +5,6 @@ enum DashboardCardID: String, CaseIterable, Codable, Hashable, Identifiable {
 
     var id: String { rawValue }
 
-    var defaultSize: DashboardCardSize {
-        .compact
-    }
-
     var limits: DashboardCardLimits {
         DashboardCardLimits(maxColumns: 3)
     }
@@ -33,28 +29,23 @@ struct DashboardCardLimits: Equatable {
 }
 
 struct DashboardCardLayout: Codable {
-    private static let currentVersion = 1
-
-    private var version = currentVersion
     private var sizes: [String: DashboardCardSize] = [:]
     private var order: [String] = []
 
     private enum CodingKeys: String, CodingKey {
-        case version, sizes, order
+        case sizes, order
     }
 
     init() {}
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        sizes = (try container.decodeIfPresent([String: DashboardCardSize].self, forKey: .sizes) ?? [:])
-            .filter { DashboardCardID(rawValue: $0.key) != nil }
+        sizes = try container.decodeIfPresent([String: DashboardCardSize].self, forKey: .sizes) ?? [:]
         order = try container.decodeIfPresent([String].self, forKey: .order) ?? []
-        version = Self.currentVersion
     }
 
     func size(for card: DashboardCardID) -> DashboardCardSize {
-        (sizes[card.rawValue] ?? card.defaultSize).clamped(to: card.limits)
+        (sizes[card.rawValue] ?? .compact).clamped(to: card.limits)
     }
 
     mutating func setSize(_ size: DashboardCardSize, for card: DashboardCardID) {
