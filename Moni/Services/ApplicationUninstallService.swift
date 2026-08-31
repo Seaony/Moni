@@ -213,6 +213,7 @@ nonisolated enum ApplicationUninstallService {
         let developer = specializedDeveloperCandidates(for: application, home: home)
         candidates.append(contentsOf: developer.candidates)
         if !developer.isComplete { isComplete = false }
+        candidates.append(contentsOf: specializedProductCandidates(for: application, home: home))
 
         let launchAgentRoot = home + "/Library/LaunchAgents"
         if application.name.count >= 5,
@@ -665,6 +666,55 @@ nonisolated enum ApplicationUninstallService {
             }
         }
         return (candidates, isComplete)
+    }
+
+    private static func specializedProductCandidates(
+        for application: InstalledApplication,
+        home: String
+    ) -> [Candidate] {
+        let name = application.name.lowercased()
+        let bundleIdentifier = application.bundleIdentifier?.lowercased() ?? ""
+        var candidates: [Candidate] = []
+
+        func add(_ path: String, _ kind: ApplicationRemovalKind) {
+            if pathExists(path) { candidates.append(Candidate(path: path, kind: kind)) }
+        }
+
+        if bundleIdentifier.contains("microsoft") && bundleIdentifier.contains("vscode") {
+            add(home + "/Library/Caches/com.microsoft.VSCode.ShipIt", .cache)
+            add(home + "/Library/Caches/com.microsoft.VSCodeInsiders.ShipIt", .cache)
+            if bundleIdentifier.contains("insiders") {
+                add(home + "/.vscode-insiders", .applicationSupport)
+                add(home + "/Library/Application Support/Code - Insiders", .applicationSupport)
+                add(home + "/Library/Caches/com.microsoft.VSCodeInsiders", .cache)
+            } else {
+                add(home + "/.vscode", .applicationSupport)
+                add(home + "/Library/Application Support/Code", .applicationSupport)
+                add(home + "/Library/Caches/com.microsoft.VSCode", .cache)
+            }
+        }
+
+        if name.contains("docker") {
+            add(home + "/.docker/buildx", .cache)
+            add(home + "/.docker/scan", .cache)
+        }
+        if bundleIdentifier == "com.maestro.studio"
+            || name.replacingOccurrences(of: " ", with: "").contains("maestrostudio") {
+            add(home + "/.mobiledev", .applicationSupport)
+        }
+        if bundleIdentifier == "net.ankiweb.anki" || name == "anki" {
+            add(home + "/Library/Application Support/AnkiProgramFiles", .applicationSupport)
+        }
+        if name.contains("unity") {
+            add(home + "/Library/Unity", .applicationSupport)
+        }
+        if name.contains("unreal") {
+            add(home + "/Library/Application Support/Epic", .applicationSupport)
+        }
+        if name.contains("godot") {
+            add(home + "/Library/Application Support/Godot", .applicationSupport)
+        }
+        return candidates
     }
 
     private static func vendorNestedCandidates(
