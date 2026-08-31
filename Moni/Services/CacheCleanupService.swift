@@ -6,6 +6,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case userLogs
     case diagnosticReports
     case oldCrashReports
+    case messagesPreviewCaches
     case savedApplicationState
     case recentItems
     case incompleteDownloads
@@ -19,6 +20,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .userLogs: "User app logs"
         case .diagnosticReports: "Diagnostic reports"
         case .oldCrashReports: "Old crash reports"
+        case .messagesPreviewCaches: "Messages preview caches"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
         case .incompleteDownloads: "Incomplete downloads"
@@ -116,6 +118,10 @@ nonisolated enum CacheCleanupService {
         }.value
         discoveredItems.append(contentsOf: oldCrashReports.items)
         unreadableItemCount += oldCrashReports.unreadableItemCount
+
+        let messagesPreviewCaches = await scanMessagesPreviewCaches()
+        discoveredItems.append(contentsOf: messagesPreviewCaches.items)
+        unreadableItemCount += messagesPreviewCaches.unreadableItemCount
 
         let handoffClipboard = await scanHandoffClipboard(referenceDate: Date())
         discoveredItems.append(contentsOf: handoffClipboard.items)
@@ -242,6 +248,14 @@ nonisolated enum CacheCleanupService {
         let requiresMailProbe = items.contains { $0.category == .oldMailAttachments }
         let mailIsSafe = !requiresMailProbe || mailIsInactive()
         for item in items {
+            if item.category == .messagesPreviewCaches {
+                guard messagePreviewCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .oldCrashReports {
                 guard oldCrashReportSize(at: item.path, referenceDate: Date()) == item.sizeBytes else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -295,6 +309,59 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanMessagesPreviewCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for rootPath in messagesPreviewCacheRoots() where isRealDirectory(at: rootPath) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: rootPath) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                guard !name.hasPrefix("."), messagePreviewCacheItemIsAllowed(path) else {
+                    return nil
+                }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .messagesPreviewCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func messagePreviewCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path) else {
+            return false
+        }
+        return messagesPreviewCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func messagesPreviewCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return [
+            home + "/Library/Messages/StickerCache",
+            home + "/Library/Messages/Caches/Previews/Attachments",
+            home + "/Library/Messages/Caches/Previews/StickerCache"
+        ]
     }
 
     private static func scanOldCrashReports(referenceDate: Date) -> (
