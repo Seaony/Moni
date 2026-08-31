@@ -187,6 +187,8 @@
 "Homebrew removal state could not be verified. No fallback removal was performed." = "无法验证 Homebrew 移除状态，因此未执行后备移除。";
 "The Cask record was removed, but the application changed and was left untouched." = "Cask 记录已移除，但应用身份发生变化，因此未触碰该应用。";
 "The selected application changed. No removal was performed." = "所选应用已发生变化，未执行移除。";
+"System-level remnants (review only)" = "系统级残留（仅供审阅）";
+"Moni never removes these protected system locations. Review them manually after uninstalling the application." = "Moni 不会移除这些受保护的系统位置；卸载应用后请手动审阅。";
 "Some applications could not be read. Shared related files are excluded." = "部分应用无法读取，已排除可能共享的相关文件。";
 "Another installation uses the same bundle identifier. Only this application bundle is included." = "另一个安装副本使用相同的 Bundle ID，因此只包含当前应用包。";
 "Some related-file locations could not be read and were left untouched." = "部分相关文件位置无法读取，已保持不变。";

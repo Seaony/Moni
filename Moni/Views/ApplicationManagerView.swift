@@ -287,6 +287,39 @@ struct ApplicationManagerView: View {
                         .buttonStyle(.plain)
                     }
                 }
+
+                if !preview.reviewOnlySystemItems.isEmpty {
+                    Divider()
+                        .padding(.vertical, 2)
+                    Label("System-level remnants (review only)", systemImage: "lock.shield.fill")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(MoniPalette.orange)
+                    Text("Moni never removes these protected system locations. Review them manually after uninstalling the application.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(spacing: 2) {
+                        ForEach(preview.reviewOnlySystemItems) { item in
+                            HStack(spacing: 10) {
+                                Image(systemName: "lock.fill")
+                                    .foregroundStyle(MoniPalette.orange)
+                                    .frame(width: 18)
+                                Text(item.path)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer(minLength: 8)
+                                Text(item.sizeBytes.map(appBytes) ?? "—")
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .background(MoniPalette.inset)
+                            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        }
+                    }
+                }
             }
             .padding(14)
         }

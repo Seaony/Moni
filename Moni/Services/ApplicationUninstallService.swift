@@ -32,6 +32,7 @@ nonisolated enum ApplicationUninstallWarning: String, Sendable {
 nonisolated struct ApplicationUninstallPreview: Sendable {
     let application: InstalledApplication
     let items: [ApplicationRemovalItem]
+    let reviewOnlySystemItems: [ApplicationRemovalItem]
     let warnings: [ApplicationUninstallWarning]
     let homebrewCask: String?
     let homebrewProbeUnavailable: Bool
@@ -56,6 +57,7 @@ nonisolated enum ApplicationUninstallService {
     ) async -> ApplicationUninstallPreview {
         var warnings: [ApplicationUninstallWarning] = []
         var candidates = [Candidate(path: application.path, kind: .applicationBundle)]
+        var reviewOnlySystemCandidates: [Candidate] = []
         let caskOwnership = await HomebrewCaskService.ownership(of: application)
 
         if !inventory.isComplete {
@@ -68,6 +70,7 @@ nonisolated enum ApplicationUninstallService {
         } else if inventory.isComplete {
             let result = residualCandidates(for: application)
             candidates.append(contentsOf: result.candidates)
+            reviewOnlySystemCandidates = systemReviewCandidates(for: application)
             if !result.isComplete {
                 warnings.append(.incompleteResidualScan)
             }
@@ -84,10 +87,18 @@ nonisolated enum ApplicationUninstallService {
                 sizeBytes: quickSize(at: normalized)
             )
         }
+        let reviewOnlySystemItems = collapsed(reviewOnlySystemCandidates).map { candidate in
+            ApplicationRemovalItem(
+                path: candidate.path,
+                kind: candidate.kind,
+                sizeBytes: quickSize(at: candidate.path)
+            )
+        }
 
         return ApplicationUninstallPreview(
             application: application,
             items: items,
+            reviewOnlySystemItems: reviewOnlySystemItems,
             warnings: warnings,
             homebrewCask: {
                 if case let .managed(token) = caskOwnership { return token }
@@ -268,6 +279,73 @@ nonisolated enum ApplicationUninstallService {
         }
 
         return (candidates, isComplete)
+    }
+
+    private static func systemReviewCandidates(for application: InstalledApplication) -> [Candidate] {
+        var candidates: [Candidate] = []
+        func add(_ path: String, _ kind: ApplicationRemovalKind = .other) {
+            if pathExists(path) { candidates.append(Candidate(path: path, kind: kind)) }
+        }
+
+        for name in safeNameVariants(application.name) {
+            add("/Library/Application Support/" + name, .applicationSupport)
+            add("/Library/Caches/" + name, .cache)
+            add("/Library/Logs/" + name, .log)
+            add("/Library/Preferences/" + name, .preference)
+            add("/Library/Preferences/" + name + ".plist", .preference)
+            add("/Users/Shared/" + name)
+        }
+
+        add("/Library/Frameworks/" + application.name + ".framework")
+        add("/Library/Internet Plug-Ins/" + application.name + ".plugin")
+        add("/Library/Input Methods/" + application.name + ".app")
+        add("/Library/Audio/Plug-Ins/Components/" + application.name + ".component")
+        add("/Library/Audio/Plug-Ins/VST/" + application.name + ".vst")
+        add("/Library/Audio/Plug-Ins/VST3/" + application.name + ".vst3")
+        add("/Library/Audio/Plug-Ins/Digidesign/" + application.name + ".dpm")
+        add("/Library/QuickLook/" + application.name + ".qlgenerator")
+        add("/Library/PreferencePanes/" + application.name + ".prefPane")
+        add("/Library/Screen Savers/" + application.name + ".saver")
+        add("/Library/Extensions/" + application.name + ".kext")
+        add("/Library/StartupItems/" + application.name)
+
+        guard let bundleIdentifier = application.bundleIdentifier,
+              isValidBundleIdentifier(bundleIdentifier) else { return collapsed(candidates) }
+
+        let exactPaths: [(String, ApplicationRemovalKind)] = [
+            ("/Library/Application Support/" + bundleIdentifier, .applicationSupport),
+            ("/Library/Caches/" + bundleIdentifier, .cache),
+            ("/Library/Logs/" + bundleIdentifier, .log),
+            ("/Library/Preferences/" + bundleIdentifier + ".plist", .preference),
+            ("/Library/LaunchAgents/" + bundleIdentifier + ".plist", .launchAgent),
+            ("/Library/LaunchDaemons/" + bundleIdentifier + ".plist", .launchAgent),
+            ("/Library/Receipts/" + bundleIdentifier + ".bom", .other),
+            ("/Library/Receipts/" + bundleIdentifier + ".plist", .other)
+        ]
+        for (path, kind) in exactPaths { add(path, kind) }
+
+        let scannedRoots: [(String, ApplicationRemovalKind)] = [
+            ("/Library/LaunchAgents", .launchAgent),
+            ("/Library/LaunchDaemons", .launchAgent),
+            ("/Library/PrivilegedHelperTools", .other),
+            ("/private/var/db/receipts", .other)
+        ]
+        for (root, kind) in scannedRoots {
+            guard let children = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for child in children where hasBundleIdentifierBoundary(
+                child.deletingPathExtension().lastPathComponent,
+                bundleIdentifier: bundleIdentifier
+            ) {
+                if !child.lastPathComponent.lowercased().hasPrefix("com.apple.") {
+                    add(child.path, kind)
+                }
+            }
+        }
+        return collapsed(candidates)
     }
 
     private static func embeddedBundleIdentifiers(
