@@ -10,6 +10,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case incompleteDownloads
     case oldMailAttachments
     case handoffClipboard
+    case cachedDeviceFirmware
 
     var titleKey: String {
         switch self {
@@ -21,6 +22,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .incompleteDownloads: "Incomplete downloads"
         case .oldMailAttachments: "Old Mail attachments"
         case .handoffClipboard: "Handoff clipboard cache"
+        case .cachedDeviceFirmware: "Cached device firmware"
         }
     }
 }
@@ -110,6 +112,12 @@ nonisolated enum CacheCleanupService {
         let handoffClipboard = await scanHandoffClipboard(referenceDate: Date())
         discoveredItems.append(contentsOf: handoffClipboard.items)
         unreadableItemCount += handoffClipboard.unreadableItemCount
+
+        let cachedDeviceFirmware = await Task.detached(priority: .utility) {
+            scanCachedDeviceFirmware()
+        }.value
+        discoveredItems.append(contentsOf: cachedDeviceFirmware.items)
+        unreadableItemCount += cachedDeviceFirmware.unreadableItemCount
 
         let eligiblePaths = await CleanupService.shared.eligiblePaths(discoveredItems.map(\.path))
         let items = discoveredItems
@@ -226,6 +234,14 @@ nonisolated enum CacheCleanupService {
         let requiresMailProbe = items.contains { $0.category == .oldMailAttachments }
         let mailIsSafe = !requiresMailProbe || mailIsInactive()
         for item in items {
+            if item.category == .cachedDeviceFirmware {
+                guard cachedDeviceFirmwareSize(at: item.path) == item.sizeBytes else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .handoffClipboard {
                 guard handoffItemIsStale(at: item.path, referenceDate: Date()) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -263,6 +279,156 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanCachedDeviceFirmware() -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+
+        for rootPath in shallowFirmwareRoots() where isRealDirectory(at: rootPath) {
+            let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+            let urls: [URL]
+            do {
+                urls = try FileManager.default.contentsOfDirectory(
+                    at: root,
+                    includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                )
+            } catch {
+                unreadableItemCount += 1
+                continue
+            }
+            for url in urls where url.pathExtension == "ipsw" {
+                guard !Task.isCancelled else { return ([], 0) }
+                guard let size = cachedDeviceFirmwareSize(at: url.path) else {
+                    unreadableItemCount += 1
+                    continue
+                }
+                items.append(CacheCleanupItem(
+                    path: url.standardizedFileURL.path,
+                    category: .cachedDeviceFirmware,
+                    sizeBytes: size
+                ))
+            }
+        }
+
+        for rootPath in configuratorFirmwareRoots() {
+            let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+            var rootUnreadableCount = 0
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+                options: [],
+                errorHandler: { _, _ in
+                    rootUnreadableCount += 1
+                    return true
+                }
+            ) else {
+                unreadableItemCount += 1
+                continue
+            }
+            for case let url as URL in enumerator {
+                guard !Task.isCancelled else { return ([], 0) }
+                do {
+                    let values = try url.resourceValues(forKeys: [
+                        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey
+                    ])
+                    if values.isSymbolicLink == true {
+                        if values.isDirectory == true { enumerator.skipDescendants() }
+                        continue
+                    }
+                    guard values.isRegularFile == true, url.pathExtension == "ipsw" else { continue }
+                    guard let size = cachedDeviceFirmwareSize(at: url.path) else {
+                        rootUnreadableCount += 1
+                        continue
+                    }
+                    items.append(CacheCleanupItem(
+                        path: url.standardizedFileURL.path,
+                        category: .cachedDeviceFirmware,
+                        sizeBytes: size
+                    ))
+                } catch {
+                    rootUnreadableCount += 1
+                    enumerator.skipDescendants()
+                }
+            }
+            unreadableItemCount += rootUnreadableCount
+        }
+
+        return (items, unreadableItemCount)
+    }
+
+    private static func cachedDeviceFirmwareSize(at path: String) -> UInt64? {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.pathExtension == "ipsw",
+              firmwarePathIsAllowed(url.path) else {
+            return nil
+        }
+        var value = stat()
+        guard url.path.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFREG,
+              value.st_blocks >= 0 else {
+            return nil
+        }
+        return UInt64(value.st_blocks) * 512
+    }
+
+    private static func firmwarePathIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        if shallowFirmwareRoots().contains(where: { root in
+            isRealDirectory(at: root) && pathsEqual(url.deletingLastPathComponent().path, root)
+        }) {
+            return true
+        }
+
+        let canonicalPath = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return configuratorFirmwareRoots().contains { root in
+            let canonicalRoot = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
+            return pathIsInside(url.path, root: root)
+                && pathIsInside(canonicalPath, root: canonicalRoot)
+                && !pathsEqual(canonicalPath, canonicalRoot)
+        }
+    }
+
+    private static func shallowFirmwareRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return [
+            home + "/Library/iTunes/iPhone Software Updates",
+            home + "/Library/iTunes/iPad Software Updates",
+            home + "/Library/iTunes/iPod Software Updates"
+        ]
+    }
+
+    private static func configuratorFirmwareRoots() -> [String] {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Group Containers", isDirectory: true)
+            .standardizedFileURL
+        guard isRealDirectory(at: root.path),
+              let urls = try? FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+              ) else {
+            return []
+        }
+        return urls.compactMap { url in
+            guard url.lastPathComponent.hasSuffix(".group.com.apple.configurator"),
+                  isRealDirectory(at: url.path) else {
+                return nil
+            }
+            return url.standardizedFileURL.path
+        }
+    }
+
+    private static func pathIsInside(_ path: String, root: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+        return normalized.lowercased().hasPrefix(normalizedRoot.lowercased() + "/")
+    }
+
+    private static func pathsEqual(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.compare(rhs, options: [.caseInsensitive, .literal]) == .orderedSame
     }
 
     private static func scanHandoffClipboard(referenceDate: Date) async -> (
