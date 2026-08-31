@@ -107,6 +107,12 @@
 "Remove protection" = "移除保护";
 "Add protected path…" = "添加受保护路径…";
 "Protect" = "保护";
+"Project scan folders" = "项目扫描目录";
+"Choose where Moni looks for rebuildable project dependencies and build output. Leave this empty to discover common project folders automatically." = "选择 Moni 扫描可重新生成的项目依赖和构建产物的位置。保持为空时，将自动发现常用项目目录。";
+"Using automatic project discovery" = "正在使用自动项目发现";
+"Remove scan folder" = "移除扫描目录";
+"Add project folder…" = "添加项目目录…";
+"Use automatic discovery" = "使用自动发现";
 "Operation history" = "操作历史";
 "Latest %@ operations" = "最近 %@ 项操作";
 "Clear" = "清除";

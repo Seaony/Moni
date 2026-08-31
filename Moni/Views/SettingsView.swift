@@ -876,6 +876,7 @@ private struct ModuleSettings: View {
 
 private struct CleanupSettings: View {
     @State private var whitelist: [String] = []
+    @State private var projectSearchRoots: [String] = []
     @State private var history: [CleanupOperationRecord] = []
     @State private var confirmsHistoryClear = false
     @State private var historyError: String?
@@ -932,6 +933,73 @@ private struct CleanupSettings: View {
                     .buttonStyle(MoniPressButtonStyle())
                     .background(MoniPalette.control)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+
+                DetailPanel("Project scan folders") {
+                    Text("Choose where Moni looks for rebuildable project dependencies and build output. Leave this empty to discover common project folders automatically.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+
+                    if projectSearchRoots.isEmpty {
+                        Text("Using automatic project discovery")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .frame(maxWidth: .infinity, minHeight: 40, alignment: .center)
+                    } else {
+                        VStack(spacing: 2) {
+                            ForEach(projectSearchRoots, id: \.self) { path in
+                                HStack(spacing: 10) {
+                                    Image(systemName: "folder.fill")
+                                        .foregroundStyle(MoniPalette.blue)
+                                    Text(path)
+                                        .font(.system(size: 12.5))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer(minLength: 8)
+                                    Button {
+                                        ProjectArtifactPreferences.removeSearchRoot(path)
+                                        reloadProjectSearchRoots()
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                                    .help(MoniLocalization.string("Remove scan folder"))
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .background(MoniPalette.inset)
+                                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            }
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        Button {
+                            chooseProjectSearchRoots()
+                        } label: {
+                            Label(MoniLocalization.string("Add project folder…"), systemImage: "plus")
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(MoniPressButtonStyle())
+                        .background(MoniPalette.control)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                        if !projectSearchRoots.isEmpty {
+                            Button {
+                                ProjectArtifactPreferences.useAutomaticDiscovery()
+                                reloadProjectSearchRoots()
+                            } label: {
+                                Text(MoniLocalization.string("Use automatic discovery"))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                            }
+                            .buttonStyle(MoniPressButtonStyle())
+                            .background(MoniPalette.control)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
                 }
 
                 DetailPanel("Operation history") {
@@ -1001,6 +1069,7 @@ private struct CleanupSettings: View {
         }
         .task {
             reloadWhitelist()
+            reloadProjectSearchRoots()
             history = await CleanupService.shared.history()
         }
         .alert("Clear operation history?", isPresented: $confirmsHistoryClear) {
@@ -1027,6 +1096,22 @@ private struct CleanupSettings: View {
 
     private func reloadWhitelist() {
         whitelist = CleanupPreferences.whitelist()
+    }
+
+    private func chooseProjectSearchRoots() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = false
+        panel.prompt = MoniLocalization.string("Add")
+        guard panel.runModal() == .OK else { return }
+        ProjectArtifactPreferences.addSearchRoots(panel.urls.map(\.path))
+        reloadProjectSearchRoots()
+    }
+
+    private func reloadProjectSearchRoots() {
+        projectSearchRoots = ProjectArtifactPreferences.searchRoots()
     }
 
     private func clearHistory() async {
