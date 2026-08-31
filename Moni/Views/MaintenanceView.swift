@@ -111,6 +111,7 @@ struct MaintenanceView: View {
     @State private var confirmsNotificationCleanup = false
     @State private var confirmsCoreDuetCleanup = false
     @State private var confirmsSystemMaintenance = false
+    @State private var confirmsNetworkCacheRefresh = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -192,6 +193,17 @@ struct MaintenanceView: View {
                         isAvailable: systemMaintenanceSnapshot.spotlightStatus != .unavailable
                     ) {
                         confirmsSystemMaintenance = true
+                    }
+
+                    commandCard(
+                        title: "Network Cache Refresh",
+                        description: "Flush the DNS cache and restart mDNSResponder.",
+                        symbol: "network",
+                        status: "Administrator access",
+                        buttonTitle: "Review Refresh",
+                        isAvailable: true
+                    ) {
+                        confirmsNetworkCacheRefresh = true
                     }
 
                     commandCard(
@@ -478,6 +490,18 @@ struct MaintenanceView: View {
         } message: {
             Text("macOS will request administrator approval to flush the DNS cache and restart mDNSResponder. Spotlight status is checked without changing the index.")
         }
+        .confirmationDialog(
+            "Refresh the network cache?",
+            isPresented: $confirmsNetworkCacheRefresh,
+            titleVisibility: .visible
+        ) {
+            Button("Refresh Network Cache") {
+                Task { await refreshNetworkCache() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("macOS will request administrator approval to flush the DNS cache and restart mDNSResponder. The cache is rebuilt automatically as names are resolved again.")
+        }
     }
 
     private var header: some View {
@@ -638,7 +662,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "16", MoniPalette.green)
+                catalogMetric("Available now", "17", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1158,6 +1182,15 @@ struct MaintenanceView: View {
             parts.append(MoniLocalization.string("Spotlight status could not be verified."))
         }
         resultMessage = parts.joined(separator: " ")
+    }
+
+    private func refreshNetworkCache() async {
+        isRunning = true
+        let result = await AdministratorMaintenanceService.refreshNetworkCache()
+        isRunning = false
+        resultMessage = result.refreshed
+            ? MoniLocalization.string("Network cache was refreshed and mDNSResponder was restarted.")
+            : MoniLocalization.string("Network cache refresh was not completed. Administrator approval may have been cancelled.")
     }
 }
 

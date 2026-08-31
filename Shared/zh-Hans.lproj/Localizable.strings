@@ -710,3 +710,10 @@
 "Spotlight indexing is enabled." = "Spotlight 索引已启用。";
 "Spotlight indexing is disabled." = "Spotlight 索引已停用。";
 "Spotlight status could not be verified." = "未能确认 Spotlight 状态。";
+"Network Cache Refresh" = "网络缓存刷新";
+"Flush the DNS cache and restart mDNSResponder." = "刷新 DNS 缓存并重新启动 mDNSResponder。";
+"Refresh the network cache?" = "刷新网络缓存？";
+"Refresh Network Cache" = "刷新网络缓存";
+"macOS will request administrator approval to flush the DNS cache and restart mDNSResponder. The cache is rebuilt automatically as names are resolved again." = "macOS 将请求管理员授权，以刷新 DNS 缓存并重新启动 mDNSResponder；系统会在再次解析名称时自动重建缓存。";
+"Network cache was refreshed and mDNSResponder was restarted." = "已刷新网络缓存并重新启动 mDNSResponder。";
+"Network cache refresh was not completed. Administrator approval may have been cancelled." = "网络缓存刷新未完成，管理员授权可能已取消。";
