@@ -194,7 +194,13 @@ struct ApplicationManagerView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(MoniPalette.red)
-            .disabled(selectedRemovalPaths.isEmpty || isPreparing || officialVendor != nil)
+            .disabled(
+                selectedRemovalPaths.isEmpty
+                    || isPreparing
+                    || officialVendor != nil
+                    || removalPreview?.homebrewCask != nil
+                    || removalPreview?.homebrewProbeUnavailable == true
+            )
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -208,6 +214,19 @@ struct ApplicationManagerView: View {
                         MoniLocalization.format("Use the official %@ uninstaller for this application.", officialVendor),
                         color: MoniPalette.red,
                         symbol: "exclamationmark.shield.fill"
+                    )
+                }
+                if let cask = preview.homebrewCask {
+                    warningBanner(
+                        MoniLocalization.format("Managed by Homebrew Cask: %@", cask),
+                        color: MoniPalette.orange,
+                        symbol: "shippingbox.fill"
+                    )
+                } else if preview.homebrewProbeUnavailable {
+                    warningBanner(
+                        MoniLocalization.string("Homebrew ownership could not be verified. Removal is disabled."),
+                        color: MoniPalette.orange,
+                        symbol: "exclamationmark.triangle.fill"
                     )
                 }
                 ForEach(preview.warnings, id: \.self) { warning in
@@ -343,6 +362,11 @@ struct ApplicationManagerView: View {
             cleanupMessage = MoniLocalization.string("This application requires its official uninstaller.")
             return
         }
+        guard removalPreview?.homebrewCask == nil,
+              removalPreview?.homebrewProbeUnavailable != true else {
+            cleanupMessage = MoniLocalization.string("Homebrew-managed applications require Homebrew removal.")
+            return
+        }
         guard !isRunning(application) else {
             cleanupMessage = MoniLocalization.format("Quit %@ before uninstalling it.", application.name)
             return
@@ -362,6 +386,11 @@ struct ApplicationManagerView: View {
         guard let application = selectedApplication else { return }
         guard ApplicationUninstallService.officialUninstallerVendor(for: application) == nil else {
             cleanupMessage = MoniLocalization.string("This application requires its official uninstaller.")
+            return
+        }
+        let caskOwnership = await HomebrewCaskService.ownership(of: application)
+        guard caskOwnership == .notManaged else {
+            cleanupMessage = MoniLocalization.string("Homebrew-managed applications require Homebrew removal.")
             return
         }
         guard !isRunning(application) else {

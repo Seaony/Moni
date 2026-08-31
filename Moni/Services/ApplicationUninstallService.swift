@@ -33,6 +33,8 @@ nonisolated struct ApplicationUninstallPreview: Sendable {
     let application: InstalledApplication
     let items: [ApplicationRemovalItem]
     let warnings: [ApplicationUninstallWarning]
+    let homebrewCask: String?
+    let homebrewProbeUnavailable: Bool
 
     var estimatedSizeBytes: UInt64 {
         items.reduce(UInt64(0)) { total, item in
@@ -54,6 +56,7 @@ nonisolated enum ApplicationUninstallService {
     ) async -> ApplicationUninstallPreview {
         var warnings: [ApplicationUninstallWarning] = []
         var candidates = [Candidate(path: application.path, kind: .applicationBundle)]
+        let caskOwnership = await HomebrewCaskService.ownership(of: application)
 
         if !inventory.isComplete {
             warnings.append(.incompleteApplicationInventory)
@@ -85,7 +88,12 @@ nonisolated enum ApplicationUninstallService {
         return ApplicationUninstallPreview(
             application: application,
             items: items,
-            warnings: warnings
+            warnings: warnings,
+            homebrewCask: {
+                if case let .managed(token) = caskOwnership { return token }
+                return nil
+            }(),
+            homebrewProbeUnavailable: caskOwnership == .unavailable
         )
     }
 
