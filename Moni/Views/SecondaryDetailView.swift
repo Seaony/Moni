@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SecondaryDetailView: View {
@@ -816,6 +817,11 @@ private struct DockerDetailView: View {
 }
 
 private struct DiskBrowserView: View {
+    private enum BrowserMode: String, CaseIterable {
+        case contents
+        case largestFiles
+    }
+
     struct FileItem: Identifiable, Sendable {
         let url: URL
         let isDirectory: Bool
@@ -834,6 +840,17 @@ private struct DiskBrowserView: View {
     @State private var items: [FileItem] = []
     @State private var loadingPath: String?
     @State private var loadError: String?
+    @State private var browserMode = BrowserMode.contents
+    @State private var searchText = ""
+    @State private var analysisSizes: [String: UInt64] = [:]
+    @State private var largestFiles: [DiskAnalysisFile] = []
+    @State private var scannedFileCount = 0
+    @State private var scannedBytes: UInt64 = 0
+    @State private var unreadableItemCount = 0
+    @State private var analyzingPath: String?
+    @State private var analysisCurrentPath: String?
+    @State private var analyzedPath: String?
+    @State private var analysisTask: Task<Void, Never>?
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -882,27 +899,9 @@ private struct DiskBrowserView: View {
             .frame(width: 250)
 
             VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Button {
-                        let parent = URL(fileURLWithPath: selectedPath).deletingLastPathComponent().path
-                        selectedPath = parent.isEmpty ? "/" : parent
-                    } label: {
-                        Image(systemName: "chevron.up")
-                            .frame(width: 24, height: 24)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(MoniPressButtonStyle())
-                    .disabled(isVolumeRoot)
-                    Text(selectedPath)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Size").frame(width: 110, alignment: .trailing)
-                    Text("Modified").frame(width: 130, alignment: .trailing)
-                }
-                .font(.system(size: 12))
-                .foregroundStyle(MoniPalette.foregroundTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 9)
+                browserToolbar
+                Divider()
+                columnHeader
                 Divider()
 
                 if let loadError {
@@ -921,46 +920,47 @@ private struct DiskBrowserView: View {
                     .font(.system(size: 12.5))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(MoniMotion.itemTransition)
-                } else if items.isEmpty {
+                } else if browserMode == .contents, items.isEmpty {
                     ContentUnavailableView(
                         "Empty folder",
                         systemImage: "folder",
                         description: Text("Nothing visible in this folder.")
                     )
                     .transition(MoniMotion.itemTransition)
+                } else if browserMode == .largestFiles, analyzedPath != selectedPath {
+                    VStack(spacing: 10) {
+                        Image(systemName: "externaldrive.badge.magnifyingglass")
+                            .font(.system(size: 30))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                        Text(MoniLocalization.string("Analyze this folder to find its largest files."))
+                            .font(.system(size: 13))
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
+                        Button(MoniLocalization.string("Analyze")) {
+                            startAnalysis()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if browserMode == .largestFiles, visibleLargestFiles.isEmpty {
+                    ContentUnavailableView(
+                        "No files found",
+                        systemImage: "doc",
+                        description: Text("The completed scan did not find any files in this folder.")
+                    )
                 } else {
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(spacing: 2) {
-                            ForEach(items) { item in
-                                Button {
-                                    if item.isDirectory { selectedPath = item.url.path }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        HStack(spacing: 9) {
-                                            RoundedRectangle(cornerRadius: 2)
-                                                .fill(item.isDirectory ? MoniPalette.blue : MoniPalette.foregroundTertiary)
-                                                .frame(width: 8, height: 8)
-                                            Text(item.url.lastPathComponent).lineLimit(1)
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        Text(item.isDirectory ? "—" : bytes(item.size))
-                                            .foregroundStyle(MoniPalette.foregroundSecondary)
-                                            .frame(width: 110, alignment: .trailing)
-                                        Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
-                                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                                            .frame(width: 130, alignment: .trailing)
-                                    }
-                                    .font(.system(size: 13))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 9)
-                                    .contentShape(Rectangle())
+                            if browserMode == .contents {
+                                ForEach(visibleItems) { item in
+                                    browserRow(item)
                                 }
-                                .buttonStyle(MoniPressButtonStyle(scale: 0.99))
-                                .transition(MoniMotion.itemTransition)
+                            } else {
+                                ForEach(visibleLargestFiles) { file in
+                                    largestFileRow(file)
+                                }
                             }
                         }
-                        .moniAnimation(value: items.map(\.id))
+                        .moniAnimation(value: browserMode == .contents ? visibleItems.map(\.id) : visibleLargestFiles.map(\.id))
                     }
                 }
             }
@@ -974,6 +974,12 @@ private struct DiskBrowserView: View {
         }
         .moniAnimation(value: loadingPath)
         .moniAnimation(value: loadError)
+        .onChange(of: selectedPath) { _, _ in
+            resetAnalysis()
+        }
+        .onDisappear {
+            analysisTask?.cancel()
+        }
         .task(id: selectedPath) {
             let requestedPath = selectedPath
             // Most folders list in a few milliseconds; flashing a spinner through
@@ -995,6 +1001,238 @@ private struct DiskBrowserView: View {
             loadError = result.error
             loadingPath = nil
         }
+    }
+
+    private var browserToolbar: some View {
+        HStack(spacing: 8) {
+            Button {
+                let parent = URL(fileURLWithPath: selectedPath).deletingLastPathComponent().path
+                selectedPath = parent.isEmpty ? "/" : parent
+            } label: {
+                Image(systemName: "chevron.up")
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(MoniPressButtonStyle())
+            .disabled(isVolumeRoot)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(selectedPath)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if analyzedPath == selectedPath {
+                    Text(analysisStatus)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            TextField(MoniLocalization.string("Filter"), text: $searchText)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .frame(width: 130)
+                .background(MoniPalette.control)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Picker("", selection: $browserMode) {
+                Text(MoniLocalization.string("Contents")).tag(BrowserMode.contents)
+                Text(MoniLocalization.string("Largest Files")).tag(BrowserMode.largestFiles)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 170)
+
+            Button {
+                analyzingPath == nil ? startAnalysis() : cancelAnalysis()
+            } label: {
+                HStack(spacing: 6) {
+                    if analyzingPath != nil {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(MoniLocalization.string(analyzingPath == nil ? "Analyze" : "Stop"))
+                }
+                .frame(minWidth: 62)
+            }
+            .buttonStyle(.bordered)
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(MoniPalette.foregroundSecondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    private var columnHeader: some View {
+        HStack(spacing: 8) {
+            if browserMode == .contents {
+                Text("Name").frame(maxWidth: .infinity, alignment: .leading)
+                Text("Size").frame(width: 110, alignment: .trailing)
+                Text("Modified").frame(width: 130, alignment: .trailing)
+            } else {
+                Text("File").frame(width: 190, alignment: .leading)
+                Text("Location").frame(maxWidth: .infinity, alignment: .leading)
+                Text("Size").frame(width: 110, alignment: .trailing)
+            }
+        }
+        .font(.system(size: 11.5, weight: .semibold))
+        .foregroundStyle(MoniPalette.foregroundTertiary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+    }
+
+    private func browserRow(_ item: FileItem) -> some View {
+        Button {
+            if item.isDirectory {
+                selectedPath = item.url.path
+            } else {
+                NSWorkspace.shared.activateFileViewerSelecting([item.url])
+            }
+        } label: {
+            HStack(spacing: 8) {
+                HStack(spacing: 9) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(item.isDirectory ? MoniPalette.blue : MoniPalette.foregroundTertiary)
+                        .frame(width: 8, height: 8)
+                    Text(item.url.lastPathComponent).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(itemSize(item))
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                    .frame(width: 110, alignment: .trailing)
+                Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                    .frame(width: 130, alignment: .trailing)
+            }
+            .font(.system(size: 13))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+        .transition(MoniMotion.itemTransition)
+    }
+
+    private func largestFileRow(_ file: DiskAnalysisFile) -> some View {
+        let url = URL(fileURLWithPath: file.path)
+        return Button {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } label: {
+            HStack(spacing: 8) {
+                HStack(spacing: 9) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(MoniPalette.orange)
+                        .frame(width: 8, height: 8)
+                    Text(url.lastPathComponent).lineLimit(1)
+                }
+                .frame(width: 190, alignment: .leading)
+                Text(url.deletingLastPathComponent().path)
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(bytes(file.sizeBytes))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                    .frame(width: 110, alignment: .trailing)
+            }
+            .font(.system(size: 13))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+        .transition(MoniMotion.itemTransition)
+    }
+
+    private var visibleItems: [FileItem] {
+        let filtered = searchText.isEmpty ? items : items.filter {
+            $0.url.lastPathComponent.localizedCaseInsensitiveContains(searchText)
+        }
+        guard analyzedPath == selectedPath else { return filtered }
+        return filtered.sorted {
+            let lhs = analysisSizes[$0.url.path] ?? $0.size
+            let rhs = analysisSizes[$1.url.path] ?? $1.size
+            if lhs != rhs { return lhs > rhs }
+            return $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
+        }
+    }
+
+    private var visibleLargestFiles: [DiskAnalysisFile] {
+        guard !searchText.isEmpty else { return largestFiles }
+        return largestFiles.filter { $0.path.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private func itemSize(_ item: FileItem) -> String {
+        if analyzedPath == selectedPath, let size = analysisSizes[item.url.path] {
+            return bytes(size)
+        }
+        return item.isDirectory ? "—" : bytes(item.size)
+    }
+
+    private var analysisSummary: String {
+        var parts = [
+            MoniLocalization.format("%@ files", scannedFileCount.formatted()),
+            MoniLocalization.format("%@ scanned", bytes(scannedBytes))
+        ]
+        if unreadableItemCount > 0 {
+            parts.append(MoniLocalization.format("%@ unreadable", unreadableItemCount.formatted()))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var analysisStatus: String {
+        guard let analysisCurrentPath else { return analysisSummary }
+        return analysisSummary + " · " + analysisCurrentPath
+    }
+
+    private func startAnalysis() {
+        cancelAnalysis()
+        let requestedPath = selectedPath
+        analyzedPath = requestedPath
+        analyzingPath = requestedPath
+        analysisSizes = [:]
+        largestFiles = []
+        scannedFileCount = 0
+        scannedBytes = 0
+        unreadableItemCount = 0
+        analysisCurrentPath = nil
+        analysisTask = Task {
+            for await update in DiskAnalyzer.updates(for: requestedPath) {
+                guard !Task.isCancelled, selectedPath == requestedPath else { return }
+                analysisSizes = update.entrySizes
+                largestFiles = update.largestFiles
+                scannedFileCount = update.scannedFileCount
+                scannedBytes = update.scannedBytes
+                unreadableItemCount = update.unreadableItemCount
+                analysisCurrentPath = update.currentPath
+                if update.isComplete {
+                    analyzingPath = nil
+                    analysisTask = nil
+                }
+            }
+        }
+    }
+
+    private func cancelAnalysis() {
+        analysisTask?.cancel()
+        analysisTask = nil
+        analyzingPath = nil
+        analysisCurrentPath = nil
+    }
+
+    private func resetAnalysis() {
+        cancelAnalysis()
+        analyzedPath = nil
+        analysisSizes = [:]
+        largestFiles = []
+        scannedFileCount = 0
+        scannedBytes = 0
+        unreadableItemCount = 0
+        searchText = ""
     }
 
     private var isVolumeRoot: Bool {
