@@ -110,6 +110,12 @@ struct NetworkConnectionUsage: Identifiable, Sendable {
     var id: String { "\(pid)-\(transport)-\(localEndpoint)-\(remoteEndpoint)" }
 }
 
+struct NetworkProxyUsage: Sendable {
+    let type: String
+    let host: String
+    let isTunnel: Bool
+}
+
 struct NetworkUsage: Sendable {
     var downloadBytesPerSecond: Double = 0
     var uploadBytesPerSecond: Double = 0
@@ -117,6 +123,7 @@ struct NetworkUsage: Sendable {
     var totalSentBytes: UInt64 = 0
     var primaryInterfaceName: String?
     var gateway: String?
+    var proxy: NetworkProxyUsage?
     var wifi: WiFiUsage?
     var interfaces: [NetworkInterfaceUsage] = []
     var connections: [NetworkConnectionUsage] = []
@@ -128,6 +135,7 @@ struct NetworkUsage: Sendable {
         totalSentBytes: UInt64 = 0,
         primaryInterfaceName: String? = nil,
         gateway: String? = nil,
+        proxy: NetworkProxyUsage? = nil,
         wifi: WiFiUsage? = nil,
         interfaces: [NetworkInterfaceUsage] = [],
         connections: [NetworkConnectionUsage] = []
@@ -138,6 +146,7 @@ struct NetworkUsage: Sendable {
         self.totalSentBytes = totalSentBytes
         self.primaryInterfaceName = primaryInterfaceName
         self.gateway = gateway
+        self.proxy = proxy
         self.wifi = wifi
         self.interfaces = interfaces
         self.connections = connections

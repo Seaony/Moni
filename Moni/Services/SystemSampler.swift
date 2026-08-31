@@ -29,6 +29,7 @@ actor SystemSampler {
     private struct NetworkMetadata {
         let primaryInterfaceName: String?
         let gateway: String?
+        let proxy: NetworkProxyUsage?
         let interfaceKinds: [String: String]
         let wifi: WiFiUsage?
     }
@@ -70,6 +71,7 @@ actor SystemSampler {
     private var cachedNetworkMetadata = NetworkMetadata(
         primaryInterfaceName: nil,
         gateway: nil,
+        proxy: nil,
         interfaceKinds: [:],
         wifi: nil
     )
@@ -372,6 +374,7 @@ actor SystemSampler {
         let download = elapsed > 0 ? Double(receivedDelta) / elapsed : 0
         let upload = elapsed > 0 ? Double(sentDelta) / elapsed : 0
         previousNetworkBytes = (received, sent, date)
+        let proxy = cachedNetworkMetadata.proxy ?? tunnelUsage(from: interfaces)
 
         return NetworkUsage(
             downloadBytesPerSecond: download,
@@ -380,6 +383,7 @@ actor SystemSampler {
             totalSentBytes: sent,
             primaryInterfaceName: cachedNetworkMetadata.primaryInterfaceName,
             gateway: cachedNetworkMetadata.gateway,
+            proxy: proxy,
             wifi: cachedNetworkMetadata.wifi,
             interfaces: interfaces.sorted { lhs, rhs in
                 if lhs.name == cachedNetworkMetadata.primaryInterfaceName { return true }
@@ -398,6 +402,7 @@ actor SystemSampler {
         }
         let primaryInterfaceName = globalIPv4?["PrimaryInterface"] as? String
         let gateway = globalIPv4?["Router"] as? String
+        let proxy = loadConfiguredProxy()
 
         var kinds: [String: String] = [:]
         if let allInterfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] {
@@ -437,8 +442,94 @@ actor SystemSampler {
         return NetworkMetadata(
             primaryInterfaceName: primaryInterfaceName,
             gateway: gateway,
+            proxy: proxy,
             interfaceKinds: kinds,
             wifi: wifi
+        )
+    }
+
+    private nonisolated static func loadConfiguredProxy() -> NetworkProxyUsage? {
+        let environment = ProcessInfo.processInfo.environment
+        for key in [
+            "https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
+            "all_proxy", "ALL_PROXY"
+        ] {
+            guard let raw = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty else {
+                continue
+            }
+            let type = raw.lowercased().hasPrefix("socks") ? "SOCKS" : "HTTP"
+            return NetworkProxyUsage(
+                type: type,
+                host: proxyHost(from: raw) ?? raw,
+                isTunnel: false
+            )
+        }
+
+        guard let values = SCDynamicStoreCopyProxies(nil) as? [String: Any] else { return nil }
+        let configurations = [
+            ("SOCKSEnable", "SOCKSProxy", "SOCKSPort", "SOCKS"),
+            ("HTTPSEnable", "HTTPSProxy", "HTTPSPort", "HTTPS"),
+            ("HTTPEnable", "HTTPProxy", "HTTPPort", "HTTP")
+        ]
+        for configuration in configurations where integerValue(values[configuration.0]) == 1 {
+            let host = values[configuration.1] as? String
+            let port = integerValue(values[configuration.2])
+            return NetworkProxyUsage(
+                type: configuration.3,
+                host: proxyAddress(host: host, port: port) ?? "System Proxy",
+                isTunnel: false
+            )
+        }
+        if integerValue(values["ProxyAutoConfigEnable"]) == 1 {
+            let raw = values["ProxyAutoConfigURLString"] as? String ?? ""
+            return NetworkProxyUsage(
+                type: "PAC",
+                host: proxyHost(from: raw) ?? "PAC",
+                isTunnel: false
+            )
+        }
+        if integerValue(values["ProxyAutoDiscoveryEnable"]) == 1 {
+            return NetworkProxyUsage(type: "WPAD", host: "Auto Discovery", isTunnel: false)
+        }
+        return nil
+    }
+
+    private nonisolated static func integerValue(_ value: Any?) -> Int {
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String { return Int(string) ?? 0 }
+        return 0
+    }
+
+    private nonisolated static func proxyAddress(host: String?, port: Int) -> String? {
+        guard let host = host?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !host.isEmpty else {
+            return nil
+        }
+        return port > 0 ? "\(host):\(port)" : host
+    }
+
+    private nonisolated static func proxyHost(from raw: String) -> String? {
+        let candidate = raw.contains("://") ? raw : "http://" + raw
+        guard let components = URLComponents(string: candidate),
+              let host = components.host,
+              !host.isEmpty else {
+            return nil
+        }
+        return components.port.map { "\(host):\($0)" } ?? host
+    }
+
+    private func tunnelUsage(from interfaces: [NetworkInterfaceUsage]) -> NetworkProxyUsage? {
+        let active = interfaces.filter {
+            ($0.name.lowercased().hasPrefix("utun") || $0.name.lowercased().hasPrefix("tun"))
+                && $0.isActive
+                && $0.receivedBytes + $0.sentBytes > 0
+        }.map(\.name).sorted()
+        guard let first = active.first else { return nil }
+        return NetworkProxyUsage(
+            type: "TUN",
+            host: active.count > 1 ? first + "+" : first,
+            isTunnel: true
         )
     }
 

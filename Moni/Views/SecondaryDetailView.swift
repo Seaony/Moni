@@ -248,6 +248,10 @@ private struct NetworkDetailView: View {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                             secondaryStat("Public IP", publicIPAddress)
                             secondaryStat("Gateway", network.gateway ?? "Unavailable")
+                            secondaryStat(
+                                network.proxy?.isTunnel == true ? "Tunnel" : "Proxy",
+                                network.proxy.map { "\($0.type) · \($0.host)" } ?? "Disabled"
+                            )
                             secondaryStat("Signal", network.wifi?.signalStrengthDBm.map { "\($0) dBm" } ?? "Unavailable")
                             secondaryStat("Channel", network.wifi?.channelDescription ?? "Unavailable")
                             secondaryStat(
