@@ -11,6 +11,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case calendarCache
     case addressBookPhotoCaches
     case utmCaches
+    case virtualizationTemporaryData
     case savedApplicationState
     case recentItems
     case incompleteDownloads
@@ -29,6 +30,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .calendarCache: "Calendar cache"
         case .addressBookPhotoCaches: "Address Book photo caches"
         case .utmCaches: "UTM sandbox caches"
+        case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
         case .incompleteDownloads: "Incomplete downloads"
@@ -115,6 +117,10 @@ nonisolated enum CacheCleanupService {
             discoveredItems.append(contentsOf: utmCaches.items)
             unreadableItemCount += utmCaches.unreadableItemCount
         }
+
+        let virtualizationTemporaryData = await scanVirtualizationTemporaryData()
+        discoveredItems.append(contentsOf: virtualizationTemporaryData.items)
+        unreadableItemCount += virtualizationTemporaryData.unreadableItemCount
 
         let incompleteDownloads = await Task.detached(priority: .utility) {
             scanIncompleteDownloads()
@@ -286,6 +292,14 @@ nonisolated enum CacheCleanupService {
         }
         let utmIsSafe = !requiresUTMProbe || utmIsInactive()
         for item in items {
+            if item.category == .virtualizationTemporaryData {
+                guard virtualizationTemporaryItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .addressBookPhotoCaches {
                 guard addressBookPhotoCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -381,6 +395,79 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanVirtualizationTemporaryData() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+
+        let virtualBoxPath = virtualBoxCachePath()
+        if FileManager.default.fileExists(atPath: virtualBoxPath) {
+            if virtualizationTemporaryItemIsAllowed(virtualBoxPath),
+               let measurement = await cacheTargetSize(at: virtualBoxPath) {
+                items.append(CacheCleanupItem(
+                    path: virtualBoxPath,
+                    category: .virtualizationTemporaryData,
+                    sizeBytes: measurement.sizeBytes
+                ))
+                unreadableItemCount += measurement.unreadableItemCount
+            } else {
+                unreadableItemCount += 1
+            }
+        }
+
+        let vagrantRoot = vagrantTemporaryRoot()
+        if isRealDirectory(at: vagrantRoot) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: vagrantRoot) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            if let finalUpdate {
+                unreadableItemCount += finalUpdate.unreadableItemCount
+                items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                    let name = URL(fileURLWithPath: path).lastPathComponent
+                    guard !name.hasPrefix("."), virtualizationTemporaryItemIsAllowed(path) else {
+                        return nil
+                    }
+                    return CacheCleanupItem(
+                        path: path,
+                        category: .virtualizationTemporaryData,
+                        sizeBytes: size
+                    )
+                })
+            } else {
+                unreadableItemCount += 1
+            }
+        }
+
+        return (items, unreadableItemCount)
+    }
+
+    private static func virtualizationTemporaryItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !isSymbolicLink(at: url.path) else { return false }
+        if pathsEqual(url.path, virtualBoxCachePath()) { return true }
+        return !url.lastPathComponent.hasPrefix(".")
+            && isRealDirectory(at: vagrantTemporaryRoot())
+            && pathsEqual(url.deletingLastPathComponent().path, vagrantTemporaryRoot())
+    }
+
+    private static func virtualBoxCachePath() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("VirtualBox VMs", isDirectory: true)
+            .appendingPathComponent(".cache")
+            .standardizedFileURL.path
+    }
+
+    private static func vagrantTemporaryRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".vagrant.d", isDirectory: true)
+            .appendingPathComponent("tmp", isDirectory: true)
+            .standardizedFileURL.path
     }
 
     private static func scanAddressBookPhotoCaches() async -> (
