@@ -37,6 +37,11 @@ private struct SpotlightRulesReview: Identifiable {
     let rules: [String]
 }
 
+private struct LoginItemsReview: Identifiable {
+    let id = UUID()
+    let items: [BrokenLoginItem]
+}
+
 struct MaintenanceView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var snapshot = FinderMaintenanceSnapshot(
@@ -72,6 +77,11 @@ struct MaintenanceView: View {
         state: .unavailable,
         orphanedRules: []
     )
+    @State private var loginItemsSnapshot = LoginItemsAuditSnapshot(
+        state: .unavailable,
+        checkedCount: 0,
+        brokenItems: []
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -81,6 +91,7 @@ struct MaintenanceView: View {
     @State private var diskVerificationReport: DiskVerificationReport?
     @State private var databaseReview: DatabaseMaintenanceReview?
     @State private var spotlightRulesReview: SpotlightRulesReview?
+    @State private var loginItemsReview: LoginItemsReview?
     @State private var resultMessage: String?
 
     var body: some View {
@@ -241,6 +252,18 @@ struct MaintenanceView: View {
                         )
                     }
 
+                    commandCard(
+                        title: "Login Items",
+                        description: "Find login items whose referenced application or executable no longer exists.",
+                        symbol: "rectangle.stack.badge.person.crop",
+                        status: loginItemsStatus,
+                        buttonTitle: loginItemsSnapshot.brokenItems.isEmpty ? "Healthy" : "Review Audit",
+                        isAvailable: loginItemsSnapshot.state == .ready,
+                        isActionEnabled: !loginItemsSnapshot.brokenItems.isEmpty
+                    ) {
+                        loginItemsReview = LoginItemsReview(items: loginItemsSnapshot.brokenItems)
+                    }
+
                     catalogSummary
                 }
             }
@@ -290,6 +313,12 @@ struct MaintenanceView: View {
                     spotlightRulesReview = nil
                     Task { await removeSpotlightRules(review.rules) }
                 }
+            )
+        }
+        .sheet(item: $loginItemsReview) { review in
+            LoginItemsAuditView(
+                items: review.items,
+                onClose: { loginItemsReview = nil }
             )
         }
         .alert("Maintenance result", isPresented: resultMessageBinding) {
@@ -509,7 +538,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "12", MoniPalette.green)
+                catalogMetric("Available now", "13", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -660,6 +689,25 @@ struct MaintenanceView: View {
         }
     }
 
+    private var loginItemsStatus: String {
+        switch loginItemsSnapshot.state {
+        case .ready where !loginItemsSnapshot.brokenItems.isEmpty:
+            MoniLocalization.format(
+                "%@ broken login items",
+                loginItemsSnapshot.brokenItems.count.formatted()
+            )
+        case .ready:
+            MoniLocalization.format(
+                "%@ login items checked",
+                loginItemsSnapshot.checkedCount.formatted()
+            )
+        case .unavailable:
+            MoniLocalization.string("Unavailable")
+        case .failed:
+            MoniLocalization.string("Inspection failed")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -669,9 +717,10 @@ struct MaintenanceView: View {
         async let quarantineResult = MaintenanceDiagnosticsService.scanQuarantineHistory()
         async let databaseResult = DatabaseMaintenanceService.scan()
         async let spotlightRulesResult = SpotlightRulesMaintenanceService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules) = await (
+        async let loginItemsResult = LoginItemsAuditService.scan()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
-            databaseResult, spotlightRulesResult
+            databaseResult, spotlightRulesResult, loginItemsResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -682,6 +731,7 @@ struct MaintenanceView: View {
         quarantineSnapshot = quarantine
         databaseSnapshot = databases
         spotlightRulesSnapshot = spotlightRules
+        loginItemsSnapshot = loginItems
         isScanning = false
     }
 
@@ -1121,6 +1171,61 @@ private struct SpotlightRulesConfirmationView: View {
                 Button("Remove Rules", role: .destructive, action: onConfirm)
                     .buttonStyle(.borderedProminent)
                     .disabled(rules.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 620)
+    }
+}
+
+private struct LoginItemsAuditView: View {
+    let items: [BrokenLoginItem]
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Broken Login Items")
+                    .font(.system(size: 18, weight: .bold))
+                Text("These login items could not be matched to an installed application or executable.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(items) { item in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(item.name, systemImage: "exclamationmark.triangle")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(MoniPalette.orange)
+                            Text(item.path.isEmpty
+                                ? MoniLocalization.string("No path was reported by macOS")
+                                : item.path)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MoniPalette.insetSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                }
+                .padding(1)
+            }
+            .frame(maxHeight: 280)
+
+            Label("Review and remove stale entries in System Settings > General > Login Items. Moni does not remove login items automatically.", systemImage: "gearshape")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(MoniPalette.foregroundSecondary)
+
+            HStack {
+                Spacer()
+                Button("Close", action: onClose)
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)

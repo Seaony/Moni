@@ -664,3 +664,13 @@
 "Only the listed third-party bundle identifiers will be removed from Spotlight search settings. The application scan runs again before the change." = "只会从 Spotlight 搜索设置中移除列出的第三方软件包标识符；更改前会再次扫描应用。";
 "System rules, Apple rules, malformed entries, and identifiers with uncertain application status are always kept." = "系统规则、Apple 规则、格式异常项以及应用状态不确定的标识符始终保留。";
 "Remove Rules" = "移除规则";
+"Login Items" = "登录项";
+"Find login items whose referenced application or executable no longer exists." = "查找引用的应用或可执行文件已不存在的登录项。";
+"Healthy" = "状态正常";
+"Review Audit" = "查看审计结果";
+"%@ broken login items" = "发现 %@ 个异常登录项";
+"%@ login items checked" = "已检查 %@ 个登录项";
+"Broken Login Items" = "异常登录项";
+"These login items could not be matched to an installed application or executable." = "这些登录项无法匹配到已安装的应用或可执行文件。";
+"No path was reported by macOS" = "macOS 未返回路径";
+"Review and remove stale entries in System Settings > General > Login Items. Moni does not remove login items automatically." = "请在“系统设置 > 通用 > 登录项”中检查并移除失效条目；Moni 不会自动删除登录项。";

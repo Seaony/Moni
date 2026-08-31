@@ -24,6 +24,8 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>$(INFOPLIST_KEY_NSHumanReadableCopyright)</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Moni uses System Events to inspect login items and report entries whose applications are missing.</string>
     <key>SUAutomaticallyUpdate</key>
     <true/>
     <key>SUEnableAutomaticChecks</key>
