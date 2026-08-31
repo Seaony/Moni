@@ -823,3 +823,15 @@
 "iCloud" = "iCloud";
 "Mail" = "邮件";
 "Telegram" = "Telegram";
+"Scanning Trash…" = "正在扫描废纸篓…";
+"Trash is empty" = "废纸篓为空";
+"No removable items were found in the current user's Trash." = "当前用户的废纸篓中没有可移除项目。";
+"Review Trash items before deleting them permanently. This action cannot be undone." = "永久删除前请检查废纸篓项目。此操作无法撤销。";
+"Items" = "项目数";
+"Current user Trash" = "当前用户废纸篓";
+"Trash could not be verified." = "无法验证废纸篓。";
+"Permanently deleted %@ items." = "已永久删除 %@ 个项目。";
+"%@ items could not be deleted." = "%@ 个项目无法删除。";
+"Delete Trash items permanently?" = "永久删除废纸篓项目？";
+"The approved items below will be deleted immediately and cannot be recovered from Trash." = "下方确认的项目将被立即删除，且无法从废纸篓恢复。";
+"Delete Permanently" = "永久删除";

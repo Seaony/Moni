@@ -1,49 +1,15 @@
 import SwiftUI
 
-private enum CleanerMode: String, CaseIterable {
-    case caches
-    case projects
-    case installers
-    case trash
-}
-
-struct CleanerView: View {
-    @State private var mode = CleanerMode.caches
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Picker("", selection: $mode) {
-                Text(MoniLocalization.string("Caches & Logs")).tag(CleanerMode.caches)
-                Text(MoniLocalization.string("Project Artifacts")).tag(CleanerMode.projects)
-                Text(MoniLocalization.string("Installers")).tag(CleanerMode.installers)
-                Text(MoniLocalization.string("Trash")).tag(CleanerMode.trash)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 520)
-
-            switch mode {
-            case .caches:
-                CacheCleanerView()
-            case .projects:
-                ProjectArtifactCleanerView()
-            case .installers:
-                InstallerCleanerView()
-            case .trash:
-                TrashCleanerView()
-            }
-        }
-    }
-}
-
-private struct CacheCleanerView: View {
+struct TrashCleanerView: View {
     @EnvironmentObject private var monitor: SystemMonitor
-    @State private var items: [CacheCleanupItem] = []
+    @State private var items: [TrashCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var unreadableItemCount = 0
+    @State private var rootDevice: UInt64?
+    @State private var rootInode: UInt64?
     @State private var isScanning = false
     @State private var isCleaning = false
-    @State private var pendingPlan: CacheCleanupPlan?
+    @State private var pendingPlan: TrashCleanupPlan?
     @State private var cleanupMessage: String?
 
     var body: some View {
@@ -54,36 +20,27 @@ private struct CacheCleanerView: View {
             if isScanning {
                 VStack(spacing: 10) {
                     ProgressView()
-                    Text("Scanning caches and logs…")
+                    Text("Scanning Trash…")
                         .font(.system(size: 12.5))
                         .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if items.isEmpty {
                 ContentUnavailableView(
-                    "No cleanable items",
-                    systemImage: "sparkles",
-                    description: Text("No cleanable cache or log files were found.")
+                    "Trash is empty",
+                    systemImage: "trash",
+                    description: Text("No removable items were found in the current user's Trash.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(spacing: 10) {
-                        ForEach(CacheCleanupCategory.allCases, id: \.self) { category in
-                            let categoryItems = items.filter { $0.category == category }
-                            if !categoryItems.isEmpty {
-                                categoryPanel(category, items: categoryItems)
-                            }
-                        }
-                    }
+                    itemPanel
                 }
             }
         }
-        .task {
-            await scan(selectAll: true)
-        }
+        .task { await scan() }
         .sheet(item: $pendingPlan) { plan in
-            CleanupConfirmationView(
+            TrashCleanupConfirmationView(
                 plan: plan.cleanupPlan,
                 onCancel: { pendingPlan = nil },
                 onConfirm: {
@@ -102,9 +59,9 @@ private struct CacheCleanerView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Cleaner")
+                Text("Trash")
                     .font(.system(size: 20, weight: .bold))
-                Text("Review rebuildable user caches and logs before moving them to Trash.")
+                Text("Review Trash items before deleting them permanently. This action cannot be undone.")
                     .font(.system(size: 12.5))
                     .foregroundStyle(MoniPalette.foregroundTertiary)
             }
@@ -112,7 +69,7 @@ private struct CacheCleanerView: View {
             Spacer(minLength: 12)
 
             Button {
-                Task { await scan(selectAll: true) }
+                Task { await scan() }
             } label: {
                 Label(MoniLocalization.string("Rescan"), systemImage: "arrow.clockwise")
             }
@@ -124,12 +81,12 @@ private struct CacheCleanerView: View {
             } label: {
                 Label(
                     MoniLocalization.format("Review %@ items", selectedPaths.count.formatted()),
-                    systemImage: "trash"
+                    systemImage: "trash.slash"
                 )
             }
             .buttonStyle(.borderedProminent)
             .tint(MoniPalette.red)
-            .disabled(selectedPaths.isEmpty || isScanning || isCleaning)
+            .disabled(selectedPaths.isEmpty || rootDevice == nil || rootInode == nil || isScanning || isCleaning)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -143,9 +100,9 @@ private struct CacheCleanerView: View {
 
     private var summary: some View {
         HStack(spacing: 10) {
-            summaryCard("Reclaimable", cleanupBytes(totalSize), color: MoniPalette.green)
-            summaryCard("Selected", cleanupBytes(selectedSize), color: MoniPalette.blue)
-            summaryCard("Categories", activeCategoryCount.formatted(), color: MoniPalette.orange)
+            summaryCard("Reclaimable", trashBytes(totalSize), color: MoniPalette.green)
+            summaryCard("Selected", trashBytes(selectedSize), color: MoniPalette.blue)
+            summaryCard("Items", items.count.formatted(), color: MoniPalette.orange)
             if unreadableItemCount > 0 {
                 summaryCard("Unreadable", unreadableItemCount.formatted(), color: MoniPalette.red)
             }
@@ -169,25 +126,20 @@ private struct CacheCleanerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private func categoryPanel(_ category: CacheCleanupCategory, items categoryItems: [CacheCleanupItem]) -> some View {
+    private var itemPanel: some View {
         VStack(spacing: 0) {
             Button {
-                toggle(categoryItems)
+                toggleAll()
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: categorySelectionSymbol(categoryItems))
+                    Image(systemName: selectionSymbol)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(MoniPalette.blue)
                         .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(MoniLocalization.string(category.titleKey))
-                            .font(.system(size: 13.5, weight: .bold))
-                        Text(MoniLocalization.format("%@ items", categoryItems.count.formatted()))
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                    }
+                    Text("Current user Trash")
+                        .font(.system(size: 13.5, weight: .bold))
                     Spacer(minLength: 10)
-                    Text(cleanupBytes(categoryItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }))
+                    Text(trashBytes(totalSize))
                         .font(.system(size: 13, weight: .bold, design: .rounded))
                         .foregroundStyle(MoniPalette.foregroundSecondary)
                 }
@@ -199,7 +151,7 @@ private struct CacheCleanerView: View {
 
             Divider().padding(.horizontal, 12)
 
-            ForEach(categoryItems) { item in
+            ForEach(items) { item in
                 Button {
                     toggle(item.path)
                 } label: {
@@ -212,14 +164,14 @@ private struct CacheCleanerView: View {
                             Text(URL(fileURLWithPath: item.path).lastPathComponent)
                                 .font(.system(size: 12.5, weight: .medium))
                                 .lineLimit(1)
-                            Text(URL(fileURLWithPath: item.path).deletingLastPathComponent().path)
+                            Text(item.path)
                                 .font(.system(size: 10.5))
                                 .foregroundStyle(MoniPalette.foregroundTertiary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
                         Spacer(minLength: 10)
-                        Text(cleanupBytes(item.sizeBytes))
+                        Text(trashBytes(item.sizeBytes))
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(MoniPalette.foregroundSecondary)
                     }
@@ -240,17 +192,18 @@ private struct CacheCleanerView: View {
     }
 
     private var totalSize: UInt64 {
-        items.reduce(0) { $0 + $1.sizeBytes }
+        items.reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }
     }
 
     private var selectedSize: UInt64 {
-        items.reduce(0) { total, item in
-            selectedPaths.contains(item.path) ? total + item.sizeBytes : total
-        }
+        items.filter { selectedPaths.contains($0.path) }
+            .reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }
     }
 
-    private var activeCategoryCount: Int {
-        Set(items.map(\.category)).count
+    private var selectionSymbol: String {
+        if selectedPaths.count == items.count { return "checkmark.square.fill" }
+        if !selectedPaths.isEmpty { return "minus.square.fill" }
+        return "square"
     }
 
     private var cleanupMessageBinding: Binding<Bool> {
@@ -258,13 +211,6 @@ private struct CacheCleanerView: View {
             get: { cleanupMessage != nil },
             set: { if !$0 { cleanupMessage = nil } }
         )
-    }
-
-    private func categorySelectionSymbol(_ categoryItems: [CacheCleanupItem]) -> String {
-        let selectedCount = categoryItems.count { selectedPaths.contains($0.path) }
-        if selectedCount == categoryItems.count { return "checkmark.square.fill" }
-        if selectedCount > 0 { return "minus.square.fill" }
-        return "square"
     }
 
     private func toggle(_ path: String) {
@@ -275,28 +221,40 @@ private struct CacheCleanerView: View {
         }
     }
 
-    private func toggle(_ categoryItems: [CacheCleanupItem]) {
-        let paths = Set(categoryItems.map(\.path))
+    private func toggleAll() {
+        let paths = Set(items.map(\.path))
         if paths.isSubset(of: selectedPaths) {
-            selectedPaths.subtract(paths)
+            selectedPaths.removeAll()
         } else {
-            selectedPaths.formUnion(paths)
+            selectedPaths = paths
         }
     }
 
-    private func scan(selectAll: Bool) async {
+    private func scan() async {
         isScanning = true
-        let snapshot = await CacheCleanupService.scan()
-        guard !Task.isCancelled else { return }
+        let snapshot = await TrashCleanupService.scan()
+        guard !Task.isCancelled else {
+            isScanning = false
+            return
+        }
         items = snapshot.items
+        selectedPaths = []
         unreadableItemCount = snapshot.unreadableItemCount
-        selectedPaths = selectAll ? Set(snapshot.items.map(\.path)) : []
+        rootDevice = snapshot.rootDevice
+        rootInode = snapshot.rootInode
         isScanning = false
     }
 
     private func prepareCleanup() async {
-        let plan = await CacheCleanupService.previewCleanup(
-            items: items.filter { selectedPaths.contains($0.path) }
+        guard let rootDevice, let rootInode else {
+            cleanupMessage = MoniLocalization.string("Trash could not be verified.")
+            return
+        }
+        let selectedItems = items.filter { selectedPaths.contains($0.path) }
+        let plan = await TrashCleanupService.previewCleanup(
+            items: selectedItems,
+            rootDevice: rootDevice,
+            rootInode: rootInode
         )
         if plan.cleanupPlan.candidates.isEmpty {
             cleanupMessage = MoniLocalization.string("No selected items can be cleaned.")
@@ -305,27 +263,86 @@ private struct CacheCleanerView: View {
         }
     }
 
-    private func execute(_ plan: CacheCleanupPlan) async {
+    private func execute(_ plan: TrashCleanupPlan) async {
         isCleaning = true
-        let result = await CacheCleanupService.executeCleanup(plan)
-        await scan(selectAll: false)
+        let result = await TrashCleanupService.executeCleanup(plan)
+        await scan()
         isCleaning = false
         monitor.refresh(forceSlowMetrics: true)
 
         var parts: [String] = []
         if !result.trashedPaths.isEmpty {
-            parts.append(MoniLocalization.format("Moved %@ items to Trash.", result.trashedPaths.count.formatted()))
+            parts.append(MoniLocalization.format("Permanently deleted %@ items.", result.trashedPaths.count.formatted()))
         }
         if !result.rejectedItems.isEmpty {
             parts.append(MoniLocalization.format("%@ items were protected or changed.", result.rejectedItems.count.formatted()))
         }
         if !result.failedPaths.isEmpty {
-            parts.append(MoniLocalization.format("%@ items could not be moved.", result.failedPaths.count.formatted()))
+            parts.append(MoniLocalization.format("%@ items could not be deleted.", result.failedPaths.count.formatted()))
         }
         cleanupMessage = parts.joined(separator: " ")
     }
+
+    private func addingWithoutOverflow(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? UInt64.max : sum
+    }
 }
 
-private func cleanupBytes(_ value: UInt64) -> String {
+private struct TrashCleanupConfirmationView: View {
+    let plan: CleanupPlan
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(MoniPalette.red)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Delete Trash items permanently?")
+                        .font(.system(size: 20, weight: .bold))
+                    Text("The approved items below will be deleted immediately and cannot be recovered from Trash.")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 7) {
+                    ForEach(plan.candidates) { candidate in
+                        Text(candidate.path)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(MoniPalette.inset)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+            }
+            .frame(minHeight: 190, maxHeight: 310)
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button(MoniLocalization.string("Cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(MoniLocalization.string("Delete Permanently"), role: .destructive, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .tint(MoniPalette.red)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 620)
+        .background(MoniPalette.card)
+    }
+}
+
+private func trashBytes(_ value: UInt64) -> String {
     ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .file)
 }
