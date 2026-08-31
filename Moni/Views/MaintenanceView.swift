@@ -99,6 +99,7 @@ struct MaintenanceView: View {
         spotlightStatus: .unavailable
     )
     @State private var networkStackState: NetworkStackState = .unavailable
+    @State private var permissionRepairState: PermissionRepairState = .unavailable
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -114,6 +115,7 @@ struct MaintenanceView: View {
     @State private var confirmsSystemMaintenance = false
     @State private var confirmsNetworkCacheRefresh = false
     @State private var confirmsNetworkStackRefresh = false
+    @State private var confirmsPermissionRepair = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -218,6 +220,18 @@ struct MaintenanceView: View {
                         isActionEnabled: networkStackState == .needsRefresh
                     ) {
                         confirmsNetworkStackRefresh = true
+                    }
+
+                    commandCard(
+                        title: "Permission Repair",
+                        description: "Reset permissions for the current user home directory.",
+                        symbol: "person.badge.key",
+                        status: permissionRepairStatus,
+                        buttonTitle: permissionRepairButtonTitle,
+                        isAvailable: permissionRepairState != .unavailable,
+                        isActionEnabled: permissionRepairState == .needsRepair
+                    ) {
+                        confirmsPermissionRepair = true
                     }
 
                     commandCard(
@@ -528,6 +542,18 @@ struct MaintenanceView: View {
         } message: {
             Text("macOS will request administrator approval to flush the routing table and ARP cache. Network connections may be interrupted briefly while routes are rebuilt.")
         }
+        .confirmationDialog(
+            "Repair user permissions?",
+            isPresented: $confirmsPermissionRepair,
+            titleVisibility: .visible
+        ) {
+            Button("Repair Permissions") {
+                Task { await repairUserPermissions() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("macOS will request administrator approval to reset permissions for the current user on the startup volume. The operation may take several minutes.")
+        }
     }
 
     private var header: some View {
@@ -688,7 +714,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "18", MoniPalette.green)
+                catalogMetric("Available now", "19", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -941,6 +967,22 @@ struct MaintenanceView: View {
         networkStackState != .unavailable && networkStackState != .failed
     }
 
+    private var permissionRepairStatus: String {
+        switch permissionRepairState {
+        case .optimal: MoniLocalization.string("User permissions are healthy")
+        case .needsRepair: MoniLocalization.string("Permission issue detected")
+        case .unavailable: MoniLocalization.string("Unavailable")
+        }
+    }
+
+    private var permissionRepairButtonTitle: String {
+        switch permissionRepairState {
+        case .optimal: MoniLocalization.string("No action needed")
+        case .needsRepair: MoniLocalization.string("Review Repair")
+        case .unavailable: MoniLocalization.string("Unavailable")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -955,10 +997,11 @@ struct MaintenanceView: View {
         async let coreDuetResult = CoreDuetMaintenanceService.scan()
         async let systemMaintenanceResult = AdministratorMaintenanceService.scanSystemMaintenance()
         async let networkStackResult = AdministratorMaintenanceService.scanNetworkStack()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack) = await (
+        async let permissionRepairResult = AdministratorMaintenanceService.scanPermissionRepair()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
-            systemMaintenanceResult, networkStackResult
+            systemMaintenanceResult, networkStackResult, permissionRepairResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -974,6 +1017,7 @@ struct MaintenanceView: View {
         coreDuetSnapshot = coreDuet
         systemMaintenanceSnapshot = systemMaintenance
         networkStackState = networkStack
+        permissionRepairState = permissionRepair
         isScanning = false
     }
 
@@ -1275,6 +1319,24 @@ struct MaintenanceView: View {
                 ? MoniLocalization.string("The ARP cache was cleared.")
                 : MoniLocalization.string("The ARP cache could not be cleared."))
             resultMessage = parts.joined(separator: " ")
+        }
+    }
+
+    private func repairUserPermissions() async {
+        isRunning = true
+        let outcome = await AdministratorMaintenanceService.repairUserPermissions()
+        permissionRepairState = await AdministratorMaintenanceService.scanPermissionRepair()
+        isRunning = false
+
+        switch outcome {
+        case .alreadyOptimal:
+            resultMessage = MoniLocalization.string("User directory permissions are already healthy.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Permission repair is unavailable on this system.")
+        case .repaired:
+            resultMessage = MoniLocalization.string("User directory permissions were repaired.")
+        case .notCompleted:
+            resultMessage = MoniLocalization.string("Permission repair was not completed. Administrator approval may have been cancelled, or diskutil reported an error.")
         }
     }
 }

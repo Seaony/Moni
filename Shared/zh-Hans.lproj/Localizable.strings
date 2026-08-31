@@ -736,3 +736,14 @@
 "The network routing table could not be refreshed." = "未能刷新网络路由表。";
 "The ARP cache was cleared." = "已清除 ARP 缓存。";
 "The ARP cache could not be cleared." = "未能清除 ARP 缓存。";
+"Permission Repair" = "权限修复";
+"Reset permissions for the current user home directory." = "重置当前用户主目录的权限。";
+"User permissions are healthy" = "用户权限状态正常";
+"Permission issue detected" = "检测到权限问题";
+"Repair user permissions?" = "修复用户权限？";
+"Repair Permissions" = "修复权限";
+"macOS will request administrator approval to reset permissions for the current user on the startup volume. The operation may take several minutes." = "macOS 将请求管理员授权，以重置启动卷上当前用户的权限；此操作可能需要几分钟。";
+"User directory permissions are already healthy." = "用户目录权限已经正常。";
+"Permission repair is unavailable on this system." = "此系统无法执行权限修复。";
+"User directory permissions were repaired." = "已修复用户目录权限。";
+"Permission repair was not completed. Administrator approval may have been cancelled, or diskutil reported an error." = "权限修复未完成；管理员授权可能已取消，或 diskutil 返回了错误。";
