@@ -29,6 +29,20 @@ nonisolated struct ProjectArtifactSnapshot: Sendable {
     let failedRootPaths: [String]
 }
 
+nonisolated struct ProjectArtifactRootIdentity: Sendable {
+    let path: String
+    let device: UInt64
+    let inode: UInt64
+}
+
+nonisolated struct ProjectArtifactCleanupPlan: Identifiable, Sendable {
+    let cleanupPlan: CleanupPlan
+    let items: [ProjectArtifactItem]
+    let rootIdentities: [ProjectArtifactRootIdentity]
+
+    var id: UUID { cleanupPlan.id }
+}
+
 nonisolated enum ProjectArtifactService {
     private struct ScanCandidate: Sendable {
         let path: String
@@ -98,6 +112,111 @@ nonisolated enum ProjectArtifactService {
             items: rawSnapshot.items.filter { eligiblePaths.contains($0.path) },
             failedRootPaths: rawSnapshot.failedRootPaths
         )
+    }
+
+    static func previewCleanup(items: [ProjectArtifactItem]) async -> ProjectArtifactCleanupPlan {
+        let validation = await Task.detached(priority: .utility) {
+            validateForPreview(items)
+        }.value
+        let basePlan = await CleanupService.shared.preview(
+            paths: validation.items.map(\.path),
+            scope: .projects
+        )
+        let cleanupPlan = CleanupPlan(
+            id: basePlan.id,
+            createdAt: basePlan.createdAt,
+            scope: basePlan.scope,
+            candidates: basePlan.candidates,
+            rejectedItems: basePlan.rejectedItems + validation.rejectedItems
+        )
+        return ProjectArtifactCleanupPlan(
+            cleanupPlan: cleanupPlan,
+            items: validation.items,
+            rootIdentities: validation.rootIdentities
+        )
+    }
+
+    static func executeCleanup(_ plan: ProjectArtifactCleanupPlan) async -> CleanupRunResult {
+        let validation = await Task.detached(priority: .utility) {
+            revalidateForExecution(plan)
+        }.value
+        let finalPlan = CleanupPlan(
+            id: plan.cleanupPlan.id,
+            createdAt: plan.cleanupPlan.createdAt,
+            scope: plan.cleanupPlan.scope,
+            candidates: plan.cleanupPlan.candidates.filter { validation.allowedPaths.contains($0.path) },
+            rejectedItems: plan.cleanupPlan.rejectedItems + validation.rejectedItems
+        )
+        return await CleanupService.shared.execute(finalPlan)
+    }
+
+    private static func validateForPreview(_ items: [ProjectArtifactItem]) -> (
+        items: [ProjectArtifactItem],
+        rootIdentities: [ProjectArtifactRootIdentity],
+        rejectedItems: [CleanupRejectedItem]
+    ) {
+        var rootIdentities: [String: ProjectArtifactRootIdentity] = [:]
+        var validItems: [ProjectArtifactItem] = []
+        var rejectedItems: [CleanupRejectedItem] = []
+
+        for item in items {
+            guard isSafeArtifact(item.path, under: item.searchRootPath),
+                  let currentProjectRoot = projectRoot(for: item.path),
+                  pathsEqual(currentProjectRoot, item.projectRootPath) else {
+                rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                continue
+            }
+            guard !isProtectedArtifact(item.path) else {
+                rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .protected))
+                continue
+            }
+            guard let identity = fileIdentity(at: item.searchRootPath) else {
+                rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                continue
+            }
+            rootIdentities[item.searchRootPath] = ProjectArtifactRootIdentity(
+                path: item.searchRootPath,
+                device: identity.device,
+                inode: identity.inode
+            )
+            validItems.append(item)
+        }
+
+        return (
+            validItems,
+            rootIdentities.values.sorted { localizedPathOrder($0.path, $1.path) },
+            rejectedItems
+        )
+    }
+
+    private static func revalidateForExecution(_ plan: ProjectArtifactCleanupPlan) -> (
+        allowedPaths: Set<String>,
+        rejectedItems: [CleanupRejectedItem]
+    ) {
+        let expectedRoots = Dictionary(uniqueKeysWithValues: plan.rootIdentities.map { ($0.path, $0) })
+        var allowedPaths: Set<String> = []
+        var rejectedItems: [CleanupRejectedItem] = []
+
+        for item in plan.items {
+            guard let expectedRoot = expectedRoots[item.searchRootPath],
+                  let currentRoot = fileIdentity(at: item.searchRootPath),
+                  currentRoot.device == expectedRoot.device,
+                  currentRoot.inode == expectedRoot.inode,
+                  isSafeArtifact(item.path, under: item.searchRootPath),
+                  !isProtectedArtifact(item.path),
+                  let currentProjectRoot = projectRoot(for: item.path),
+                  pathsEqual(currentProjectRoot, item.projectRootPath) else {
+                rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                continue
+            }
+            if item.activity == .old,
+               classifyActivity(at: item.path, referenceDate: Date()) != .old {
+                rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                continue
+            }
+            allowedPaths.insert(item.path)
+        }
+        return (allowedPaths, rejectedItems)
     }
 
     private static func scanSynchronously(referenceDate: Date) -> ProjectArtifactSnapshot {
@@ -460,6 +579,54 @@ nonisolated enum ProjectArtifactService {
         return ArtifactDetails(sizeBytes: sizeBytes, activity: activity)
     }
 
+    private static func classifyActivity(at path: String, referenceDate: Date) -> ProjectArtifactActivity {
+        let root = URL(fileURLWithPath: path, isDirectory: true)
+        let cutoff = referenceDate.addingTimeInterval(-minimumAge)
+        let deadline = Date().addingTimeInterval(artifactScanTimeLimit)
+        guard let rootMetadata = metadata(at: root),
+              let rootModifiedDate = rootMetadata.modifiedDate else {
+            return .uncertain
+        }
+        if rootModifiedDate >= cutoff {
+            return .recent
+        }
+
+        var incomplete = false
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [],
+            errorHandler: { _, _ in
+                incomplete = true
+                return true
+            }
+        ) else {
+            return .uncertain
+        }
+
+        while let url = enumerator.nextObject() as? URL {
+            guard !Task.isCancelled, Date() < deadline else { return .uncertain }
+            guard let itemMetadata = metadata(at: url) else {
+                incomplete = true
+                continue
+            }
+            if itemMetadata.isSymbolicLink {
+                if itemMetadata.isDirectory { enumerator.skipDescendants() }
+                continue
+            }
+            if itemMetadata.isRegularFile {
+                guard let modifiedDate = itemMetadata.modifiedDate else {
+                    incomplete = true
+                    continue
+                }
+                if modifiedDate >= cutoff {
+                    return .recent
+                }
+            }
+        }
+        return incomplete ? .uncertain : .old
+    }
+
     private static func metadata(at url: URL) -> (
         identity: FileIdentity,
         allocatedBytes: UInt64,
@@ -483,6 +650,13 @@ nonisolated enum ProjectArtifactService {
             kind == S_IFREG,
             kind == S_IFLNK
         )
+    }
+
+    private static func fileIdentity(at path: String) -> (device: UInt64, inode: UInt64)? {
+        var value = stat()
+        let result = path.withCString { lstat($0, &value) }
+        guard result == 0 else { return nil }
+        return (UInt64(value.st_dev), UInt64(value.st_ino))
     }
 
     private static func isCloudSynced(_ path: String) -> Bool {
