@@ -487,6 +487,9 @@ nonisolated enum ApplicationUninstallService {
                 }
             }
         }
+        let named = namedSystemReviewCandidates(for: application)
+        candidates.append(contentsOf: named.candidates)
+        if !named.isComplete { isComplete = false }
         return (collapsed(candidates), isComplete)
     }
 
@@ -962,6 +965,71 @@ nonisolated enum ApplicationUninstallService {
             return Candidate(path: child.path, kind: .other)
         }
         return (candidates, true)
+    }
+
+    private static func namedSystemReviewCandidates(
+        for application: InstalledApplication
+    ) -> (candidates: [Candidate], isComplete: Bool) {
+        let lowercasedName = application.name.lowercased()
+        var candidates: [Candidate] = []
+        var isComplete = true
+
+        func children(of rootPath: String) -> [URL]? {
+            guard pathExists(rootPath) else { return [] }
+            guard let values = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: rootPath, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else {
+                isComplete = false
+                return nil
+            }
+            return values
+        }
+
+        if application.name.count >= 5, !isCommonName(application.name) {
+            for root in ["/Library/LaunchAgents", "/Library/LaunchDaemons"] {
+                for child in children(of: root) ?? [] {
+                    let name = child.lastPathComponent.lowercased()
+                    guard child.pathExtension.caseInsensitiveCompare("plist") == .orderedSame,
+                          !name.hasPrefix("com.apple."),
+                          name.contains(lowercasedName) else {
+                        continue
+                    }
+                    candidates.append(Candidate(path: child.path, kind: .launchAgent))
+                }
+            }
+
+            let variants = Set([
+                application.name,
+                application.name.replacingOccurrences(of: " ", with: ""),
+                application.name.replacingOccurrences(of: " ", with: "-"),
+                application.name.replacingOccurrences(of: " ", with: "_")
+            ].map { $0.lowercased() }.filter { $0.count >= 5 })
+            for child in children(of: "/Library/PrivilegedHelperTools") ?? [] {
+                let name = child.lastPathComponent.lowercased()
+                guard !name.hasPrefix("com.apple."),
+                      variants.contains(where: { variant in
+                        name == variant
+                            || name.hasPrefix(variant + " ")
+                            || name.hasPrefix(variant + "-")
+                            || name.hasPrefix(variant + "_")
+                            || name.hasPrefix(variant + ".")
+                      }) else {
+                    continue
+                }
+                candidates.append(Candidate(path: child.path, kind: .other))
+            }
+        }
+
+        if application.bundleIdentifier?.lowercased() == "com.raycast.macos" {
+            for child in children(of: "/Library/Application Support") ?? [] {
+                let name = child.lastPathComponent.lowercased()
+                guard name.contains("raycast"), !name.contains("raycast-x") else { continue }
+                candidates.append(Candidate(path: child.path, kind: .applicationSupport))
+            }
+        }
+        return (candidates, isComplete)
     }
 
     private static func isSafeBundleToken(_ value: String) -> Bool {
