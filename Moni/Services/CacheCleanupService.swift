@@ -1242,7 +1242,18 @@ nonisolated enum CacheCleanupService {
             home + "/.local/share/containers/storage/tmp",
             home + "/.aws/cli/cache",
             home + "/.config/gcloud/logs",
-            home + "/.azure/logs"
+            home + "/.azure/logs",
+            home + "/.cache/typescript",
+            home + "/.cache/electron",
+            home + "/.cache/node-gyp",
+            home + "/.node-gyp",
+            home + "/.turbo/cache",
+            home + "/.vite/cache",
+            home + "/.cache/vite",
+            home + "/.cache/webpack",
+            home + "/.parcel-cache",
+            home + "/.cache/eslint",
+            home + "/.cache/prettier"
         ]
         if let githubRoot = githubCLICacheRoot() {
             roots.append(githubRoot)
