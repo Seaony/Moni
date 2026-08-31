@@ -52,6 +52,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case xcodeDeviceSupport
     case gradleCaches
     case jetBrainsToolboxOldVersions
+    case developerToolOldVersions
 
     var titleKey: String {
         switch self {
@@ -105,6 +106,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .xcodeDeviceSupport: "Old Xcode DeviceSupport"
         case .gradleCaches: "Gradle caches"
         case .jetBrainsToolboxOldVersions: "Old JetBrains Toolbox versions"
+        case .developerToolOldVersions: "Old developer tool versions"
         }
     }
 }
@@ -155,6 +157,11 @@ nonisolated enum CacheCleanupService {
     private struct GoCacheRoots: Sendable {
         let build: String?
         let modules: String?
+    }
+
+    private struct VersionedToolRoot: Sendable {
+        let versionsRoot: String
+        let launcher: String
     }
 
     static func scan() async -> CacheCleanupSnapshot {
@@ -460,6 +467,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: toolboxVersions.items)
         unreadableItemCount += toolboxVersions.unreadableItemCount
 
+        let developerToolVersions = await scanDeveloperToolOldVersions()
+        discoveredItems.append(contentsOf: developerToolVersions.items)
+        unreadableItemCount += developerToolVersions.unreadableItemCount
+
         let developerBackupFiles = scanDeveloperBackupFiles()
         discoveredItems.append(contentsOf: developerBackupFiles.items)
         unreadableItemCount += developerBackupFiles.unreadableItemCount
@@ -655,7 +666,20 @@ nonisolated enum CacheCleanupService {
         let toolboxAllowedPaths = requiresToolboxValidation
             ? Set(jetBrainsToolboxOldVersionCandidatePaths())
             : Set<String>()
+        let developerToolVersionAllowedPaths = items.contains {
+            $0.category == .developerToolOldVersions
+        } ? Set(developerToolOldVersionCandidatePaths()) : Set<String>()
         for item in items {
+            if item.category == .developerToolOldVersions {
+                guard developerToolVersionAllowedPaths.contains(where: {
+                    pathsEqual($0, item.path)
+                }), developerToolOldVersionItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .jetBrainsToolboxOldVersions {
                 guard toolboxAllowedPaths.contains(where: { pathsEqual($0, item.path) }),
                       jetBrainsToolboxOldVersionItemIsAllowed(item.path) else {
@@ -2312,6 +2336,154 @@ nonisolated enum CacheCleanupService {
             return target.standardizedFileURL.resolvingSymlinksInPath().path
         }
         return isRealDirectory(at: current.path) ? current.path : nil
+    }
+
+    private static func scanDeveloperToolOldVersions() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for path in developerToolOldVersionCandidatePaths() {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard developerToolOldVersionItemIsAllowed(path),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .developerToolOldVersions,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func developerToolOldVersionItemIsAllowed(_ path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return isRealFileOrDirectory(at: normalized)
+            && !isSymbolicLink(at: normalized)
+            && currentUserOwnsItem(at: normalized)
+            && !holdsCompiledModelCache(normalized)
+            && developerToolOldVersionCandidatePaths().contains {
+                pathsEqual($0, normalized)
+            }
+    }
+
+    private static func developerToolOldVersionCandidatePaths() -> [String] {
+        var candidates: [String] = []
+        for source in versionedToolRoots() {
+            guard let sourceCandidates = versionedToolOldVersionCandidates(source) else {
+                continue
+            }
+            candidates.append(contentsOf: sourceCandidates)
+        }
+        var seen = Set<String>()
+        return candidates.filter { seen.insert($0).inserted }
+    }
+
+    private static func versionedToolRoots() -> [VersionedToolRoot] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return [
+            VersionedToolRoot(
+                versionsRoot: home + "/.local/share/claude/versions",
+                launcher: home + "/.local/bin/claude"
+            ),
+            VersionedToolRoot(
+                versionsRoot: home + "/.local/share/cursor-agent/versions",
+                launcher: home + "/.local/bin/cursor-agent"
+            ),
+            VersionedToolRoot(
+                versionsRoot: home + "/.copilot/pkg/universal",
+                launcher: home + "/.local/bin/copilot"
+            )
+        ]
+    }
+
+    private static func versionedToolOldVersionCandidates(
+        _ source: VersionedToolRoot
+    ) -> [String]? {
+        guard isRealDirectory(at: source.versionsRoot),
+              currentUserOwnsDirectory(at: source.versionsRoot),
+              let urls = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: source.versionsRoot, isDirectory: true),
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+
+        let entries = urls.compactMap { url -> (String, Date)? in
+            let path = url.standardizedFileURL.path
+            guard url.lastPathComponent.first?.isNumber == true,
+                  isRealFileOrDirectory(at: path),
+                  !isSymbolicLink(at: path),
+                  currentUserOwnsItem(at: path),
+                  let modifiedDate = try? url.resourceValues(
+                    forKeys: [.contentModificationDateKey]
+                  ).contentModificationDate else {
+                return nil
+            }
+            return (path, modifiedDate)
+        }
+        let eligibleCount = urls.filter {
+            !$0.lastPathComponent.hasPrefix(".")
+                && $0.lastPathComponent.first?.isNumber == true
+        }.count
+        guard entries.count == eligibleCount else { return nil }
+        guard entries.count > 1 else { return [] }
+
+        let activePath: String?
+        if isSymbolicLink(at: source.launcher) {
+            guard FileManager.default.fileExists(atPath: source.launcher),
+                  let resolved = resolvedVersionedToolEntry(
+                    launcher: source.launcher,
+                    entries: entries.map { $0.0 }
+                  ) else {
+                return nil
+            }
+            activePath = resolved
+        } else {
+            activePath = nil
+        }
+
+        let sorted = entries.sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            return lhs.0.localizedStandardCompare(rhs.0) == .orderedAscending
+        }
+        var retainedBackup = false
+        return sorted.compactMap { entry in
+            if activePath.map({ pathsEqual($0, entry.0) }) == true { return nil }
+            if !retainedBackup {
+                retainedBackup = true
+                return nil
+            }
+            return entry.0
+        }
+    }
+
+    private static func resolvedVersionedToolEntry(
+        launcher: String,
+        entries: [String]
+    ) -> String? {
+        guard let destination = try? FileManager.default.destinationOfSymbolicLink(
+            atPath: launcher
+        ) else {
+            return nil
+        }
+        let target = destination.hasPrefix("/")
+            ? URL(fileURLWithPath: destination)
+            : URL(fileURLWithPath: launcher).deletingLastPathComponent()
+                .appendingPathComponent(destination)
+        let resolvedTarget = target.standardizedFileURL.resolvingSymlinksInPath().path
+        return entries.first { entry in
+            let resolvedEntry = URL(fileURLWithPath: entry)
+                .resolvingSymlinksInPath().standardizedFileURL.path
+            return pathsEqual(resolvedTarget, resolvedEntry)
+                || pathIsInside(resolvedTarget, root: resolvedEntry)
+        }
     }
 
     private static func scanDeveloperToolCaches() async -> (
