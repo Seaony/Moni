@@ -38,6 +38,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case oldMailAttachments
     case handoffClipboard
     case cachedDeviceFirmware
+    case nodePackageCaches
 
     var titleKey: String {
         switch self {
@@ -77,6 +78,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .oldMailAttachments: "Old Mail attachments"
         case .handoffClipboard: "Handoff clipboard cache"
         case .cachedDeviceFirmware: "Cached device firmware"
+        case .nodePackageCaches: "Node package caches"
         }
     }
 }
@@ -367,6 +369,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: cachedDeviceFirmware.items)
         unreadableItemCount += cachedDeviceFirmware.unreadableItemCount
 
+        let nodePackageCaches = await scanNodePackageCaches()
+        discoveredItems.append(contentsOf: nodePackageCaches.items)
+        unreadableItemCount += nodePackageCaches.unreadableItemCount
+
         let eligiblePaths = await CleanupService.shared.eligiblePaths(discoveredItems.map(\.path))
         let items = discoveredItems
             .filter { eligiblePaths.contains($0.path) }
@@ -512,7 +518,18 @@ nonisolated enum CacheCleanupService {
         let sharedContainerProcessGuard = items.contains { $0.category == .sharedContainerCaches }
             ? UserCacheProcessGuard.capture()
             : nil
+        let nodePackageToolsAreSafe = !items.contains { $0.category == .nodePackageCaches }
+            || nodePackageToolsAreInactive()
         for item in items {
+            if item.category == .nodePackageCaches {
+                guard nodePackageToolsAreSafe,
+                      nodePackageCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .applicationSupportCaches {
                 guard applicationSupportCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -929,6 +946,80 @@ nonisolated enum CacheCleanupService {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support", isDirectory: true)
             .standardizedFileURL.path
+    }
+
+    private static func scanNodePackageCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard nodePackageToolsAreInactive() else { return ([], 0) }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in nodePackageCacheRoots() where isRealDirectory(at: root) {
+            let children: [URL]
+            do {
+                children = try FileManager.default.contentsOfDirectory(
+                    at: URL(fileURLWithPath: root, isDirectory: true),
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                unreadableItemCount += 1
+                continue
+            }
+            for child in children {
+                guard !Task.isCancelled else { return ([], 0) }
+                let path = child.standardizedFileURL.path
+                guard nodePackageCacheItemIsAllowed(path),
+                      let measurement = await cacheTargetSize(at: path),
+                      measurement.sizeBytes > 0 else {
+                    continue
+                }
+                unreadableItemCount += measurement.unreadableItemCount
+                items.append(CacheCleanupItem(
+                    path: path,
+                    category: .nodePackageCaches,
+                    sizeBytes: measurement.sizeBytes
+                ))
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func nodePackageCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              isRealFileOrDirectory(at: url.path),
+              !isSymbolicLink(at: url.path),
+              nodePackageCacheRoots().contains(where: {
+                  isRealDirectory(at: $0)
+                      && pathsEqual(url.deletingLastPathComponent().path, $0)
+              }) else {
+            return false
+        }
+        return true
+    }
+
+    private static func nodePackageCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return [
+            home + "/.npm/_cacache",
+            home + "/.npm/_npx",
+            home + "/.npm/_logs",
+            home + "/.npm/_prebuilds",
+            home + "/.bun/install/cache",
+            home + "/.tnpm/_cacache",
+            home + "/.tnpm/_logs",
+            home + "/.yarn/cache"
+        ]
+    }
+
+    private static func nodePackageToolsAreInactive() -> Bool {
+        processProbesAreInactive([
+            ["-f", "(^|/)(npm|npx|tnpm|yarn|bun)([[:space:]]|$)"],
+            ["-f", "/(npm|npx)-cli\\.js([[:space:]]|$)"]
+        ])
     }
 
     private static func scanVirtualizationTemporaryData() async -> (
