@@ -164,6 +164,12 @@ nonisolated enum MaintenanceService {
             "shippingbox.fill", .storage, policy: .requiresInactiveApplications
         ),
         task(
+            "node_tool_cache_cleanup", "Corepack & Bun Caches",
+            "Clear Corepack and Bun package caches using each tool's own maintenance command.",
+            "shippingbox.and.arrow.backward.fill", .storage,
+            policy: .requiresInactiveApplications
+        ),
+        task(
             "python_package_cache_cleanup", "Python Package Caches",
             "Purge pip downloads and prune unused uv cache entries using their own commands.",
             "chevron.left.forwardslash.chevron.right", .storage,
