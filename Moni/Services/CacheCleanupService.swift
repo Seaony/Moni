@@ -6,6 +6,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case userLogs
     case diagnosticReports
     case savedApplicationState
+    case recentItems
     case incompleteDownloads
     case oldMailAttachments
 
@@ -15,6 +16,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .userLogs: "User app logs"
         case .diagnosticReports: "Diagnostic reports"
         case .savedApplicationState: "Saved application states"
+        case .recentItems: "Recent items"
         case .incompleteDownloads: "Incomplete downloads"
         case .oldMailAttachments: "Old Mail attachments"
         }
@@ -96,6 +98,12 @@ nonisolated enum CacheCleanupService {
         }.value
         discoveredItems.append(contentsOf: mailAttachments.items)
         unreadableItemCount += mailAttachments.unreadableItemCount
+
+        let recentItems = await Task.detached(priority: .utility) {
+            scanRecentItems()
+        }.value
+        discoveredItems.append(contentsOf: recentItems.items)
+        unreadableItemCount += recentItems.unreadableItemCount
 
         let eligiblePaths = await CleanupService.shared.eligiblePaths(discoveredItems.map(\.path))
         let items = discoveredItems
@@ -212,6 +220,14 @@ nonisolated enum CacheCleanupService {
         let requiresMailProbe = items.contains { $0.category == .oldMailAttachments }
         let mailIsSafe = !requiresMailProbe || mailIsInactive()
         for item in items {
+            if item.category == .recentItems {
+                guard recentItemSize(at: item.path) == item.sizeBytes else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .oldMailAttachments {
                 guard mailIsSafe,
                       mailAttachmentSize(at: item.path, referenceDate: Date()) == item.sizeBytes else {
@@ -233,6 +249,57 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanRecentItems() -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for path in recentItemPaths() where FileManager.default.fileExists(atPath: path) {
+            guard let size = recentItemSize(at: path) else {
+                unreadableItemCount += 1
+                continue
+            }
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .recentItems,
+                sizeBytes: size
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func recentItemSize(at path: String) -> UInt64? {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard recentItemPaths().contains(where: { candidate in
+            normalized.compare(candidate, options: [.caseInsensitive, .literal]) == .orderedSame
+        }) else {
+            return nil
+        }
+        var value = stat()
+        guard normalized.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFREG else {
+            return nil
+        }
+        return value.st_blocks > 0 ? UInt64(value.st_blocks) * 512 : 0
+    }
+
+    private static func recentItemPaths() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let shared = home + "/Library/Application Support/com.apple.sharedfilelist"
+        return [
+            shared + "/com.apple.LSSharedFileList.RecentApplications.sfl2",
+            shared + "/com.apple.LSSharedFileList.RecentDocuments.sfl2",
+            shared + "/com.apple.LSSharedFileList.RecentServers.sfl2",
+            shared + "/com.apple.LSSharedFileList.RecentHosts.sfl2",
+            shared + "/com.apple.LSSharedFileList.RecentApplications.sfl",
+            shared + "/com.apple.LSSharedFileList.RecentDocuments.sfl",
+            shared + "/com.apple.LSSharedFileList.RecentServers.sfl",
+            shared + "/com.apple.LSSharedFileList.RecentHosts.sfl",
+            home + "/Library/Preferences/com.apple.recentitems.plist"
+        ]
     }
 
     private static func scanOldMailAttachments(referenceDate: Date) -> (
