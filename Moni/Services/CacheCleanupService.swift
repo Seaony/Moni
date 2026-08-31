@@ -18,6 +18,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case braveProfileCaches
     case arcProfileCaches
     case vivaldiProfileCaches
+    case browserOldVersions
     case googleUpdaterCaches
     case virtualizationTemporaryData
     case savedApplicationState
@@ -45,6 +46,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .braveProfileCaches: "Brave profile caches"
         case .arcProfileCaches: "Arc profile caches"
         case .vivaldiProfileCaches: "Vivaldi profile caches"
+        case .browserOldVersions: "Old browser versions"
         case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
@@ -82,6 +84,12 @@ nonisolated enum CacheCleanupService {
     private struct Source: Sendable {
         let path: String
         let category: CacheCleanupCategory
+    }
+
+    private struct ChromiumVersionSource: Sendable {
+        let appPaths: [String]
+        let frameworkName: String
+        let processProbes: [[String]]
     }
 
     static func scan() async -> CacheCleanupSnapshot {
@@ -192,6 +200,10 @@ nonisolated enum CacheCleanupService {
             discoveredItems.append(contentsOf: vivaldiProfileCaches.items)
             unreadableItemCount += vivaldiProfileCaches.unreadableItemCount
         }
+
+        let browserOldVersions = await scanBrowserOldVersions()
+        discoveredItems.append(contentsOf: browserOldVersions.items)
+        unreadableItemCount += browserOldVersions.unreadableItemCount
 
         let googleUpdaterCaches = await scanGoogleUpdaterCaches()
         discoveredItems.append(contentsOf: googleUpdaterCaches.items)
@@ -403,6 +415,14 @@ nonisolated enum CacheCleanupService {
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
+            if item.category == .browserOldVersions {
+                guard browserOldVersionItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .googleUpdaterCaches {
                 guard googleUpdaterCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -1128,6 +1148,56 @@ nonisolated enum CacheCleanupService {
         return (items, unreadableItemCount)
     }
 
+    private static func scanBrowserOldVersions() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for source in chromiumVersionSources() {
+            guard processProbesAreInactive(source.processProbes) else { continue }
+            var sourceItems: [CacheCleanupItem] = []
+            var sourceIsSafe = true
+            for appPath in source.appPaths {
+                let versionsRoot = appPath
+                    + "/Contents/Frameworks/"
+                    + source.frameworkName
+                    + "/Versions"
+                for path in browserOldVersionDirectories(in: versionsRoot) {
+                    guard !Task.isCancelled else { return ([], 0) }
+                    guard processProbesAreInactive(source.processProbes) else {
+                        sourceIsSafe = false
+                        break
+                    }
+                    var finalUpdate: DiskAnalysisUpdate?
+                    for await update in DiskAnalyzer.updates(for: path) {
+                        guard !Task.isCancelled else { return ([], 0) }
+                        if update.isComplete { finalUpdate = update }
+                    }
+                    guard let finalUpdate else {
+                        unreadableItemCount += 1
+                        continue
+                    }
+                    unreadableItemCount += finalUpdate.unreadableItemCount
+                    guard processProbesAreInactive(source.processProbes) else {
+                        sourceIsSafe = false
+                        break
+                    }
+                    sourceItems.append(CacheCleanupItem(
+                        path: path,
+                        category: .browserOldVersions,
+                        sizeBytes: finalUpdate.scannedBytes
+                    ))
+                }
+                if !sourceIsSafe { break }
+            }
+            if sourceIsSafe {
+                items.append(contentsOf: sourceItems)
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
     private static func scanGoogleUpdaterCaches() async -> (
         items: [CacheCleanupItem],
         unreadableItemCount: Int
@@ -1404,6 +1474,120 @@ nonisolated enum CacheCleanupService {
         })
         var seen: Set<String> = []
         return roots.filter { seen.insert($0).inserted }
+    }
+
+    private static func chromiumVersionSources() -> [ChromiumVersionSource] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return [
+            ChromiumVersionSource(
+                appPaths: [
+                    "/Applications/Google Chrome.app",
+                    home + "/Applications/Google Chrome.app"
+                ],
+                frameworkName: "Google Chrome Framework.framework",
+                processProbes: [
+                    ["-x", "Google Chrome"],
+                    ["-x", "Google Chrome Helper"],
+                    ["-f", "/Google Chrome.app/"]
+                ]
+            ),
+            ChromiumVersionSource(
+                appPaths: [
+                    "/Applications/Microsoft Edge.app",
+                    home + "/Applications/Microsoft Edge.app"
+                ],
+                frameworkName: "Microsoft Edge Framework.framework",
+                processProbes: [["-x", "Microsoft Edge"]]
+            ),
+            ChromiumVersionSource(
+                appPaths: [
+                    "/Applications/Brave Browser.app",
+                    home + "/Applications/Brave Browser.app"
+                ],
+                frameworkName: "Brave Browser Framework.framework",
+                processProbes: [["-x", "Brave Browser"]]
+            )
+        ]
+    }
+
+    private static func browserOldVersionItemIsAllowed(_ path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard !isSymbolicLink(at: normalized),
+              isRealDirectory(at: normalized),
+              !holdsCompiledModelCache(normalized),
+              let source = browserVersionSource(containing: normalized),
+              processProbesAreInactive(source.processProbes) else {
+            return false
+        }
+        let versionsRoot = URL(fileURLWithPath: normalized)
+            .deletingLastPathComponent()
+            .standardizedFileURL.path
+        return browserOldVersionDirectories(in: versionsRoot).contains {
+            pathsEqual($0, normalized)
+        }
+    }
+
+    private static func browserVersionSource(containing path: String) -> ChromiumVersionSource? {
+        let parent = URL(fileURLWithPath: path).deletingLastPathComponent().standardizedFileURL.path
+        for source in chromiumVersionSources() {
+            for appPath in source.appPaths {
+                let versionsRoot = appPath
+                    + "/Contents/Frameworks/"
+                    + source.frameworkName
+                    + "/Versions"
+                if pathsEqual(parent, versionsRoot) {
+                    return source
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func browserOldVersionDirectories(in versionsRoot: String) -> [String] {
+        let currentLink = versionsRoot + "/Current"
+        guard isRealDirectory(at: versionsRoot),
+              isSymbolicLink(at: currentLink),
+              let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: currentLink) else {
+            return []
+        }
+        let currentVersion = URL(fileURLWithPath: destination).lastPathComponent
+        let currentPath = versionsRoot + "/" + currentVersion
+        guard !currentVersion.isEmpty,
+              isRealDirectory(at: currentPath),
+              let currentModificationDate = directoryModificationDate(at: currentPath) else {
+            return []
+        }
+
+        let directories = childDirectories(at: versionsRoot).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        var newestStagedPath: String?
+        var newestModificationDate = currentModificationDate
+        for directory in directories {
+            guard let modificationDate = directoryModificationDate(at: directory),
+                  modificationDate > newestModificationDate else {
+                continue
+            }
+            newestModificationDate = modificationDate
+            newestStagedPath = directory
+        }
+        return directories.filter { directory in
+            !pathsEqual(directory, currentPath)
+                && (newestStagedPath == nil || !pathsEqual(directory, newestStagedPath!))
+                && !holdsCompiledModelCache(directory)
+        }
+    }
+
+    private static func directoryModificationDate(at path: String) -> Date? {
+        var value = stat()
+        guard path.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFDIR else {
+            return nil
+        }
+        return Date(
+            timeIntervalSince1970: TimeInterval(value.st_mtimespec.tv_sec)
+                + TimeInterval(value.st_mtimespec.tv_nsec) / 1_000_000_000
+        )
     }
 
     private static func chromeIsInactive() -> Bool {
