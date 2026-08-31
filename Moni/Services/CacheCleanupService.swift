@@ -21,6 +21,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case qqBrowserProfileCaches
     case browserServiceWorkerCaches
     case browserOldVersions
+    case edgeUpdaterOldVersions
     case googleUpdaterCaches
     case virtualizationTemporaryData
     case savedApplicationState
@@ -51,6 +52,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .qqBrowserProfileCaches: "QQ Browser profile caches"
         case .browserServiceWorkerCaches: "Browser Service Worker caches"
         case .browserOldVersions: "Old browser versions"
+        case .edgeUpdaterOldVersions: "Old Edge updater versions"
         case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
@@ -227,6 +229,10 @@ nonisolated enum CacheCleanupService {
         let browserOldVersions = await scanBrowserOldVersions()
         discoveredItems.append(contentsOf: browserOldVersions.items)
         unreadableItemCount += browserOldVersions.unreadableItemCount
+
+        let edgeUpdaterOldVersions = await scanEdgeUpdaterOldVersions()
+        discoveredItems.append(contentsOf: edgeUpdaterOldVersions.items)
+        unreadableItemCount += edgeUpdaterOldVersions.unreadableItemCount
 
         let googleUpdaterCaches = await scanGoogleUpdaterCaches()
         discoveredItems.append(contentsOf: googleUpdaterCaches.items)
@@ -440,6 +446,14 @@ nonisolated enum CacheCleanupService {
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
+            if item.category == .edgeUpdaterOldVersions {
+                guard edgeUpdaterOldVersionItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .browserServiceWorkerCaches {
                 guard browserServiceWorkerCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -1325,6 +1339,36 @@ nonisolated enum CacheCleanupService {
         return (items, unreadableItemCount)
     }
 
+    private static func scanEdgeUpdaterOldVersions() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard edgeIsInactive() else { return ([], 0) }
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for path in edgeUpdaterOldVersionDirectories() {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard edgeIsInactive() else { return ([], unreadableItemCount) }
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: path) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            guard edgeIsInactive() else { return ([], unreadableItemCount) }
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .edgeUpdaterOldVersions,
+                sizeBytes: finalUpdate.scannedBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
     private static func scanGoogleUpdaterCaches() async -> (
         items: [CacheCleanupItem],
         unreadableItemCount: Int
@@ -1849,6 +1893,83 @@ nonisolated enum CacheCleanupService {
         )
     }
 
+    private static func edgeUpdaterOldVersionItemIsAllowed(_ path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard edgeIsInactive(),
+              isRealDirectory(at: normalized),
+              !isSymbolicLink(at: normalized),
+              !holdsCompiledModelCache(normalized),
+              pathsEqual(
+                URL(fileURLWithPath: normalized).deletingLastPathComponent().path,
+                edgeUpdaterVersionsRoot()
+              ) else {
+            return false
+        }
+        return edgeUpdaterOldVersionDirectories().contains {
+            pathsEqual($0, normalized)
+        }
+    }
+
+    private static func edgeUpdaterOldVersionDirectories() -> [String] {
+        let directories = childDirectories(at: edgeUpdaterVersionsRoot()).sorted {
+            versionName(at: $0).compare(
+                versionName(at: $1),
+                options: [.numeric, .caseInsensitive]
+            ) == .orderedAscending
+        }
+        guard !directories.isEmpty else { return [] }
+        if let installedVersion = installedEdgeVersion() {
+            return directories.filter { directory in
+                versionName(at: directory).compare(
+                    installedVersion,
+                    options: [.numeric, .caseInsensitive]
+                ) == .orderedAscending
+                    && !holdsCompiledModelCache(directory)
+            }
+        }
+        guard directories.count >= 2, let newest = directories.last else { return [] }
+        return directories.dropLast().filter {
+            !pathsEqual($0, newest) && !holdsCompiledModelCache($0)
+        }
+    }
+
+    private static func versionName(at path: String) -> String {
+        URL(fileURLWithPath: path).lastPathComponent
+    }
+
+    private static func installedEdgeVersion() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let appPaths = [
+            "/Applications/Microsoft Edge.app",
+            home + "/Applications/Microsoft Edge.app"
+        ]
+        for appPath in appPaths {
+            let plistPath = appPath + "/Contents/Info.plist"
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: plistPath)),
+                  let plist = try? PropertyListSerialization.propertyList(
+                    from: data,
+                    options: [],
+                    format: nil
+                  ),
+                  let dictionary = plist as? [String: Any],
+                  let version = dictionary["CFBundleShortVersionString"] as? String,
+                  !version.isEmpty else {
+                continue
+            }
+            return version
+        }
+        return nil
+    }
+
+    private static func edgeUpdaterVersionsRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/Microsoft/EdgeUpdater/apps/msedge-stable",
+                isDirectory: true
+            )
+            .standardizedFileURL.path
+    }
+
     private static func chromeIsInactive() -> Bool {
         processProbesAreInactive([
             ["-x", "Google Chrome"],
@@ -1875,6 +1996,10 @@ nonisolated enum CacheCleanupService {
 
     private static func qqBrowserIsInactive() -> Bool {
         processProbesAreInactive([["-x", "QQBrowser3"]])
+    }
+
+    private static func edgeIsInactive() -> Bool {
+        processProbesAreInactive([["-x", "Microsoft Edge"]])
     }
 
     private static func processProbesAreInactive(_ probes: [[String]]) -> Bool {

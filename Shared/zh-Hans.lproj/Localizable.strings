@@ -182,6 +182,7 @@
 "QQ Browser profile caches" = "QQ 浏览器配置缓存";
 "Browser Service Worker caches" = "浏览器 Service Worker 缓存";
 "Old browser versions" = "浏览器旧版本";
+"Old Edge updater versions" = "Edge 更新器旧版本";
 "Google updater caches" = "Google 更新器缓存";
 "Virtualization temporary data" = "虚拟化临时数据";
 "Saved application states" = "已保存的应用状态";
