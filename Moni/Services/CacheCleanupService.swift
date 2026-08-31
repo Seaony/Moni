@@ -7,6 +7,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case diagnosticReports
     case savedApplicationState
     case incompleteDownloads
+    case oldMailAttachments
 
     var titleKey: String {
         switch self {
@@ -15,6 +16,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .diagnosticReports: "Diagnostic reports"
         case .savedApplicationState: "Saved application states"
         case .incompleteDownloads: "Incomplete downloads"
+        case .oldMailAttachments: "Old Mail attachments"
         }
     }
 }
@@ -88,6 +90,12 @@ nonisolated enum CacheCleanupService {
         }.value
         discoveredItems.append(contentsOf: incompleteDownloads.items)
         unreadableItemCount += incompleteDownloads.unreadableItemCount
+
+        let mailAttachments = await Task.detached(priority: .utility) {
+            scanOldMailAttachments(referenceDate: Date())
+        }.value
+        discoveredItems.append(contentsOf: mailAttachments.items)
+        unreadableItemCount += mailAttachments.unreadableItemCount
 
         let eligiblePaths = await CleanupService.shared.eligiblePaths(discoveredItems.map(\.path))
         let items = discoveredItems
@@ -201,7 +209,18 @@ nonisolated enum CacheCleanupService {
     ) {
         var validItems: [CacheCleanupItem] = []
         var rejectedItems: [CleanupRejectedItem] = []
+        let requiresMailProbe = items.contains { $0.category == .oldMailAttachments }
+        let mailIsSafe = !requiresMailProbe || mailIsInactive()
         for item in items {
+            if item.category == .oldMailAttachments {
+                guard mailIsSafe,
+                      mailAttachmentSize(at: item.path, referenceDate: Date()) == item.sizeBytes else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             guard item.category == .incompleteDownloads else {
                 validItems.append(item)
                 continue
@@ -214,6 +233,133 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanOldMailAttachments(referenceDate: Date) -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard mailIsInactive() else { return ([], 0) }
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+
+        for rootPath in mailDownloadRoots() {
+            let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: rootPath, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                continue
+            }
+
+            var rootUnreadableCount = 0
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                    .fileSizeKey, .contentModificationDateKey
+                ],
+                options: [],
+                errorHandler: { _, _ in
+                    rootUnreadableCount += 1
+                    return true
+                }
+            ) else {
+                unreadableItemCount += 1
+                continue
+            }
+
+            var rootBytes: UInt64 = 0
+            var rootItems: [CacheCleanupItem] = []
+            for case let url as URL in enumerator {
+                guard !Task.isCancelled else { return ([], 0) }
+                do {
+                    let values = try url.resourceValues(forKeys: [
+                        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                        .fileSizeKey, .contentModificationDateKey
+                    ])
+                    if values.isSymbolicLink == true {
+                        if values.isDirectory == true { enumerator.skipDescendants() }
+                        continue
+                    }
+                    guard values.isRegularFile == true else { continue }
+                    let size = UInt64(max(0, values.fileSize ?? 0))
+                    let (sum, overflow) = rootBytes.addingReportingOverflow(size)
+                    rootBytes = overflow ? UInt64.max : sum
+                    if let modified = values.contentModificationDate,
+                       modified < referenceDate.addingTimeInterval(-mailAttachmentMinimumAge) {
+                        rootItems.append(CacheCleanupItem(
+                            path: url.standardizedFileURL.path,
+                            category: .oldMailAttachments,
+                            sizeBytes: size
+                        ))
+                    }
+                } catch {
+                    rootUnreadableCount += 1
+                    enumerator.skipDescendants()
+                }
+            }
+
+            unreadableItemCount += rootUnreadableCount
+            guard rootUnreadableCount == 0,
+                  rootBytes >= mailDownloadsMinimumBytes else {
+                continue
+            }
+            items.append(contentsOf: rootItems)
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func mailAttachmentSize(at path: String, referenceDate: Date) -> UInt64? {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard mailDownloadRoots().contains(where: { root in
+            url.path.lowercased().hasPrefix(root.lowercased() + "/")
+        }) else {
+            return nil
+        }
+        do {
+            let values = try url.resourceValues(forKeys: [
+                .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey
+            ])
+            guard values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  let modified = values.contentModificationDate,
+                  modified < referenceDate.addingTimeInterval(-mailAttachmentMinimumAge) else {
+                return nil
+            }
+            return UInt64(max(0, values.fileSize ?? 0))
+        } catch {
+            return nil
+        }
+    }
+
+    private static func mailIsInactive() -> Bool {
+        let executable = "/usr/bin/pgrep"
+        guard FileManager.default.isExecutableFile(atPath: executable) else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["-x", "Mail"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let timeout = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5, execute: timeout)
+        process.waitUntilExit()
+        timeout.cancel()
+        return process.terminationStatus == 1
+    }
+
+    private static func mailDownloadRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return [
+            home + "/Library/Mail Downloads",
+            home + "/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"
+        ]
     }
 
     private static func incompleteDownloadSize(at path: String) -> UInt64? {
@@ -264,4 +410,6 @@ nonisolated enum CacheCleanupService {
     private static let incompleteDownloadExtensions: Set<String> = [
         "download", "crdownload", "part"
     ]
+    private static let mailAttachmentMinimumAge: TimeInterval = 30 * 24 * 60 * 60
+    private static let mailDownloadsMinimumBytes: UInt64 = 5 * 1024 * 1024
 }
