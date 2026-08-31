@@ -1003,7 +1003,7 @@ nonisolated enum CacheCleanupService {
 
     private static func nodePackageCacheRoots() -> [String] {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-        return [
+        var roots = [
             home + "/.npm/_cacache",
             home + "/.npm/_npx",
             home + "/.npm/_logs",
@@ -1011,13 +1011,26 @@ nonisolated enum CacheCleanupService {
             home + "/.bun/install/cache",
             home + "/.tnpm/_cacache",
             home + "/.tnpm/_logs",
-            home + "/.yarn/cache"
+            home + "/.yarn/cache",
+            home + "/.cache/node/corepack"
         ]
+        if let configuredHome = ProcessInfo.processInfo.environment["COREPACK_HOME"],
+           configuredHome.hasPrefix("/"),
+           !configuredHome.contains("\0"),
+           !configuredHome.split(separator: "/", omittingEmptySubsequences: false).contains("..") {
+            let normalized = URL(fileURLWithPath: configuredHome).standardizedFileURL.path
+            let excludedRoots = ["/", home, home + "/Library"]
+            if !excludedRoots.contains(where: { pathsEqual(normalized, $0) }),
+               !roots.contains(where: { pathsEqual(normalized, $0) }) {
+                roots.append(normalized)
+            }
+        }
+        return roots
     }
 
     private static func nodePackageToolsAreInactive() -> Bool {
         processProbesAreInactive([
-            ["-f", "(^|/)(npm|npx|tnpm|yarn|bun)([[:space:]]|$)"],
+            ["-f", "(^|/)(npm|npx|tnpm|yarn|bun|corepack)([[:space:]]|$)"],
             ["-f", "/(npm|npx)-cli\\.js([[:space:]]|$)"]
         ])
     }
