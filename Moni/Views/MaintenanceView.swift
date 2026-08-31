@@ -32,6 +32,11 @@ private struct DatabaseMaintenanceReview: Identifiable {
     let items: [DatabaseMaintenanceItem]
 }
 
+private struct SpotlightRulesReview: Identifiable {
+    let id = UUID()
+    let rules: [String]
+}
+
 struct MaintenanceView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var snapshot = FinderMaintenanceSnapshot(
@@ -63,6 +68,10 @@ struct MaintenanceView: View {
         busyApplications: [],
         items: []
     )
+    @State private var spotlightRulesSnapshot = SpotlightRulesMaintenanceSnapshot(
+        state: .unavailable,
+        orphanedRules: []
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -71,6 +80,7 @@ struct MaintenanceView: View {
     @State private var confirmsDiskVerification = false
     @State private var diskVerificationReport: DiskVerificationReport?
     @State private var databaseReview: DatabaseMaintenanceReview?
+    @State private var spotlightRulesReview: SpotlightRulesReview?
     @State private var resultMessage: String?
 
     var body: some View {
@@ -215,6 +225,22 @@ struct MaintenanceView: View {
                         databaseReview = DatabaseMaintenanceReview(items: databaseSnapshot.items)
                     }
 
+                    commandCard(
+                        title: "Spotlight Orphan Rules",
+                        description: "Remove Spotlight search rules that reference applications no longer installed.",
+                        symbol: "magnifyingglass",
+                        status: spotlightRulesStatus,
+                        buttonTitle: spotlightRulesSnapshot.orphanedRules.isEmpty
+                            ? "No orphan rules"
+                            : "Review Repair",
+                        isAvailable: spotlightRulesSnapshot.state == .ready,
+                        isActionEnabled: !spotlightRulesSnapshot.orphanedRules.isEmpty
+                    ) {
+                        spotlightRulesReview = SpotlightRulesReview(
+                            rules: spotlightRulesSnapshot.orphanedRules
+                        )
+                    }
+
                     catalogSummary
                 }
             }
@@ -253,6 +279,16 @@ struct MaintenanceView: View {
                 onConfirm: {
                     databaseReview = nil
                     Task { await optimizeDatabases(review.items) }
+                }
+            )
+        }
+        .sheet(item: $spotlightRulesReview) { review in
+            SpotlightRulesConfirmationView(
+                rules: review.rules,
+                onCancel: { spotlightRulesReview = nil },
+                onConfirm: {
+                    spotlightRulesReview = nil
+                    Task { await removeSpotlightRules(review.rules) }
                 }
             )
         }
@@ -473,7 +509,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "11", MoniPalette.green)
+                catalogMetric("Available now", "12", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -604,6 +640,26 @@ struct MaintenanceView: View {
         }
     }
 
+    private var spotlightRulesStatus: String {
+        switch spotlightRulesSnapshot.state {
+        case .ready:
+            spotlightRulesSnapshot.orphanedRules.isEmpty
+                ? MoniLocalization.string("Search rules are clean")
+                : MoniLocalization.format(
+                    "%@ orphan rules found",
+                    spotlightRulesSnapshot.orphanedRules.count.formatted()
+                )
+        case .protected:
+            MoniLocalization.string("Protected by whitelist")
+        case .unavailable:
+            MoniLocalization.string("Unavailable")
+        case .incomplete:
+            MoniLocalization.string("Application scan incomplete")
+        case .failed:
+            MoniLocalization.string("Inspection failed")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -612,9 +668,10 @@ struct MaintenanceView: View {
         async let settingsResult = MaintenanceSettingsService.scan()
         async let quarantineResult = MaintenanceDiagnosticsService.scanQuarantineHistory()
         async let databaseResult = DatabaseMaintenanceService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases) = await (
+        async let spotlightRulesResult = SpotlightRulesMaintenanceService.scan()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
-            databaseResult
+            databaseResult, spotlightRulesResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -624,6 +681,7 @@ struct MaintenanceView: View {
         settingsSnapshot = settings
         quarantineSnapshot = quarantine
         databaseSnapshot = databases
+        spotlightRulesSnapshot = spotlightRules
         isScanning = false
     }
 
@@ -798,6 +856,26 @@ struct MaintenanceView: View {
         }
         monitor.refresh(forceSlowMetrics: true)
         resultMessage = parts.joined(separator: " ")
+    }
+
+    private func removeSpotlightRules(_ rules: [String]) async {
+        isRunning = true
+        let result = await SpotlightRulesMaintenanceService.remove(rules)
+        spotlightRulesSnapshot = await SpotlightRulesMaintenanceService.scan()
+        isRunning = false
+
+        if result.failedCount > 0 {
+            resultMessage = MoniLocalization.string("Spotlight search rules could not be updated.")
+        } else if result.removedCount > 0 {
+            resultMessage = MoniLocalization.format(
+                "Removed %@ orphan Spotlight rules.",
+                result.removedCount.formatted()
+            )
+        } else if result.skippedCount > 0 {
+            resultMessage = MoniLocalization.string("Spotlight rules changed or the application scan became incomplete.")
+        } else {
+            resultMessage = MoniLocalization.string("Spotlight search rules were already clean.")
+        }
     }
 }
 
@@ -994,6 +1072,59 @@ private struct DatabaseMaintenanceConfirmationView: View {
         case .oversized, .protected: MoniPalette.orange
         case .failed: MoniPalette.red
         }
+    }
+}
+
+private struct SpotlightRulesConfirmationView: View {
+    let rules: [String]
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Remove orphan Spotlight rules?")
+                    .font(.system(size: 18, weight: .bold))
+                Text("Only the listed third-party bundle identifiers will be removed from Spotlight search settings. The application scan runs again before the change.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(rules, id: \.self) { rule in
+                        Label {
+                            Text(rule)
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .textSelection(.enabled)
+                        } icon: {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(MoniPalette.orange)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MoniPalette.insetSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                }
+                .padding(1)
+            }
+            .frame(maxHeight: 280)
+
+            Label("System rules, Apple rules, malformed entries, and identifiers with uncertain application status are always kept.", systemImage: "checkmark.shield")
+                .font(.system(size: 11.5))
+                .foregroundStyle(MoniPalette.foregroundSecondary)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Remove Rules", role: .destructive, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(rules.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 620)
     }
 }
 

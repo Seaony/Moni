@@ -650,3 +650,17 @@
 "Reclaimable %@" = "可回收 %@";
 "Mail, Safari, and Messages must remain closed until optimization finishes." = "优化完成前，邮件、Safari 与信息必须保持关闭。";
 "Optimize Databases" = "优化数据库";
+"Spotlight Orphan Rules" = "Spotlight 孤立规则";
+"Remove Spotlight search rules that reference applications no longer installed." = "移除指向已卸载应用的 Spotlight 搜索规则。";
+"No orphan rules" = "没有孤立规则";
+"Search rules are clean" = "搜索规则状态正常";
+"%@ orphan rules found" = "找到 %@ 条孤立规则";
+"Application scan incomplete" = "应用扫描不完整";
+"Spotlight search rules could not be updated." = "未能更新 Spotlight 搜索规则。";
+"Removed %@ orphan Spotlight rules." = "已移除 %@ 条 Spotlight 孤立规则。";
+"Spotlight rules changed or the application scan became incomplete." = "Spotlight 规则已发生变化，或应用扫描变得不完整。";
+"Spotlight search rules were already clean." = "Spotlight 搜索规则已经正常。";
+"Remove orphan Spotlight rules?" = "移除 Spotlight 孤立规则？";
+"Only the listed third-party bundle identifiers will be removed from Spotlight search settings. The application scan runs again before the change." = "只会从 Spotlight 搜索设置中移除列出的第三方软件包标识符；更改前会再次扫描应用。";
+"System rules, Apple rules, malformed entries, and identifiers with uncertain application status are always kept." = "系统规则、Apple 规则、格式异常项以及应用状态不确定的标识符始终保留。";
+"Remove Rules" = "移除规则";
