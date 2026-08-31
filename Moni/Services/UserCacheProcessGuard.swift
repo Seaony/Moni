@@ -54,6 +54,15 @@ nonisolated struct UserCacheProcessGuard: Sendable {
         return !snapshot.ownerIsRunning(owner)
     }
 
+    static func permits(owner: String, using snapshot: UserCacheProcessGuard?) -> Bool {
+        guard owner.contains("."),
+              !owner.hasPrefix("."),
+              let snapshot else {
+            return false
+        }
+        return !snapshot.ownerIsRunning(owner)
+    }
+
     private func ownerIsRunning(_ owner: String) -> Bool {
         let lowercasedOwner = owner.lowercased()
         if runningBundleIdentifiers.contains(lowercasedOwner) {

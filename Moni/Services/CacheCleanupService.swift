@@ -20,6 +20,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case vivaldiProfileCaches
     case qqBrowserProfileCaches
     case puppeteerCaches
+    case heliumProfileCaches
     case browserServiceWorkerCaches
     case browserOldVersions
     case edgeUpdaterOldVersions
@@ -52,6 +53,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .vivaldiProfileCaches: "Vivaldi profile caches"
         case .qqBrowserProfileCaches: "QQ Browser profile caches"
         case .puppeteerCaches: "Puppeteer browser caches"
+        case .heliumProfileCaches: "Helium profile caches"
         case .browserServiceWorkerCaches: "Browser Service Worker caches"
         case .browserOldVersions: "Old browser versions"
         case .edgeUpdaterOldVersions: "Old Edge updater versions"
@@ -158,7 +160,8 @@ nonisolated enum CacheCleanupService {
                     || pathsEqual($0.path, braveGeneralCacheRoot())
                     || pathsEqual($0.path, arcGeneralCacheRoot())
                     || pathsEqual($0.path, vivaldiGeneralCacheRoot())
-                    || pathsEqual($0.path, qqBrowserGeneralCacheRoot()))
+                    || pathsEqual($0.path, qqBrowserGeneralCacheRoot())
+                    || pathsEqual($0.path, heliumGeneralCacheRoot()))
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -227,6 +230,15 @@ nonisolated enum CacheCleanupService {
         let puppeteerCaches = await scanPuppeteerCaches()
         discoveredItems.append(contentsOf: puppeteerCaches.items)
         unreadableItemCount += puppeteerCaches.unreadableItemCount
+
+        let heliumProcessGuard = await Task.detached(priority: .utility) {
+            UserCacheProcessGuard.capture()
+        }.value
+        if UserCacheProcessGuard.permits(owner: heliumOwner, using: heliumProcessGuard) {
+            let heliumProfileCaches = await scanHeliumProfileCaches()
+            discoveredItems.append(contentsOf: heliumProfileCaches.items)
+            unreadableItemCount += heliumProfileCaches.unreadableItemCount
+        }
 
         let browserServiceWorkerCaches = await scanBrowserServiceWorkerCaches()
         discoveredItems.append(contentsOf: browserServiceWorkerCaches.items)
@@ -448,10 +460,22 @@ nonisolated enum CacheCleanupService {
         let vivaldiIsSafe = !requiresVivaldiProbe || vivaldiIsInactive()
         let requiresQQBrowserProbe = items.contains { $0.category == .qqBrowserProfileCaches }
         let qqBrowserIsSafe = !requiresQQBrowserProbe || qqBrowserIsInactive()
+        let heliumProcessGuard = items.contains { $0.category == .heliumProfileCaches }
+            ? UserCacheProcessGuard.capture()
+            : nil
         let userCacheProcessGuard = items.contains { $0.category == .userCaches }
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
+            if item.category == .heliumProfileCaches {
+                guard UserCacheProcessGuard.permits(owner: heliumOwner, using: heliumProcessGuard),
+                      heliumProfileCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .puppeteerCaches {
                 guard puppeteerCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -1072,6 +1096,12 @@ nonisolated enum CacheCleanupService {
             .standardizedFileURL.path
     }
 
+    private static func heliumGeneralCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/net.imput.helium", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
     private static func diaIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Dia"]])
     }
@@ -1274,6 +1304,35 @@ nonisolated enum CacheCleanupService {
             )
         }
         return (items, finalUpdate.unreadableItemCount)
+    }
+
+    private static func scanHeliumProfileCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in heliumProfileCacheRoots() where isRealDirectory(at: root) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: root) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                guard heliumProfileCacheItemIsAllowed(path) else { return nil }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .heliumProfileCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
     }
 
     private static func scanBrowserServiceWorkerCaches() async -> (
@@ -1736,6 +1795,42 @@ nonisolated enum CacheCleanupService {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/puppeteer", isDirectory: true)
             .standardizedFileURL.path
+    }
+
+    private static let heliumOwner = "net.imput.helium"
+
+    private static func heliumProfileCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              !holdsCompiledModelCache(url.path) else {
+            return false
+        }
+        return heliumProfileCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func heliumProfileCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let supportRoot = home + "/Library/Application Support/net.imput.helium"
+        var roots = [
+            heliumGeneralCacheRoot(),
+            supportRoot + "/component_crx_cache",
+            supportRoot + "/extensions_crx_cache",
+            supportRoot + "/GrShaderCache",
+            supportRoot + "/GraphiteDawnCache",
+            supportRoot + "/ShaderCache"
+        ]
+        roots.append(contentsOf: childDirectories(at: supportRoot).flatMap { profile in
+            [
+                profile + "/GPUCache",
+                profile + "/Application Cache"
+            ]
+        })
+        var seen: Set<String> = []
+        return roots.filter { seen.insert($0).inserted }
     }
 
     private static func browserServiceWorkerSources() -> [BrowserServiceWorkerSource] {
