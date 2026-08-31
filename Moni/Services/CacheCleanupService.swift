@@ -32,6 +32,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case savedApplicationState
     case finderMetadata
     case externalVolumeMetadata
+    case externalVolumeTemporaryData
     case recentItems
     case incompleteDownloads
     case oldMailAttachments
@@ -70,6 +71,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .savedApplicationState: "Saved application states"
         case .finderMetadata: "Finder metadata"
         case .externalVolumeMetadata: "External volume metadata"
+        case .externalVolumeTemporaryData: "External volume temporary data"
         case .recentItems: "Recent items"
         case .incompleteDownloads: "Incomplete downloads"
         case .oldMailAttachments: "Old Mail attachments"
@@ -328,6 +330,10 @@ nonisolated enum CacheCleanupService {
         }.value
         discoveredItems.append(contentsOf: externalVolumeMetadata.items)
         unreadableItemCount += externalVolumeMetadata.unreadableItemCount
+
+        let externalVolumeTemporaryData = await scanExternalVolumeTemporaryData()
+        discoveredItems.append(contentsOf: externalVolumeTemporaryData.items)
+        unreadableItemCount += externalVolumeTemporaryData.unreadableItemCount
 
         let oldCrashReports = await Task.detached(priority: .utility) {
             scanOldCrashReports(referenceDate: Date())
@@ -755,6 +761,14 @@ nonisolated enum CacheCleanupService {
             }
             if item.category == .externalVolumeMetadata {
                 guard externalVolumeMetadataSize(at: item.path) == item.sizeBytes else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .externalVolumeTemporaryData {
+                guard externalVolumeTemporaryDataItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -3453,6 +3467,51 @@ nonisolated enum CacheCleanupService {
     }
 
     private static let externalVolumeMetadataScanTimeout: TimeInterval = 15
+
+    private static func scanExternalVolumeTemporaryData() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for volume in externalWritableVolumes() {
+            guard !Task.isCancelled else { return ([], 0) }
+            let path = volume.appendingPathComponent(".TemporaryItems", isDirectory: true)
+                .standardizedFileURL.path
+            guard FileManager.default.fileExists(atPath: path) else { continue }
+            guard externalVolumeTemporaryDataItemIsAllowed(path),
+                  let measurement = await cacheTargetSize(at: path) else {
+                unreadableItemCount += 1
+                continue
+            }
+            guard measurement.unreadableItemCount == 0 else {
+                unreadableItemCount += measurement.unreadableItemCount
+                continue
+            }
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .externalVolumeTemporaryData,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func externalVolumeTemporaryDataItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let canonical = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard url.lastPathComponent == ".TemporaryItems",
+              !isSymbolicLink(at: url.path),
+              isRealDirectory(at: url.path),
+              let volume = externalWritableVolumes().first(where: {
+                  pathsEqual(url.deletingLastPathComponent().path, $0.path)
+              }),
+              pathIsInside(canonical, root: volume.path),
+              deviceIdentifier(at: url.path) == deviceIdentifier(at: volume.path) else {
+            return false
+        }
+        return true
+    }
 
     private static func scanRecentItems() -> (
         items: [CacheCleanupItem],
