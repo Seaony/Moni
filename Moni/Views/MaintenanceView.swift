@@ -42,11 +42,6 @@ private struct LoginItemsReview: Identifiable {
     let items: [BrokenLoginItem]
 }
 
-private struct SystemCleanupReview: Identifiable {
-    let id = UUID()
-    let snapshot: SystemCleanupSnapshot
-}
-
 struct MaintenanceView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var snapshot = FinderMaintenanceSnapshot(
@@ -127,7 +122,7 @@ struct MaintenanceView: View {
         items: [],
         unreadableItemCount: 0
     )
-    @State private var systemCleanupReview: SystemCleanupReview?
+    @State private var pendingSystemCleanup: SystemCleanupPlan?
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -326,7 +321,13 @@ struct MaintenanceView: View {
                         isAvailable: systemCleanupSnapshot.state != .unavailable,
                         isActionEnabled: systemCleanupSnapshot.state != .unavailable
                     ) {
-                        Task { await scanSystemCleanup() }
+                        Task {
+                            if systemCleanupSnapshot.state == .ready {
+                                await prepareSystemCleanup()
+                            } else {
+                                await scanSystemCleanup()
+                            }
+                        }
                     }
 
                     commandCard(
@@ -522,10 +523,14 @@ struct MaintenanceView: View {
                 }
             )
         }
-        .sheet(item: $systemCleanupReview) { review in
-            SystemCleanupScanReviewView(
-                snapshot: review.snapshot,
-                onClose: { systemCleanupReview = nil }
+        .sheet(item: $pendingSystemCleanup) { plan in
+            SystemCleanupConfirmationView(
+                plan: plan,
+                onCancel: { pendingSystemCleanup = nil },
+                onConfirm: {
+                    pendingSystemCleanup = nil
+                    Task { await executeSystemCleanup(plan) }
+                }
             )
         }
         .alert("Maintenance result", isPresented: resultMessageBinding) {
@@ -1296,7 +1301,7 @@ struct MaintenanceView: View {
     private var systemCleanupButtonTitle: String {
         switch systemCleanupSnapshot.state {
         case .ready:
-            return MoniLocalization.string("Review Scan")
+            return MoniLocalization.string("Review Cleanup")
         case .empty:
             return MoniLocalization.string("Rescan")
         case .notScanned, .cancelled, .failed:
@@ -1313,7 +1318,7 @@ struct MaintenanceView: View {
         systemCleanupSnapshot = result
         switch result.state {
         case .ready:
-            systemCleanupReview = SystemCleanupReview(snapshot: result)
+            await prepareSystemCleanup()
         case .empty:
             resultMessage = MoniLocalization.string("No old system caches or logs were found.")
         case .cancelled:
@@ -1325,6 +1330,56 @@ struct MaintenanceView: View {
         case .notScanned:
             break
         }
+    }
+
+    private func prepareSystemCleanup() async {
+        let plan = await SystemCleanupService.previewCleanup(items: systemCleanupSnapshot.items)
+        if plan.cleanupPlan.candidates.isEmpty {
+            resultMessage = MoniLocalization.string("No scanned system files can be cleaned.")
+        } else {
+            pendingSystemCleanup = plan
+        }
+    }
+
+    private func executeSystemCleanup(_ plan: SystemCleanupPlan) async {
+        isRunning = true
+        let result = await SystemCleanupService.executeCleanup(plan)
+        isRunning = false
+        monitor.refresh(forceSlowMetrics: true)
+
+        let trashedPaths = Set(result.trashedPaths)
+        let remainingItems = systemCleanupSnapshot.items.filter {
+            !trashedPaths.contains($0.path)
+        }
+        systemCleanupSnapshot = SystemCleanupSnapshot(
+            state: remainingItems.isEmpty ? .empty : .ready,
+            items: remainingItems,
+            unreadableItemCount: systemCleanupSnapshot.unreadableItemCount
+        )
+
+        var parts: [String] = []
+        if !result.trashedPaths.isEmpty {
+            parts.append(MoniLocalization.format(
+                "Moved %@ system files to Trash.",
+                result.trashedPaths.count.formatted()
+            ))
+        }
+        if !result.rejectedItems.isEmpty {
+            parts.append(MoniLocalization.format(
+                "%@ system files were protected or changed.",
+                result.rejectedItems.count.formatted()
+            ))
+        }
+        if !result.failedPaths.isEmpty {
+            parts.append(MoniLocalization.format(
+                "%@ system files could not be moved.",
+                result.failedPaths.count.formatted()
+            ))
+        }
+        if parts.isEmpty {
+            parts.append(MoniLocalization.string("No system files needed cleanup."))
+        }
+        resultMessage = parts.joined(separator: " ")
     }
 
     private func prepareTimeMachineCleanup() async {
@@ -2261,16 +2316,17 @@ private struct TimeMachineBackupCleanupConfirmationView: View {
     }
 }
 
-private struct SystemCleanupScanReviewView: View {
-    let snapshot: SystemCleanupSnapshot
-    let onClose: () -> Void
+private struct SystemCleanupConfirmationView: View {
+    let plan: SystemCleanupPlan
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("System Cleanup Scan")
+                Text("Review System Cleanup")
                     .font(.system(size: 18, weight: .bold))
-                Text("This read-only scan found old system cache and log files. No files have been changed.")
+                Text("Only the verified old cache and log files below will be moved to your Trash. Nothing is permanently deleted.")
                     .font(.system(size: 12))
                     .foregroundStyle(MoniPalette.foregroundTertiary)
             }
@@ -2278,7 +2334,7 @@ private struct SystemCleanupScanReviewView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(SystemCleanupCategory.allCases, id: \.self) { category in
-                        let categoryItems = snapshot.items.filter { $0.category == category }
+                        let categoryItems = readyItems.filter { $0.category == category }
                         if !categoryItems.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(spacing: 8) {
@@ -2328,21 +2384,42 @@ private struct SystemCleanupScanReviewView: View {
             }
             .frame(maxHeight: 360)
 
+            if !plan.cleanupPlan.rejectedItems.isEmpty {
+                Label(
+                    MoniLocalization.format(
+                        "%@ files are protected and will be kept.",
+                        plan.cleanupPlan.rejectedItems.count.formatted()
+                    ),
+                    systemImage: "checkmark.shield"
+                )
+                .font(.system(size: 11.5))
+                .foregroundStyle(MoniPalette.orange)
+            }
+
             HStack {
                 Text(MoniLocalization.format(
                     "%@ files · %@",
-                    snapshot.items.count.formatted(),
-                    maintenanceBytes(totalSize(of: snapshot.items))
+                    readyItems.count.formatted(),
+                    maintenanceBytes(totalSize(of: readyItems))
                 ))
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(MoniPalette.foregroundSecondary)
                 Spacer()
-                Button("Close", action: onClose)
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Move to Trash", role: .destructive, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(readyItems.isEmpty)
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
         .frame(width: 680)
+    }
+
+    private var readyItems: [SystemCleanupItem] {
+        let paths = Set(plan.cleanupPlan.candidates.map(\.path))
+        return plan.items.filter { paths.contains($0.path) }
     }
 
     private func totalSize(of items: [SystemCleanupItem]) -> UInt64 {

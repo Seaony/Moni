@@ -44,6 +44,13 @@ nonisolated struct SystemCleanupSnapshot: Sendable {
     let unreadableItemCount: Int
 }
 
+nonisolated struct SystemCleanupPlan: Identifiable, Sendable {
+    let cleanupPlan: CleanupPlan
+    let items: [SystemCleanupItem]
+
+    var id: UUID { cleanupPlan.id }
+}
+
 nonisolated enum SystemCleanupService {
     private struct CommandOutput: Sendable {
         let status: Int32
@@ -53,11 +60,38 @@ nonisolated enum SystemCleanupService {
 
     private static let scriptExecutable = "/usr/bin/osascript"
     private static let minimumAge: TimeInterval = 7 * 24 * 60 * 60
+    private static let cleanupPlanLifetime: TimeInterval = 5 * 60
 
     static func scan() async -> SystemCleanupSnapshot {
         await Task.detached(priority: .userInitiated) {
             scanSynchronously(referenceDate: Date())
         }.value
+    }
+
+    static func previewCleanup(items: [SystemCleanupItem]) async -> SystemCleanupPlan {
+        let plan = await CleanupService.shared.preview(
+            paths: items.map(\.path),
+            scope: .maintenance
+        )
+        return SystemCleanupPlan(cleanupPlan: plan, items: items)
+    }
+
+    static func executeCleanup(_ plan: SystemCleanupPlan) async -> CleanupRunResult {
+        let result = await Task.detached(priority: .userInitiated) {
+            executeCleanupSynchronously(plan)
+        }.value
+        let previewRejectedPaths = Set(plan.cleanupPlan.rejectedItems.map(\.path))
+        await CleanupService.shared.recordRunResult(
+            CleanupRunResult(
+                trashedPaths: result.trashedPaths,
+                rejectedItems: result.rejectedItems.filter {
+                    !previewRejectedPaths.contains($0.path)
+                },
+                failedPaths: result.failedPaths
+            ),
+            scope: .maintenance
+        )
+        return result
     }
 
     private static func scanSynchronously(referenceDate: Date) -> SystemCleanupSnapshot {
@@ -144,6 +178,181 @@ nonisolated enum SystemCleanupService {
             items: items,
             unreadableItemCount: unreadableItemCount
         )
+    }
+
+    private static func executeCleanupSynchronously(_ plan: SystemCleanupPlan) -> CleanupRunResult {
+        guard plan.cleanupPlan.scope == .maintenance else {
+            return CleanupRunResult(
+                trashedPaths: [],
+                rejectedItems: plan.cleanupPlan.rejectedItems + plan.cleanupPlan.candidates.map {
+                    CleanupRejectedItem(path: $0.path, reason: .protected)
+                },
+                failedPaths: []
+            )
+        }
+        guard Date().timeIntervalSince(plan.cleanupPlan.createdAt) <= cleanupPlanLifetime else {
+            return CleanupRunResult(
+                trashedPaths: [],
+                rejectedItems: plan.cleanupPlan.rejectedItems + plan.cleanupPlan.candidates.map {
+                    CleanupRejectedItem(path: $0.path, reason: .expired)
+                },
+                failedPaths: []
+            )
+        }
+
+        let referenceDate = Date()
+        let itemsByPath = Dictionary(uniqueKeysWithValues: plan.items.map { ($0.path, $0) })
+        var rejectedItems = plan.cleanupPlan.rejectedItems
+        var failedPaths: [String] = []
+        guard let trash = userTrashIdentity() else {
+            return CleanupRunResult(
+                trashedPaths: [],
+                rejectedItems: rejectedItems,
+                failedPaths: plan.cleanupPlan.candidates.map(\.path)
+            )
+        }
+
+        var eligible: [(
+            candidate: CleanupCandidate,
+            item: SystemCleanupItem,
+            destination: String
+        )] = []
+        var reservedDestinations: Set<String> = []
+        for candidate in plan.cleanupPlan.candidates {
+            guard let item = itemsByPath[candidate.path],
+                  candidate.device == item.deviceID,
+                  candidate.inode == item.fileID,
+                  candidate.device == trash.deviceID,
+                  validatedItem(
+                      path: item.path,
+                      category: item.category,
+                      expectedDeviceID: item.deviceID,
+                      expectedFileID: item.fileID,
+                      expectedModifiedDate: item.modifiedDate,
+                      expectedSizeBytes: item.sizeBytes,
+                      referenceDate: referenceDate
+                  ) != nil else {
+                rejectedItems.append(CleanupRejectedItem(path: candidate.path, reason: .changed))
+                continue
+            }
+            guard let destination = uniqueTrashDestination(
+                for: item.name,
+                in: trash.path,
+                reserved: &reservedDestinations
+            ) else {
+                failedPaths.append(candidate.path)
+                continue
+            }
+            eligible.append((candidate, item, destination))
+        }
+        guard !eligible.isEmpty else {
+            return CleanupRunResult(
+                trashedPaths: [],
+                rejectedItems: rejectedItems,
+                failedPaths: failedPaths
+            )
+        }
+
+        var arguments = [
+            "-e", cleanupAdministratorScript,
+            cleanupShellScript,
+            trash.path,
+            "\(trash.deviceID):\(trash.fileID):\(trash.ownerID)"
+        ]
+        for entry in eligible {
+            arguments.append(entry.candidate.path)
+            arguments.append(entry.destination)
+            arguments.append(
+                "\(entry.item.deviceID):\(entry.item.fileID):\(Int64(entry.item.modifiedDate.timeIntervalSince1970)):\(entry.item.sizeBytes / 512)"
+            )
+            arguments.append(entry.item.category.rawValue)
+        }
+        let execution = run(scriptExecutable, arguments: arguments, timeout: 300)
+        let trashedIndexes = Set(execution.output.split(whereSeparator: \.isNewline).compactMap { line -> Int? in
+            guard line.hasPrefix("TRASHED:"),
+                  let index = Int(line.dropFirst("TRASHED:".count)) else {
+                return nil
+            }
+            return index
+        })
+        var trashedPaths: [String] = []
+        for (offset, entry) in eligible.enumerated() {
+            if trashedIndexes.contains(offset + 1),
+               !pathExists(at: entry.candidate.path),
+               pathExists(at: entry.destination) {
+                trashedPaths.append(entry.candidate.path)
+            } else {
+                failedPaths.append(entry.candidate.path)
+            }
+        }
+        return CleanupRunResult(
+            trashedPaths: trashedPaths,
+            rejectedItems: rejectedItems,
+            failedPaths: failedPaths
+        )
+    }
+
+    private static func userTrashIdentity() -> (
+        path: String,
+        deviceID: UInt64,
+        fileID: UInt64,
+        ownerID: UInt32
+    )? {
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash", isDirectory: true)
+            .standardizedFileURL.path
+        if !pathExists(at: path) {
+            do {
+                try FileManager.default.createDirectory(
+                    atPath: path,
+                    withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: 0o700]
+                )
+            } catch {
+                return nil
+            }
+        }
+        var value = stat()
+        guard path.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFDIR,
+              value.st_uid == getuid() else {
+            return nil
+        }
+        return (path, UInt64(value.st_dev), UInt64(value.st_ino), value.st_uid)
+    }
+
+    private static func uniqueTrashDestination(
+        for name: String,
+        in trashPath: String,
+        reserved: inout Set<String>
+    ) -> String? {
+        guard !name.isEmpty, !name.contains("/") else { return nil }
+        let original = URL(fileURLWithPath: trashPath, isDirectory: true)
+            .appendingPathComponent(name)
+            .path
+        if !pathExists(at: original), reserved.insert(original).inserted { return original }
+
+        let url = URL(fileURLWithPath: name)
+        let extensionName = url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent
+        for _ in 0..<2 {
+            let suffix = UUID().uuidString
+            let uniqueName = extensionName.isEmpty
+                ? "\(stem) \(suffix)"
+                : "\(stem) \(suffix).\(extensionName)"
+            let destination = URL(fileURLWithPath: trashPath, isDirectory: true)
+                .appendingPathComponent(uniqueName)
+                .path
+            if !pathExists(at: destination), reserved.insert(destination).inserted {
+                return destination
+            }
+        }
+        return nil
+    }
+
+    private static func pathExists(at path: String) -> Bool {
+        var value = stat()
+        return path.withCString { lstat($0, &value) } == 0
     }
 
     private static func validatedItem(
@@ -234,11 +443,13 @@ nonisolated enum SystemCleanupService {
         }
         guard result == 0, value.st_blocks >= 0 else { return nil }
         let kind = value.st_mode & S_IFMT
+        let (sizeBytes, overflow) = UInt64(value.st_blocks).multipliedReportingOverflow(by: 512)
+        guard !overflow else { return nil }
         return (
             UInt64(value.st_dev),
             UInt64(value.st_ino),
             Date(timeIntervalSince1970: TimeInterval(value.st_mtimespec.tv_sec)),
-            UInt64(value.st_blocks) * 512,
+            sizeBytes,
             kind == S_IFREG,
             kind == S_IFLNK
         )
@@ -301,6 +512,107 @@ nonisolated enum SystemCleanupService {
         do shell script (item 1 of argv) with administrator privileges
     end run
     """
+
+    private static let cleanupAdministratorScript = #"""
+    on run argv
+        set commandText to item 1 of argv
+        set trashPath to item 2 of argv
+        set expectedTrashIdentity to item 3 of argv
+        set commandText to commandText & "; trash_path=" & quoted form of trashPath & "; expected_trash_identity=" & quoted form of expectedTrashIdentity & "; "
+        set argumentCount to count of argv
+        set candidateIndex to 0
+        repeat with argumentIndex from 4 to argumentCount by 4
+            set candidateIndex to candidateIndex + 1
+            set candidateIndexText to candidateIndex as text
+            set sourcePath to item argumentIndex of argv
+            set destinationPath to item (argumentIndex + 1) of argv
+            set expectedIdentity to item (argumentIndex + 2) of argv
+            set categoryName to item (argumentIndex + 3) of argv
+            set commandText to commandText & "( source_path=" & quoted form of sourcePath & "; destination_path=" & quoted form of destinationPath & "; expected_identity=" & quoted form of expectedIdentity & "; category_name=" & quoted form of categoryName & "; move_system_candidate \"$source_path\" \"$destination_path\" \"$expected_identity\" \"$category_name\" ) && printf 'TRASHED:%s\\n' " & candidateIndexText & " || printf 'FAILED:%s\\n' " & candidateIndexText & "; "
+        end repeat
+        do shell script commandText with administrator privileges
+    end run
+    """#
+
+    private static let cleanupShellScript = #"""
+    path_depth_ok() {
+        depth_path=$1
+        depth_root=$2
+        depth_limit=$3
+        depth_relative=${depth_path#"$depth_root"/}
+        [ "$depth_relative" != "$depth_path" ] || return 1
+        printf '%s\n' "$depth_relative" | /usr/bin/awk -F/ -v limit="$depth_limit" 'NF <= limit { valid=1 } END { exit valid ? 0 : 1 }'
+    }
+
+    system_candidate_path() {
+        candidate_path=$1
+        candidate_category=$2
+        candidate_name=$(/usr/bin/basename "$candidate_path") || return 1
+        case "$candidate_category" in
+            systemCaches)
+                case "$candidate_path" in /Library/Caches/*) ;; *) return 1 ;; esac
+                path_depth_ok "$candidate_path" /Library/Caches 5 || return 1
+                case "$candidate_name" in *.cache|*.tmp|*.log) return 0 ;; *) return 1 ;; esac
+                ;;
+            crashReports)
+                case "$candidate_path" in /Library/Logs/DiagnosticReports/*) ;; *) return 1 ;; esac
+                path_depth_ok "$candidate_path" /Library/Logs/DiagnosticReports 1
+                ;;
+            systemLogs)
+                case "$candidate_path" in /private/var/log/*) ;; *) return 1 ;; esac
+                path_depth_ok "$candidate_path" /private/var/log 3 || return 1
+                case "$candidate_name" in *.log|*.gz|*.asl) return 0 ;; *) return 1 ;; esac
+                ;;
+            thirdPartyLogs)
+                case "$candidate_path" in
+                    /Library/Logs/adobegc.log) return 0 ;;
+                    /Library/Logs/Adobe/*) path_depth_ok "$candidate_path" /Library/Logs/Adobe 5 ;;
+                    /Library/Logs/CreativeCloud/*) path_depth_ok "$candidate_path" /Library/Logs/CreativeCloud 5 ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+
+    move_system_candidate() {
+        move_source=$1
+        move_destination=$2
+        move_expected_identity=$3
+        move_category=$4
+        system_candidate_path "$move_source" "$move_category" || return 1
+        [ -f "$move_source" ] && [ ! -L "$move_source" ] || return 1
+        move_identity=$(/usr/bin/stat -f '%d:%i:%m:%b' "$move_source" 2>/dev/null) || return 1
+        [ "$move_identity" = "$move_expected_identity" ] || return 1
+        move_identity_without_blocks=${move_identity%:*}
+        move_mtime=${move_identity_without_blocks##*:}
+        move_now=$(/bin/date +%s) || return 1
+        [ "$move_now" -ge "$move_mtime" ] && [ $((move_now - move_mtime)) -ge 604800 ] || return 1
+
+        move_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
+        [ "$move_trash_identity" = "$expected_trash_identity" ] || return 1
+        [ -d "$trash_path" ] && [ ! -L "$trash_path" ] || return 1
+        [ "$(/usr/bin/dirname "$move_destination")" = "$trash_path" ] || return 1
+        [ ! -e "$move_destination" ] && [ ! -L "$move_destination" ] || return 1
+        move_source_device=${move_identity%%:*}
+        move_trash_device=${move_trash_identity%%:*}
+        [ "$move_source_device" = "$move_trash_device" ] || return 1
+
+        move_parent=$(/usr/bin/dirname "$move_source") || return 1
+        move_canonical_parent=$(cd -P "$move_parent" 2>/dev/null && /bin/pwd -P) || return 1
+        move_name=$(/usr/bin/basename "$move_source") || return 1
+        move_canonical_source="$move_canonical_parent/$move_name"
+        system_candidate_path "$move_canonical_source" "$move_category" || return 1
+
+        move_final_identity=$(/usr/bin/stat -f '%d:%i:%m:%b' "$move_source" 2>/dev/null) || return 1
+        move_final_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
+        [ "$move_final_identity" = "$move_expected_identity" ] || return 1
+        [ "$move_final_trash_identity" = "$expected_trash_identity" ] || return 1
+        /bin/mv "$move_source" "$move_destination"
+    }
+    """#
 
     private static let scanShellScript = #"""
     set -o pipefail
