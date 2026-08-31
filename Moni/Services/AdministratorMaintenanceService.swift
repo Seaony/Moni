@@ -51,10 +51,30 @@ nonisolated enum PermissionRepairOutcome: Sendable {
     case notCompleted
 }
 
+nonisolated enum SpotlightOptimizationState: Sendable {
+    case optimal
+    case slow
+    case indexingDisabled
+    case batteryPower
+    case unavailable
+    case failed
+}
+
+nonisolated enum SpotlightOptimizationOutcome: Sendable {
+    case alreadyOptimal
+    case indexingDisabled
+    case batteryPower
+    case unavailable
+    case inspectionFailed
+    case rebuildStarted
+    case notCompleted
+}
+
 nonisolated enum AdministratorMaintenanceService {
     private struct CommandOutput: Sendable {
         let status: Int32
         let output: String
+        let timedOut: Bool
     }
 
     private static let scriptExecutable = "/usr/bin/osascript"
@@ -64,6 +84,8 @@ nonisolated enum AdministratorMaintenanceService {
     private static let dnsCacheExecutable = "/usr/bin/dscacheutil"
     private static let arpExecutable = "/usr/sbin/arp"
     private static let diskUtilityExecutable = "/usr/sbin/diskutil"
+    private static let powerManagementExecutable = "/usr/bin/pmset"
+    private static let metadataSearchExecutable = "/usr/bin/mdfind"
 
     static func scanSystemMaintenance() async -> SystemMaintenanceSnapshot {
         await Task.detached(priority: .utility) {
@@ -150,6 +172,77 @@ nonisolated enum AdministratorMaintenanceService {
                 return runPrivileged(command, timeout: 180) ? .repaired : .notCompleted
             }
         }.value
+    }
+
+    static func scanSpotlightOptimization() async -> SpotlightOptimizationState {
+        await Task.detached(priority: .utility) {
+            inspectSpotlightOptimization()
+        }.value
+    }
+
+    static func optimizeSpotlight() async -> SpotlightOptimizationOutcome {
+        await Task.detached(priority: .userInitiated) {
+            switch inspectSpotlightOptimization() {
+            case .optimal:
+                return .alreadyOptimal
+            case .indexingDisabled:
+                return .indexingDisabled
+            case .batteryPower:
+                return .batteryPower
+            case .unavailable:
+                return .unavailable
+            case .failed:
+                return .inspectionFailed
+            case .slow:
+                let command = "/usr/bin/mdutil -E / >/dev/null 2>&1"
+                return runPrivileged(command, timeout: 30) ? .rebuildStarted : .notCompleted
+            }
+        }.value
+    }
+
+    private static func inspectSpotlightOptimization() -> SpotlightOptimizationState {
+        let requiredExecutables = [
+            metadataUtilityExecutable,
+            metadataSearchExecutable,
+            powerManagementExecutable,
+            scriptExecutable
+        ]
+        guard requiredExecutables.allSatisfy(FileManager.default.isExecutableFile(atPath:)) else {
+            return .unavailable
+        }
+
+        let statusResult = run(metadataUtilityExecutable, arguments: ["-s", "/"], timeout: 8)
+        guard statusResult.status == 0 else { return .failed }
+        if statusResult.output.localizedCaseInsensitiveContains("Indexing disabled") {
+            return .indexingDisabled
+        }
+        let indexingEnabled = statusResult.output.localizedCaseInsensitiveContains("Indexing enabled")
+            && !statusResult.output.localizedCaseInsensitiveContains("Indexing and searching disabled")
+        guard indexingEnabled else { return .optimal }
+
+        let powerResult = run(powerManagementExecutable, arguments: ["-g", "batt"], timeout: 8)
+        guard powerResult.status == 0 else { return .failed }
+        guard powerResult.output.contains("AC Power") else { return .batteryPower }
+
+        var slowProbeCount = 0
+        for probe in 0..<2 {
+            let startedAt = Date()
+            let result = run(
+                metadataSearchExecutable,
+                arguments: ["kMDItemFSName == 'Applications'"],
+                timeout: 5
+            )
+            let elapsed = Date().timeIntervalSince(startedAt)
+            if result.timedOut || (result.status == 0 && elapsed > 3) {
+                slowProbeCount += 1
+            } else if result.status != 0 {
+                return .failed
+            }
+            if probe == 0 {
+                Thread.sleep(forTimeInterval: 1)
+            }
+        }
+        return slowProbeCount == 2 ? .slow : .optimal
     }
 
     private static func inspectPermissionRepair() -> PermissionRepairState {
@@ -259,7 +352,7 @@ nonisolated enum AdministratorMaintenanceService {
         timeout: TimeInterval
     ) -> CommandOutput {
         guard FileManager.default.isExecutableFile(atPath: scriptExecutable) else {
-            return CommandOutput(status: -1, output: "")
+            return CommandOutput(status: -1, output: "", timedOut: false)
         }
         let escaped = shellCommand
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -285,7 +378,7 @@ nonisolated enum AdministratorMaintenanceService {
         do {
             try process.run()
         } catch {
-            return CommandOutput(status: -1, output: error.localizedDescription)
+            return CommandOutput(status: -1, output: error.localizedDescription, timedOut: false)
         }
         let timeoutWork = DispatchWorkItem {
             if process.isRunning { process.terminate() }
@@ -296,7 +389,9 @@ nonisolated enum AdministratorMaintenanceService {
         timeoutWork.cancel()
         return CommandOutput(
             status: process.terminationStatus,
-            output: String(decoding: data, as: UTF8.self)
+            output: String(decoding: data, as: UTF8.self),
+            timedOut: process.terminationReason == .uncaughtSignal
+                && process.terminationStatus == SIGTERM
         )
     }
 }
