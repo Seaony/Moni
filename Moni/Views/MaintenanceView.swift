@@ -82,6 +82,13 @@ struct MaintenanceView: View {
         checkedCount: 0,
         brokenItems: []
     )
+    @State private var notificationSnapshot = NotificationMaintenanceSnapshot(
+        path: "",
+        sizeBytes: 0,
+        state: .unavailable,
+        device: 0,
+        inode: 0
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -92,6 +99,7 @@ struct MaintenanceView: View {
     @State private var databaseReview: DatabaseMaintenanceReview?
     @State private var spotlightRulesReview: SpotlightRulesReview?
     @State private var loginItemsReview: LoginItemsReview?
+    @State private var confirmsNotificationCleanup = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -264,6 +272,19 @@ struct MaintenanceView: View {
                         loginItemsReview = LoginItemsReview(items: loginItemsSnapshot.brokenItems)
                     }
 
+                    commandCard(
+                        title: "Notifications",
+                        description: "Remove old delivered notifications to reduce notification database size.",
+                        symbol: "bell.badge",
+                        status: notificationStatus,
+                        buttonTitle: notificationSnapshot.state == .ready ? "Review Cleanup" : "Healthy",
+                        isAvailable: notificationSnapshot.state == .ready
+                            || notificationSnapshot.state == .healthy,
+                        isActionEnabled: notificationSnapshot.state == .ready
+                    ) {
+                        confirmsNotificationCleanup = true
+                    }
+
                     catalogSummary
                 }
             }
@@ -377,6 +398,22 @@ struct MaintenanceView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This read-only APFS check can create sustained disk activity and may take several minutes. It will not repair the volume.")
+        }
+        .confirmationDialog(
+            "Clean old notifications?",
+            isPresented: $confirmsNotificationCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Clean Notifications", role: .destructive) {
+                Task { await cleanNotifications() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MoniLocalization.format(
+                "Delivered notifications older than 30 days will be deleted and the %@ database at %@ will be compacted.",
+                maintenanceBytes(notificationSnapshot.sizeBytes),
+                notificationSnapshot.path
+            ))
         }
     }
 
@@ -538,7 +575,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "13", MoniPalette.green)
+                catalogMetric("Available now", "14", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -708,6 +745,27 @@ struct MaintenanceView: View {
         }
     }
 
+    private var notificationStatus: String {
+        switch notificationSnapshot.state {
+        case .ready:
+            MoniLocalization.format(
+                "%@ database needs cleanup",
+                maintenanceBytes(notificationSnapshot.sizeBytes)
+            )
+        case .healthy:
+            MoniLocalization.format(
+                "Healthy · %@",
+                maintenanceBytes(notificationSnapshot.sizeBytes)
+            )
+        case .protected:
+            MoniLocalization.string("Protected by whitelist")
+        case .unavailable:
+            MoniLocalization.string("Database unavailable")
+        case .failed:
+            MoniLocalization.string("Inspection failed")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -718,9 +776,10 @@ struct MaintenanceView: View {
         async let databaseResult = DatabaseMaintenanceService.scan()
         async let spotlightRulesResult = SpotlightRulesMaintenanceService.scan()
         async let loginItemsResult = LoginItemsAuditService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems) = await (
+        async let notificationResult = NotificationMaintenanceService.scan()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
-            databaseResult, spotlightRulesResult, loginItemsResult
+            databaseResult, spotlightRulesResult, loginItemsResult, notificationResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -732,6 +791,7 @@ struct MaintenanceView: View {
         databaseSnapshot = databases
         spotlightRulesSnapshot = spotlightRules
         loginItemsSnapshot = loginItems
+        notificationSnapshot = notifications
         isScanning = false
     }
 
@@ -925,6 +985,21 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("Spotlight rules changed or the application scan became incomplete.")
         } else {
             resultMessage = MoniLocalization.string("Spotlight search rules were already clean.")
+        }
+    }
+
+    private func cleanNotifications() async {
+        isRunning = true
+        let result = await NotificationMaintenanceService.clean(notificationSnapshot)
+        notificationSnapshot = await NotificationMaintenanceService.scan()
+        isRunning = false
+
+        if result.cleaned {
+            resultMessage = MoniLocalization.string("Old delivered notifications were removed and the database was compacted.")
+        } else if result.failed {
+            resultMessage = MoniLocalization.string("Notification cleanup failed because the database was busy, locked, or incompatible.")
+        } else {
+            resultMessage = MoniLocalization.string("Notification cleanup was skipped because the database changed or became protected.")
         }
     }
 }

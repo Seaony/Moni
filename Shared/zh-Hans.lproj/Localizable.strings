@@ -674,3 +674,14 @@
 "These login items could not be matched to an installed application or executable." = "这些登录项无法匹配到已安装的应用或可执行文件。";
 "No path was reported by macOS" = "macOS 未返回路径";
 "Review and remove stale entries in System Settings > General > Login Items. Moni does not remove login items automatically." = "请在“系统设置 > 通用 > 登录项”中检查并移除失效条目；Moni 不会自动删除登录项。";
+"Notifications" = "通知";
+"Remove old delivered notifications to reduce notification database size." = "移除旧的已送达通知，以减小通知数据库。";
+"%@ database needs cleanup" = "%@ 的数据库需要清理";
+"Healthy · %@" = "状态正常 · %@";
+"Database unavailable" = "数据库不可用";
+"Clean old notifications?" = "清理旧通知？";
+"Clean Notifications" = "清理通知";
+"Delivered notifications older than 30 days will be deleted and the %@ database at %@ will be compacted." = "将删除 30 天前的已送达通知，并压缩位于 %@、路径为 %@ 的数据库。";
+"Old delivered notifications were removed and the database was compacted." = "已移除旧的已送达通知并压缩数据库。";
+"Notification cleanup failed because the database was busy, locked, or incompatible." = "通知清理失败，数据库可能正忙、已锁定或结构不兼容。";
+"Notification cleanup was skipped because the database changed or became protected." = "通知数据库已发生变化或受到保护，本次清理已跳过。";
