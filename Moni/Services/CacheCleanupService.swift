@@ -2380,6 +2380,7 @@ nonisolated enum CacheCleanupService {
             }
             candidates.append(contentsOf: sourceCandidates)
         }
+        candidates.append(contentsOf: bundledDeveloperToolOldVersionCandidates())
         var seen = Set<String>()
         return candidates.filter { seen.insert($0).inserted }
     }
@@ -2484,6 +2485,110 @@ nonisolated enum CacheCleanupService {
             return pathsEqual(resolvedTarget, resolvedEntry)
                 || pathIsInside(resolvedTarget, root: resolvedEntry)
         }
+    }
+
+    private static func bundledDeveloperToolOldVersionCandidates() -> [String] {
+        guard bundledDeveloperToolIsInactive() else { return [] }
+        let support = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Claude", isDirectory: true)
+            .standardizedFileURL.path
+        let roots = [support + "/claude-code", support + "/claude-code-vm"]
+            .filter { isRealDirectory(at: $0) && currentUserOwnsDirectory(at: $0) }
+        guard !roots.isEmpty,
+              let activeVersion = bundledDeveloperToolActiveVersion(support: support) else {
+            return []
+        }
+        for root in roots {
+            let activePath = root + "/" + activeVersion
+            guard isRealFileOrDirectory(at: activePath),
+                  !isSymbolicLink(at: activePath),
+                  currentUserOwnsItem(at: activePath) else {
+                return []
+            }
+        }
+
+        var candidates: [String] = []
+        for root in roots {
+            guard let urls = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return []
+            }
+            let eligibleURLs = urls.filter { $0.lastPathComponent.first?.isNumber == true }
+            let entries = eligibleURLs.compactMap { url -> (String, Date)? in
+                let path = url.standardizedFileURL.path
+                guard isRealFileOrDirectory(at: path),
+                      !isSymbolicLink(at: path),
+                      currentUserOwnsItem(at: path),
+                      let modifiedDate = try? url.resourceValues(
+                        forKeys: [.contentModificationDateKey]
+                      ).contentModificationDate else {
+                    return nil
+                }
+                return (path, modifiedDate)
+            }
+            guard entries.count == eligibleURLs.count else { return [] }
+            let activePath = root + "/" + activeVersion
+            candidates.append(contentsOf: oldVersionPaths(
+                entries: entries,
+                activePath: activePath
+            ))
+        }
+        return candidates
+    }
+
+    private static func bundledDeveloperToolActiveVersion(support: String) -> String? {
+        let marker = support + "/claude-code-vm/.sdk-version"
+        var markerMetadata = stat()
+        guard marker.withCString({ lstat($0, &markerMetadata) }) == 0,
+              markerMetadata.st_mode & S_IFMT == S_IFREG,
+              markerMetadata.st_size >= 0,
+              markerMetadata.st_size <= 4_096,
+              currentUserOwnsItem(at: marker),
+              let contents = try? String(contentsOfFile: marker, encoding: .utf8),
+              let version = contents.split(whereSeparator: \.isNewline).first.map(String.init) else {
+            return nil
+        }
+        let normalized = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.first?.isNumber == true,
+              !normalized.hasPrefix("."),
+              !normalized.contains("/"),
+              !normalized.contains(".."),
+              !normalized.unicodeScalars.contains(where: {
+                CharacterSet.whitespacesAndNewlines.contains($0)
+                    || CharacterSet.controlCharacters.contains($0)
+              }) else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func oldVersionPaths(
+        entries: [(String, Date)],
+        activePath: String
+    ) -> [String] {
+        let sorted = entries.sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            return lhs.0.localizedStandardCompare(rhs.0) == .orderedAscending
+        }
+        var retainedBackup = false
+        return sorted.compactMap { entry in
+            if pathsEqual(entry.0, activePath) { return nil }
+            if !retainedBackup {
+                retainedBackup = true
+                return nil
+            }
+            return entry.0
+        }
+    }
+
+    private static func bundledDeveloperToolIsInactive() -> Bool {
+        processProbesAreInactive([
+            ["-x", "Claude"],
+            ["-f", "/Claude.app/"]
+        ])
     }
 
     private static func scanDeveloperToolCaches() async -> (
