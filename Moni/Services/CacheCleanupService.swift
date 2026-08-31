@@ -1344,6 +1344,7 @@ nonisolated enum CacheCleanupService {
             home + "/.bundle/cache",
             home + "/.cpan/build",
             home + "/.docker/buildx/cache",
+            home + "/Library/Application Support/com.wondershare.Installer",
             home + "/.android/build-cache",
             home + "/.android/cache",
             home + "/.cache/swift-package-manager",
