@@ -84,7 +84,9 @@ nonisolated enum ApplicationUninstallService {
             return ApplicationRemovalItem(
                 path: normalized,
                 kind: candidate.kind,
-                sizeBytes: quickSize(at: normalized)
+                sizeBytes: candidate.kind == .applicationBundle && application.steamAppID != nil
+                    ? nil
+                    : quickSize(at: normalized)
             )
         }
         let reviewOnlySystemItems = collapsed(reviewOnlySystemCandidates).map { candidate in

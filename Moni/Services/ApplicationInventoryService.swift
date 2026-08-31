@@ -16,6 +16,7 @@ nonisolated struct InstalledApplication: Identifiable, Sendable {
     let bundleIdentifier: String?
     let version: String?
     let executableName: String?
+    let steamAppID: String?
     let sizeBytes: UInt64?
     let lastUsedDate: Date?
     let modifiedDate: Date?
@@ -118,6 +119,10 @@ nonisolated enum ApplicationInventoryService {
                         continue
                     }
                     let spotlight = spotlightMetadata(at: url)
+                    let steamAppID = steamLauncherAppID(
+                        at: url,
+                        executableName: metadata.executableName
+                    )
                     let modifiedDate = try? url.resourceValues(forKeys: [.contentModificationDateKey])
                         .contentModificationDate
                     applications.append(InstalledApplication(
@@ -127,7 +132,8 @@ nonisolated enum ApplicationInventoryService {
                         bundleIdentifier: metadata.bundleIdentifier,
                         version: metadata.version,
                         executableName: metadata.executableName,
-                        sizeBytes: spotlight.sizeBytes,
+                        steamAppID: steamAppID,
+                        sizeBytes: steamAppID == nil ? spotlight.sizeBytes : nil,
                         lastUsedDate: spotlight.lastUsedDate,
                         modifiedDate: modifiedDate ?? nil,
                         source: root.source,
@@ -223,6 +229,54 @@ nonisolated enum ApplicationInventoryService {
         let size = (item.value(forAttribute: "kMDItemPhysicalSize") as? NSNumber)?.uint64Value
         let lastUsed = item.value(forAttribute: "kMDItemLastUsedDate") as? Date
         return (size.flatMap { $0 > 0 ? $0 : nil }, lastUsed)
+    }
+
+    private static func steamLauncherAppID(at appURL: URL, executableName: String?) -> String? {
+        let fallbackName = appURL.deletingPathExtension().lastPathComponent
+        let executable = appURL
+            .appendingPathComponent("Contents/MacOS", isDirectory: true)
+            .appendingPathComponent(executableName ?? fallbackName)
+        var metadata = stat()
+        guard executable.path.withCString({ stat($0, &metadata) }) == 0,
+              metadata.st_mode & S_IFMT == S_IFREG,
+              metadata.st_size <= 4_096,
+              FileManager.default.isExecutableFile(atPath: executable.path),
+              let handle = try? FileHandle(forReadingFrom: executable) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 4_097),
+              data.count <= 4_096,
+              let script = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        let lines = script.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let shebang = lines.first.map(String.init),
+              shebang.range(
+                of: #"^#![ \t]*((/usr/bin/env[ \t]+)?(/bin/)?(ba|z)?sh)([ \t]|$)"#,
+                options: .regularExpression
+              ) != nil else {
+            return nil
+        }
+        let activeLines = lines.dropFirst().compactMap { rawLine -> String? in
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            return line.isEmpty || line.hasPrefix("#") ? nil : line
+        }
+        guard activeLines.count == 1 else { return nil }
+        let command = activeLines[0]
+        let pattern = #"^(exec[ \t]+)?(/usr/bin/)?open[ \t]+[\"']?steam://(run|rungameid|launch)/([0-9]+)[\"']?[ \t]*$"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: command,
+                range: NSRange(command.startIndex..., in: command)
+              ),
+              match.range.location == 0,
+              match.range.length == command.utf16.count,
+              let appIDRange = Range(match.range(at: 4), in: command) else {
+            return nil
+        }
+        return String(command[appIDRange])
     }
 
     private static func resolvedDisplayName(_ metadataName: String?, fallbackName: String) -> String {

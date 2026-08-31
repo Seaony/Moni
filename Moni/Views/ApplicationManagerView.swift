@@ -164,7 +164,10 @@ struct ApplicationManagerView: View {
                         .lineLimit(1)
                     HStack(spacing: 5) {
                         Text(application.version ?? "—")
-                        if let size = application.sizeBytes {
+                        if application.steamAppID != nil {
+                            Text("·")
+                            Text("Steam-managed")
+                        } else if let size = application.sizeBytes {
                             Text("·")
                             Text(appBytes(size))
                         }
