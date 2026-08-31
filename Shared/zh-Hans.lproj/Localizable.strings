@@ -47,6 +47,7 @@
 "Menu Bar" = "菜单栏";
 "Alerts" = "提醒";
 "Modules" = "模块";
+"Cleanup" = "清理";
 "About" = "关于";
 
 "Refresh" = "刷新";
@@ -98,6 +99,44 @@
 "Detection" = "检测";
 "Enabled" = "已启用";
 "Disabled" = "已停用";
+
+"Protected paths" = "受保护路径";
+"System-critical locations are always protected. Add personal paths here to exclude them and their contents from every cleanup operation." = "系统关键位置始终受到保护。在此添加个人路径，可从所有清理操作中排除该路径及其内容。";
+"No custom protected paths" = "没有自定义受保护路径";
+"Remove protection" = "移除保护";
+"Add protected path…" = "添加受保护路径…";
+"Protect" = "保护";
+"Operation history" = "操作历史";
+"Latest %@ operations" = "最近 %@ 项操作";
+"Clear" = "清除";
+"No cleanup operations recorded" = "尚无清理操作记录";
+"Clear operation history?" = "清除操作历史？";
+"This removes Moni's local cleanup audit history. It does not delete any files." = "这只会移除 Moni 本地保存的清理审计历史，不会删除任何文件。";
+"Cancel" = "取消";
+"Previewed" = "已预览";
+"Moved to Trash" = "已移到废纸篓";
+"Skipped" = "已跳过";
+"Failed" = "失败";
+"Preview selected items before moving them to Trash" = "预览所选项目，然后移到废纸篓";
+"Select for cleanup" = "选择进行清理";
+"Remove from cleanup" = "从清理选择中移除";
+"Cleanup result" = "清理结果";
+"OK" = "好";
+"Moved %@ items to Trash." = "已将 %@ 个项目移到废纸篓。";
+"%@ items were protected or changed." = "%@ 个项目受保护或已发生变化。";
+"%@ items could not be moved." = "%@ 个项目无法移动。";
+"No selected items can be cleaned: %@." = "所选项目均无法清理：%@。";
+"Review Cleanup" = "确认清理内容";
+"Only the approved items below will be moved to Trash. Protected or changed items are never deleted." = "只有下方确认的项目会被移到废纸篓；受保护或已发生变化的项目不会被删除。";
+"%@ items ready" = "%@ 个项目可清理";
+"%@ items protected" = "%@ 个项目受保护";
+"Move to Trash" = "移到废纸篓";
+"Invalid path" = "路径无效";
+"Item no longer exists" = "项目已不存在";
+"System-protected path" = "系统受保护路径";
+"Custom protected path" = "自定义受保护路径";
+"Item changed after preview" = "项目在预览后发生变化";
+"Preview expired" = "预览已过期";
 
 "Thresholds" = "阈值";
 "Turn on the notification banner below for these limits to alert you." = "开启下方通知横幅后，指标超过这些阈值时会提醒你。";

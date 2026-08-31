@@ -5,7 +5,7 @@ import UserNotifications
 import WidgetKit
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, menuBar, alerts, modules, about
+    case general, menuBar, alerts, modules, cleanup, about
 
     var id: String { rawValue }
 
@@ -15,6 +15,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .menuBar: "Menu Bar"
         case .alerts: "Alerts"
         case .modules: "Modules"
+        case .cleanup: "Cleanup"
         case .about: "About"
         }
         return MoniLocalization.string(key)
@@ -26,6 +27,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .menuBar: "menubar.rectangle"
         case .alerts: "bell"
         case .modules: "square.grid.2x2"
+        case .cleanup: "shield.checkered"
         case .about: "info.circle"
         }
     }
@@ -78,6 +80,7 @@ struct SettingsView: View {
                 case .menuBar: MenuBarSettings()
                 case .alerts: AlertSettings()
                 case .modules: ModuleSettings()
+                case .cleanup: CleanupSettings()
                 case .about: AboutSettings()
                 }
             }
@@ -868,6 +871,200 @@ private struct ModuleSettings: View {
     private func count(_ value: Int, singular: String) -> String {
         let unit = MoniLocalization.string(singular + (value == 1 ? "" : "s"))
         return MoniLocalization.format("%@ %@", value.formatted(), unit)
+    }
+}
+
+private struct CleanupSettings: View {
+    @State private var whitelist: [String] = []
+    @State private var history: [CleanupOperationRecord] = []
+    @State private var confirmsHistoryClear = false
+    @State private var historyError: String?
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 12) {
+                DetailPanel("Protected paths") {
+                    Text("System-critical locations are always protected. Add personal paths here to exclude them and their contents from every cleanup operation.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+
+                    if whitelist.isEmpty {
+                        Text("No custom protected paths")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .frame(maxWidth: .infinity, minHeight: 40, alignment: .center)
+                    } else {
+                        VStack(spacing: 2) {
+                            ForEach(whitelist, id: \.self) { path in
+                                HStack(spacing: 10) {
+                                    Image(systemName: "shield.fill")
+                                        .foregroundStyle(MoniPalette.green)
+                                    Text(path)
+                                        .font(.system(size: 12.5))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer(minLength: 8)
+                                    Button {
+                                        CleanupPreferences.removeFromWhitelist(path)
+                                        reloadWhitelist()
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                                    .help(MoniLocalization.string("Remove protection"))
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .background(MoniPalette.inset)
+                                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            }
+                        }
+                    }
+
+                    Button {
+                        chooseProtectedPaths()
+                    } label: {
+                        Label(MoniLocalization.string("Add protected path…"), systemImage: "plus")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(MoniPressButtonStyle())
+                    .background(MoniPalette.control)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+
+                DetailPanel("Operation history") {
+                    HStack {
+                        Text(MoniLocalization.format("Latest %@ operations", min(history.count, 30).formatted()))
+                            .font(.system(size: 12))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                        Spacer()
+                        Button(MoniLocalization.string("Clear")) {
+                            confirmsHistoryClear = true
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(history.isEmpty ? MoniPalette.foregroundTertiary : MoniPalette.red)
+                        .disabled(history.isEmpty)
+                    }
+
+                    if history.isEmpty {
+                        Text("No cleanup operations recorded")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
+                    } else {
+                        VStack(spacing: 2) {
+                            ForEach(history.prefix(30)) { record in
+                                HStack(spacing: 10) {
+                                    Image(systemName: historySymbol(record.action))
+                                        .foregroundStyle(historyColor(record.action))
+                                        .frame(width: 16)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(record.path)
+                                            .font(.system(size: 12.5, weight: .medium))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        HStack(spacing: 5) {
+                                            Text(historyAction(record.action))
+                                            Text("·")
+                                            Text(record.scope.rawValue.capitalized)
+                                            if let detail = record.detail, !detail.isEmpty {
+                                                Text("·")
+                                                Text(detail)
+                                            }
+                                        }
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                                        .lineLimit(1)
+                                    }
+                                    Spacer(minLength: 8)
+                                    Text(record.date.formatted(date: .omitted, time: .shortened))
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .background(MoniPalette.inset)
+                                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            }
+                        }
+                    }
+
+                    if let historyError {
+                        Text(historyError)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(MoniPalette.red)
+                    }
+                }
+            }
+        }
+        .task {
+            reloadWhitelist()
+            history = await CleanupService.shared.history()
+        }
+        .alert("Clear operation history?", isPresented: $confirmsHistoryClear) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                Task { await clearHistory() }
+            }
+        } message: {
+            Text("This removes Moni's local cleanup audit history. It does not delete any files.")
+        }
+    }
+
+    private func chooseProtectedPaths() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = false
+        panel.prompt = MoniLocalization.string("Protect")
+        guard panel.runModal() == .OK else { return }
+        CleanupPreferences.addToWhitelist(panel.urls.map(\.path))
+        reloadWhitelist()
+    }
+
+    private func reloadWhitelist() {
+        whitelist = CleanupPreferences.whitelist()
+    }
+
+    private func clearHistory() async {
+        do {
+            try await CleanupService.shared.clearHistory()
+            history = []
+            historyError = nil
+        } catch {
+            historyError = error.localizedDescription
+        }
+    }
+
+    private func historyAction(_ action: CleanupOperationAction) -> String {
+        let key = switch action {
+        case .previewed: "Previewed"
+        case .trashed: "Moved to Trash"
+        case .skipped: "Skipped"
+        case .failed: "Failed"
+        }
+        return MoniLocalization.string(key)
+    }
+
+    private func historySymbol(_ action: CleanupOperationAction) -> String {
+        switch action {
+        case .previewed: "eye"
+        case .trashed: "trash"
+        case .skipped: "shield"
+        case .failed: "exclamationmark.triangle"
+        }
+    }
+
+    private func historyColor(_ action: CleanupOperationAction) -> Color {
+        switch action {
+        case .previewed: MoniPalette.blue
+        case .trashed: MoniPalette.green
+        case .skipped: MoniPalette.orange
+        case .failed: MoniPalette.red
+        }
     }
 }
 

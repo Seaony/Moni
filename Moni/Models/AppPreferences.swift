@@ -22,6 +22,7 @@ enum PreferenceKey {
     static let summaryGridDensity = "summaryGridDensity"
     static let storageFolderCache = "storageFolderCache"
     static let storageFolderCacheDate = "storageFolderCacheDate"
+    nonisolated static let cleanupWhitelist = "cleanupWhitelist"
 
     static let showHost = "showHost"
     static let showCPU = "showCPU"

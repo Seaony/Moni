@@ -851,6 +851,10 @@ private struct DiskBrowserView: View {
     @State private var analysisCurrentPath: String?
     @State private var analyzedPath: String?
     @State private var analysisTask: Task<Void, Never>?
+    @State private var selectedCleanupPaths: Set<String> = []
+    @State private var pendingCleanupPlan: CleanupPlan?
+    @State private var isCleaning = false
+    @State private var cleanupMessage: String?
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -1001,6 +1005,21 @@ private struct DiskBrowserView: View {
             loadError = result.error
             loadingPath = nil
         }
+        .sheet(item: $pendingCleanupPlan) { plan in
+            CleanupConfirmationView(
+                plan: plan,
+                onCancel: { pendingCleanupPlan = nil },
+                onConfirm: {
+                    pendingCleanupPlan = nil
+                    Task { await executeCleanup(plan) }
+                }
+            )
+        }
+        .alert("Cleanup result", isPresented: cleanupMessageBinding) {
+            Button("OK") { cleanupMessage = nil }
+        } message: {
+            Text(cleanupMessage ?? "")
+        }
     }
 
     private var browserToolbar: some View {
@@ -1046,6 +1065,18 @@ private struct DiskBrowserView: View {
             .labelsHidden()
             .frame(width: 170)
 
+            if !selectedCleanupPaths.isEmpty {
+                Button {
+                    Task { await prepareCleanup() }
+                } label: {
+                    Label(selectedCleanupPaths.count.formatted(), systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .foregroundStyle(MoniPalette.red)
+                .disabled(isCleaning)
+                .help(MoniLocalization.string("Preview selected items before moving them to Trash"))
+            }
+
             Button {
                 analyzingPath == nil ? startAnalysis() : cancelAnalysis()
             } label: {
@@ -1067,6 +1098,7 @@ private struct DiskBrowserView: View {
 
     private var columnHeader: some View {
         HStack(spacing: 8) {
+            Color.clear.frame(width: 22)
             if browserMode == .contents {
                 Text("Name").frame(maxWidth: .infinity, alignment: .leading)
                 Text("Size").frame(width: 110, alignment: .trailing)
@@ -1084,44 +1116,72 @@ private struct DiskBrowserView: View {
     }
 
     private func browserRow(_ item: FileItem) -> some View {
-        Button {
-            if item.isDirectory {
-                selectedPath = item.url.path
-            } else {
-                NSWorkspace.shared.activateFileViewerSelecting([item.url])
+        HStack(spacing: 8) {
+            Button {
+                toggleCleanupSelection(item.url.path)
+            } label: {
+                Image(systemName: selectedCleanupPaths.contains(item.url.path) ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(selectedCleanupPaths.contains(item.url.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
-        } label: {
-            HStack(spacing: 8) {
-                HStack(spacing: 9) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(item.isDirectory ? MoniPalette.blue : MoniPalette.foregroundTertiary)
-                        .frame(width: 8, height: 8)
-                    Text(item.url.lastPathComponent).lineLimit(1)
+            .buttonStyle(.plain)
+            .help(MoniLocalization.string(selectedCleanupPaths.contains(item.url.path) ? "Remove from cleanup" : "Select for cleanup"))
+
+            Button {
+                if item.isDirectory {
+                    selectedPath = item.url.path
+                } else {
+                    NSWorkspace.shared.activateFileViewerSelecting([item.url])
                 }
+            } label: {
+                HStack(spacing: 8) {
+                    HStack(spacing: 9) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(item.isDirectory ? MoniPalette.blue : MoniPalette.foregroundTertiary)
+                            .frame(width: 8, height: 8)
+                        Text(item.url.lastPathComponent).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(itemSize(item))
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                        .frame(width: 110, alignment: .trailing)
+                    Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                        .frame(width: 130, alignment: .trailing)
+                }
+                .font(.system(size: 13))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Text(itemSize(item))
-                    .foregroundStyle(MoniPalette.foregroundSecondary)
-                    .frame(width: 110, alignment: .trailing)
-                Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
-                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                    .frame(width: 130, alignment: .trailing)
+                .contentShape(Rectangle())
             }
-            .font(.system(size: 13))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .contentShape(Rectangle())
+            .buttonStyle(MoniPressButtonStyle(scale: 0.99))
         }
-        .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(selectedCleanupPaths.contains(item.url.path) ? MoniPalette.selection : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .transition(MoniMotion.itemTransition)
     }
 
     private func largestFileRow(_ file: DiskAnalysisFile) -> some View {
         let url = URL(fileURLWithPath: file.path)
-        return Button {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } label: {
-            HStack(spacing: 8) {
+        return HStack(spacing: 8) {
+            Button {
+                toggleCleanupSelection(file.path)
+            } label: {
+                Image(systemName: selectedCleanupPaths.contains(file.path) ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(selectedCleanupPaths.contains(file.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(MoniLocalization.string(selectedCleanupPaths.contains(file.path) ? "Remove from cleanup" : "Select for cleanup"))
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } label: {
                 HStack(spacing: 9) {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(MoniPalette.orange)
@@ -1140,11 +1200,14 @@ private struct DiskBrowserView: View {
                     .frame(width: 110, alignment: .trailing)
             }
             .font(.system(size: 13))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .buttonStyle(MoniPressButtonStyle(scale: 0.99))
         }
-        .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(selectedCleanupPaths.contains(file.path) ? MoniPalette.selection : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .transition(MoniMotion.itemTransition)
     }
 
@@ -1233,6 +1296,76 @@ private struct DiskBrowserView: View {
         scannedBytes = 0
         unreadableItemCount = 0
         searchText = ""
+        selectedCleanupPaths = []
+    }
+
+    private var cleanupMessageBinding: Binding<Bool> {
+        Binding(
+            get: { cleanupMessage != nil },
+            set: { if !$0 { cleanupMessage = nil } }
+        )
+    }
+
+    private func toggleCleanupSelection(_ path: String) {
+        if selectedCleanupPaths.contains(path) {
+            selectedCleanupPaths.remove(path)
+        } else {
+            selectedCleanupPaths.insert(path)
+        }
+    }
+
+    private func prepareCleanup() async {
+        let plan = await CleanupService.shared.preview(
+            paths: Array(selectedCleanupPaths),
+            scope: .diskBrowser
+        )
+        if plan.candidates.isEmpty {
+            cleanupMessage = cleanupBlockedMessage(plan.rejectedItems)
+        } else {
+            pendingCleanupPlan = plan
+        }
+    }
+
+    private func executeCleanup(_ plan: CleanupPlan) async {
+        isCleaning = true
+        cancelAnalysis()
+        let result = await CleanupService.shared.execute(plan)
+        isCleaning = false
+
+        let trashed = Set(result.trashedPaths)
+        items.removeAll { item in trashed.contains { pathContains($0, item.url.path) } }
+        largestFiles.removeAll { file in trashed.contains { pathContains($0, file.path) } }
+        analysisSizes = analysisSizes.filter { path, _ in
+            !trashed.contains { pathContains($0, path) }
+        }
+        selectedCleanupPaths = selectedCleanupPaths.filter { selectedPath in
+            !trashed.contains { pathContains($0, selectedPath) }
+        }
+        monitor.refresh(forceSlowMetrics: true)
+
+        var parts: [String] = []
+        if !result.trashedPaths.isEmpty {
+            parts.append(MoniLocalization.format("Moved %@ items to Trash.", result.trashedPaths.count.formatted()))
+        }
+        if !result.rejectedItems.isEmpty {
+            parts.append(MoniLocalization.format("%@ items were protected or changed.", result.rejectedItems.count.formatted()))
+        }
+        if !result.failedPaths.isEmpty {
+            parts.append(MoniLocalization.format("%@ items could not be moved.", result.failedPaths.count.formatted()))
+        }
+        cleanupMessage = parts.joined(separator: " ")
+    }
+
+    private func cleanupBlockedMessage(_ items: [CleanupRejectedItem]) -> String {
+        let reasons = Set(items.map(\.reason)).map(cleanupRejectionTitle).sorted()
+        return MoniLocalization.format(
+            "No selected items can be cleaned: %@.",
+            reasons.joined(separator: ", ")
+        )
+    }
+
+    private func pathContains(_ parent: String, _ child: String) -> Bool {
+        child == parent || child.hasPrefix(parent + "/")
     }
 
     private var isVolumeRoot: Bool {
@@ -1282,6 +1415,109 @@ private struct DiskBrowserView: View {
     }
 }
 
+private struct CleanupConfirmationView: View {
+    let plan: CleanupPlan
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "trash.circle.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(MoniPalette.red)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Review Cleanup")
+                        .font(.system(size: 20, weight: .bold))
+                    Text("Only the approved items below will be moved to Trash. Protected or changed items are never deleted.")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 12) {
+                    confirmationSection(
+                        title: MoniLocalization.format("%@ items ready", plan.candidates.count.formatted()),
+                        symbol: "checkmark.circle.fill",
+                        color: MoniPalette.green,
+                        paths: plan.candidates.map(\.path)
+                    )
+
+                    if !plan.rejectedItems.isEmpty {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Label(
+                                MoniLocalization.format("%@ items protected", plan.rejectedItems.count.formatted()),
+                                systemImage: "shield.fill"
+                            )
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(MoniPalette.orange)
+
+                            ForEach(plan.rejectedItems) { item in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.path)
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Text(cleanupRejectionTitle(item.reason))
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(MoniPalette.inset)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(minHeight: 190, maxHeight: 310)
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button(MoniLocalization.string("Cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(MoniLocalization.string("Move to Trash"), role: .destructive, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .tint(MoniPalette.red)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(plan.candidates.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 620)
+        .background(MoniPalette.card)
+    }
+
+    private func confirmationSection(
+        title: String,
+        symbol: String,
+        color: Color,
+        paths: [String]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(color)
+
+            ForEach(paths, id: \.self) { path in
+                Text(path)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(MoniPalette.inset)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+    }
+}
+
 private struct SecondaryRangePicker: View {
     @Binding var selection: String
 
@@ -1308,6 +1544,18 @@ private struct SecondaryRangePicker: View {
             }
         }
     }
+}
+
+private func cleanupRejectionTitle(_ reason: CleanupRejection) -> String {
+    let key = switch reason {
+    case .invalidPath: "Invalid path"
+    case .missing: "Item no longer exists"
+    case .protected: "System-protected path"
+    case .whitelisted: "Custom protected path"
+    case .changed: "Item changed after preview"
+    case .expired: "Preview expired"
+    }
+    return MoniLocalization.string(key)
 }
 
 private func secondaryStat(_ key: String, _ text: String) -> some View {
