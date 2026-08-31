@@ -23,6 +23,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case powerLogs
     case memoryExceptionReports
     case xcodeDocumentationCaches
+    case xcodeSimulatorSystemCaches
 
     var titleKey: String {
         switch self {
@@ -38,6 +39,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .powerLogs: "Power logs"
         case .memoryExceptionReports: "Memory exception reports"
         case .xcodeDocumentationCaches: "Old Xcode documentation indexes"
+        case .xcodeSimulatorSystemCaches: "CoreSimulator system caches"
         }
     }
 }
@@ -138,7 +140,12 @@ nonisolated enum SystemCleanupService {
                 activePowerLogNotice: nil
             )
         }
-        let shellScript = "scan_user_id=\(getuid())\n" + scanShellScript
+        let simulatorContext = simulatorCleanupContext()
+        let shellScript = """
+        scan_user_id=\(getuid())
+        scan_developer_dir=\(shellQuoted(simulatorContext.developerDirectory ?? ""))
+        scan_simulator_inactive=\(simulatorContext.isInactive ? 1 : 0)
+        """ + scanShellScript
         let result = run(
             scriptExecutable,
             arguments: ["-e", administratorScript, shellScript],
@@ -336,9 +343,15 @@ nonisolated enum SystemCleanupService {
             )
         }
 
+        let simulatorContext = simulatorCleanupContext()
+        let cleanupScript = """
+        cleanup_user_id=\(getuid())
+        cleanup_developer_dir=\(shellQuoted(simulatorContext.developerDirectory ?? ""))
+        cleanup_simulator_inactive=\(simulatorContext.isInactive ? 1 : 0)
+        """ + cleanupShellScript
         var arguments = [
             "-e", cleanupAdministratorScript,
-            cleanupShellScript,
+            cleanupScript,
             trash.path,
             "\(trash.deviceID):\(trash.fileID):\(trash.ownerID)"
         ]
@@ -528,13 +541,17 @@ nonisolated enum SystemCleanupService {
             .rebuildableServiceCaches, .browserCodeSignatureCaches, .rebuildableGPUCaches,
             .xcodeDocumentationCaches
         ]
+        let mixedKindCategories: Set<SystemCleanupCategory> = [.xcodeSimulatorSystemCaches]
         let minimumItemAge = category == .memoryExceptionReports
             ? 30 * 24 * 60 * 60
             : minimumAge
-        guard (directoryCategories.contains(category) && kind == .directory)
-                || (!directoryCategories.contains(category) && kind == .file),
+        let kindIsAllowed = mixedKindCategories.contains(category)
+            ? kind == .file || kind == .directory
+            : (directoryCategories.contains(category) && kind == .directory)
+                || (!directoryCategories.contains(category) && kind == .file)
+        guard kindIsAllowed,
               categoryAllows(url: url, category: category),
-              kind == .directory
+              kind == .directory || category == .xcodeSimulatorSystemCaches
                 || referenceDate.timeIntervalSince(expectedModifiedDate) >= minimumItemAge,
               category != .xcodeDocumentationCaches
                 || (xcodeBuildToolsAreInactive()
@@ -666,7 +683,33 @@ nonisolated enum SystemCleanupService {
                 && pathDepth(url.path, root: root) == 1
                 && name.hasPrefix("DeveloperDocumentation")
                 && name.hasSuffix(".index")
+        case .xcodeSimulatorSystemCaches:
+            let root = "/Library/Developer/CoreSimulator/Caches"
+            return pathIsInside(url.path, root: root)
+                && canonicalPathIsInside(url, root: root)
+                && pathDepth(url.path, root: root) == 1
+                && simulatorCleanupContext().isInactive
         }
+    }
+
+    private static func simulatorCleanupContext() -> (
+        developerDirectory: String?,
+        isInactive: Bool
+    ) {
+        guard let developerDirectory = XcodeSimulatorMaintenanceService
+            .resolvedDeveloperDirectory() else {
+            return (nil, false)
+        }
+        return (
+            developerDirectory,
+            XcodeSimulatorMaintenanceService.simulatorIsInactive(
+                developerDirectory: developerDirectory
+            )
+        )
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func xcodeDocumentationIndexIsStale(_ path: String) -> Bool {
@@ -886,6 +929,27 @@ nonisolated enum SystemCleanupService {
         return 1
     }
 
+    simulator_inactive() {
+        [ "$cleanup_simulator_inactive" = '1' ] || return 1
+        case "$cleanup_user_id" in ''|*[!0-9]*) return 1 ;; esac
+        [ -n "$cleanup_developer_dir" ] && [ -d "$cleanup_developer_dir" ] || return 1
+        for simulator_process in Xcode Simulator xcodebuild xctest XCTRunner simctl; do
+            /usr/bin/pgrep -x "$simulator_process" >/dev/null 2>&1
+            simulator_status=$?
+            [ "$simulator_status" -eq 1 ] || return 1
+        done
+        booted_output=$(/usr/bin/sudo -n -H -u "#$cleanup_user_id" /usr/bin/env "DEVELOPER_DIR=$cleanup_developer_dir" /usr/bin/xcrun simctl list devices booted -j 2>/dev/null) || return 1
+        case "$booted_output" in *'"devices"'*) ;; *) return 1 ;; esac
+        case "$booted_output" in *'"udid"'*) return 1 ;; *) return 0 ;; esac
+    }
+
+    coresimulator_system_candidate() {
+        simulator_path=$1
+        simulator_root=/Library/Developer/CoreSimulator/Caches
+        [ "$(/usr/bin/dirname "$simulator_path")" = "$simulator_root" ] || return 1
+        [ -e "$simulator_path" ] && [ ! -L "$simulator_path" ]
+    }
+
     system_candidate_path() {
         candidate_path=$1
         candidate_category=$2
@@ -947,6 +1011,9 @@ nonisolated enum SystemCleanupService {
             xcodeDocumentationCaches)
                 xcode_documentation_candidate "$candidate_path"
                 ;;
+            xcodeSimulatorSystemCaches)
+                coresimulator_system_candidate "$candidate_path"
+                ;;
             *)
                 return 1
                 ;;
@@ -1000,6 +1067,8 @@ nonisolated enum SystemCleanupService {
             directory:browserCodeSignatureCaches) [ -d "$move_source" ] || return 1 ;;
             directory:rebuildableGPUCaches) [ -d "$move_source" ] || return 1 ;;
             directory:xcodeDocumentationCaches) [ -d "$move_source" ] || return 1 ;;
+            directory:xcodeSimulatorSystemCaches) [ -d "$move_source" ] || return 1 ;;
+            file:xcodeSimulatorSystemCaches) [ -f "$move_source" ] || return 1 ;;
             file:rebuildableServiceCaches|file:browserCodeSignatureCaches|file:rebuildableGPUCaches|file:xcodeDocumentationCaches) return 1 ;;
             file:*) [ -f "$move_source" ] || return 1 ;;
             *) return 1 ;;
@@ -1019,6 +1088,10 @@ nonisolated enum SystemCleanupService {
             xcode_tools_inactive || return 1
             xcode_documentation_candidate "$move_source" || return 1
         fi
+        if [ "$move_category" = 'xcodeSimulatorSystemCaches' ]; then
+            simulator_inactive || return 1
+            coresimulator_system_candidate "$move_source" || return 1
+        fi
         move_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
         [ "$move_size" = "$move_expected_size" ] || return 1
         if [ "$move_kind" = 'file' ]; then
@@ -1026,7 +1099,9 @@ nonisolated enum SystemCleanupService {
             move_now=$(/bin/date +%s) || return 1
             move_minimum_age=604800
             [ "$move_category" = 'memoryExceptionReports' ] && move_minimum_age=2592000
-            [ "$move_now" -ge "$move_mtime" ] && [ $((move_now - move_mtime)) -ge "$move_minimum_age" ] || return 1
+            if [ "$move_category" != 'xcodeSimulatorSystemCaches' ]; then
+                [ "$move_now" -ge "$move_mtime" ] && [ $((move_now - move_mtime)) -ge "$move_minimum_age" ] || return 1
+            fi
         fi
 
         move_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
@@ -1051,6 +1126,10 @@ nonisolated enum SystemCleanupService {
         if [ "$move_category" = 'xcodeDocumentationCaches' ]; then
             xcode_tools_inactive || return 1
             xcode_documentation_candidate "$move_source" || return 1
+        fi
+        if [ "$move_category" = 'xcodeSimulatorSystemCaches' ]; then
+            simulator_inactive || return 1
+            coresimulator_system_candidate "$move_source" || return 1
         fi
         move_final_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
         move_final_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
@@ -1083,6 +1162,20 @@ nonisolated enum SystemCleanupService {
             [ "$xcode_status" -eq 1 ] || return 1
         done
         return 0
+    }
+
+    simulator_inactive() {
+        [ "$scan_simulator_inactive" = '1' ] || return 1
+        case "$scan_user_id" in ''|*[!0-9]*) return 1 ;; esac
+        [ -n "$scan_developer_dir" ] && [ -d "$scan_developer_dir" ] || return 1
+        for simulator_process in Xcode Simulator xcodebuild xctest XCTRunner simctl; do
+            /usr/bin/pgrep -x "$simulator_process" >/dev/null 2>&1
+            simulator_status=$?
+            [ "$simulator_status" -eq 1 ] || return 1
+        done
+        booted_output=$(/usr/bin/sudo -n -H -u "#$scan_user_id" /usr/bin/env "DEVELOPER_DIR=$scan_developer_dir" /usr/bin/xcrun simctl list devices booted -j 2>/dev/null) || return 1
+        case "$booted_output" in *'"devices"'*) ;; *) return 1 ;; esac
+        case "$booted_output" in *'"udid"'*) return 1 ;; *) return 0 ;; esac
     }
 
     scan_family() {
@@ -1178,6 +1271,28 @@ nonisolated enum SystemCleanupService {
         printf 'ITEM\tdirectory\t%s\t%s\t%s\t%s\t%s\t%s\n' "$scan_category" "$scan_device" "$scan_inode" "$scan_mtime" "$scan_size" "$scan_encoded"
     }
 
+    scan_file() {
+        scan_category=$1
+        scan_path=$2
+        [ -f "$scan_path" ] && [ ! -L "$scan_path" ] || return 0
+        scan_identity=$(/usr/bin/stat -f '%d:%i:%m:%b' "$scan_path" 2>/dev/null) || {
+            printf 'UNREADABLE\t%s\n' "$scan_category"
+            return 0
+        }
+        scan_device=${scan_identity%%:*}
+        scan_remainder=${scan_identity#*:}
+        scan_inode=${scan_remainder%%:*}
+        scan_remainder=${scan_remainder#*:}
+        scan_mtime=${scan_remainder%%:*}
+        scan_blocks=${scan_remainder##*:}
+        scan_size=$((scan_blocks * 512))
+        scan_encoded=$(printf '%s' "$scan_path" | /usr/bin/base64 -b 0) || {
+            printf 'UNREADABLE\t%s\n' "$scan_category"
+            return 0
+        }
+        printf 'ITEM\tfile\t%s\t%s\t%s\t%s\t%s\t%s\n' "$scan_category" "$scan_device" "$scan_inode" "$scan_mtime" "$scan_size" "$scan_encoded"
+    }
+
     scan_xcode_documentation_caches() {
         documentation_root=/Library/Developer/Xcode/DocumentationCache
         [ -d "$documentation_root" ] && [ ! -L "$documentation_root" ] || return 0
@@ -1190,6 +1305,25 @@ nonisolated enum SystemCleanupService {
         fi
         while IFS= read -r -d '' scan_path; do
             scan_directory xcodeDocumentationCaches "$scan_path"
+        done < "$scan_file"
+    }
+
+    scan_coresimulator_system_caches() {
+        simulator_root=/Library/Developer/CoreSimulator/Caches
+        [ -d "$simulator_root" ] && [ ! -L "$simulator_root" ] || return 0
+        simulator_inactive || return 0
+        /usr/bin/find "$simulator_root" -mindepth 1 -maxdepth 1 ! -type l -print0 > "$scan_file"
+        scan_result=$?
+        if [ "$scan_result" -ne 0 ]; then
+            printf 'ERROR\txcodeSimulatorSystemCaches\n'
+            return 0
+        fi
+        while IFS= read -r -d '' scan_path; do
+            if [ -d "$scan_path" ]; then
+                scan_directory xcodeSimulatorSystemCaches "$scan_path"
+            elif [ -f "$scan_path" ]; then
+                scan_file xcodeSimulatorSystemCaches "$scan_path"
+            fi
         done < "$scan_file"
     }
 
@@ -1245,6 +1379,7 @@ nonisolated enum SystemCleanupService {
     scan_family powerLogs /private/var/db/powerlog
     scan_family memoryExceptionReports /private/var/db/reportmemoryexception/MemoryLimitViolations
     scan_xcode_documentation_caches
+    scan_coresimulator_system_caches
 
     active_powerlog=/private/var/db/powerlog/Library/PerfPowerTelemetry/BackgroundProcessing/CurrentBackgroundProcessingDB.BGSQL
     if [ -f "$active_powerlog" ] && [ ! -L "$active_powerlog" ]; then
