@@ -122,6 +122,7 @@
 "Cancel" = "取消";
 "Previewed" = "已预览";
 "Moved to Trash" = "已移到废纸篓";
+"Deleted permanently" = "已永久删除";
 "Skipped" = "已跳过";
 "Failed" = "失败";
 "Preview selected items before moving them to Trash" = "预览所选项目，然后移到废纸篓";
@@ -149,6 +150,7 @@
 "Logs" = "日志";
 "Projects" = "项目产物";
 "Installers" = "安装包";
+"Trash" = "废纸篓";
 "Applications" = "应用";
 "Maintenance" = "系统维护";
 "Review rebuildable user caches and logs before moving them to Trash." = "检查可重建的用户缓存和日志，确认后再移到废纸篓。";

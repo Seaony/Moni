@@ -8,6 +8,7 @@ nonisolated enum CleanupScope: String, Codable, Sendable {
     case logs
     case projects
     case installers
+    case trash
     case applications
     case maintenance
 }
@@ -54,6 +55,7 @@ nonisolated struct CleanupRunResult: Sendable {
 nonisolated enum CleanupOperationAction: String, Codable, Sendable {
     case previewed
     case trashed
+    case deleted
     case skipped
     case failed
 }
@@ -226,6 +228,120 @@ actor CleanupService {
 
         return CleanupRunResult(
             trashedPaths: trashedPaths,
+            rejectedItems: rejectedItems,
+            failedPaths: failedPaths
+        )
+    }
+
+    func permanentlyDeleteTrashItems(
+        _ plan: CleanupPlan,
+        trashRootDevice: UInt64,
+        trashRootInode: UInt64,
+        whitelist: [String] = CleanupPreferences.whitelist()
+    ) -> CleanupRunResult {
+        guard plan.scope == .trash else {
+            let rejected = plan.candidates.map {
+                CleanupRejectedItem(path: $0.path, reason: .protected)
+            }
+            return CleanupRunResult(
+                trashedPaths: [],
+                rejectedItems: plan.rejectedItems + rejected,
+                failedPaths: []
+            )
+        }
+        guard Date().timeIntervalSince(plan.createdAt) <= planLifetime else {
+            let rejected = plan.candidates.map {
+                CleanupRejectedItem(path: $0.path, reason: .expired)
+            }
+            appendHistory(rejected.map {
+                historyRecord(scope: plan.scope, action: .skipped, path: $0.path, detail: $0.reason.rawValue)
+            })
+            return CleanupRunResult(trashedPaths: [], rejectedItems: plan.rejectedItems + rejected, failedPaths: [])
+        }
+
+        let trashRoot = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash", isDirectory: true)
+            .standardizedFileURL.path
+        guard let currentRoot = fileIdentity(at: trashRoot),
+              currentRoot.device == trashRootDevice,
+              currentRoot.inode == trashRootInode else {
+            let rejected = plan.candidates.map {
+                CleanupRejectedItem(path: $0.path, reason: .changed)
+            }
+            appendHistory(rejected.map {
+                historyRecord(scope: plan.scope, action: .skipped, path: $0.path, detail: $0.reason.rawValue)
+            })
+            return CleanupRunResult(trashedPaths: [], rejectedItems: plan.rejectedItems + rejected, failedPaths: [])
+        }
+
+        var deletedPaths: [String] = []
+        var rejectedItems = plan.rejectedItems
+        var failedPaths: [String] = []
+        var records: [CleanupOperationRecord] = []
+
+        for plannedCandidate in plan.candidates {
+            let parent = URL(fileURLWithPath: plannedCandidate.path)
+                .deletingLastPathComponent()
+                .standardizedFileURL.path
+            guard pathsEqual(parent, trashRoot) else {
+                let rejected = CleanupRejectedItem(path: plannedCandidate.path, reason: .protected)
+                rejectedItems.append(rejected)
+                records.append(historyRecord(
+                    scope: plan.scope,
+                    action: .skipped,
+                    path: rejected.path,
+                    detail: rejected.reason.rawValue
+                ))
+                continue
+            }
+
+            switch validate(path: plannedCandidate.path, whitelist: whitelist) {
+            case let .failure(reason):
+                let rejected = CleanupRejectedItem(path: plannedCandidate.path, reason: reason)
+                rejectedItems.append(rejected)
+                records.append(historyRecord(
+                    scope: plan.scope,
+                    action: .skipped,
+                    path: rejected.path,
+                    detail: reason.rawValue
+                ))
+            case let .success(currentCandidate):
+                guard currentCandidate.device == plannedCandidate.device,
+                      currentCandidate.inode == plannedCandidate.inode else {
+                    let rejected = CleanupRejectedItem(path: plannedCandidate.path, reason: .changed)
+                    rejectedItems.append(rejected)
+                    records.append(historyRecord(
+                        scope: plan.scope,
+                        action: .skipped,
+                        path: rejected.path,
+                        detail: rejected.reason.rawValue
+                    ))
+                    continue
+                }
+                do {
+                    try fileManager.removeItem(atPath: currentCandidate.path)
+                    deletedPaths.append(currentCandidate.path)
+                    records.append(historyRecord(
+                        scope: plan.scope,
+                        action: .deleted,
+                        path: currentCandidate.path,
+                        detail: nil
+                    ))
+                } catch {
+                    failedPaths.append(currentCandidate.path)
+                    records.append(historyRecord(
+                        scope: plan.scope,
+                        action: .failed,
+                        path: currentCandidate.path,
+                        detail: error.localizedDescription
+                    ))
+                }
+            }
+        }
+
+        appendHistory(records)
+        return CleanupRunResult(
+            trashedPaths: deletedPaths,
             rejectedItems: rejectedItems,
             failedPaths: failedPaths
         )

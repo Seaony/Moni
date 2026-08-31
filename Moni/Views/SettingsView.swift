@@ -1128,6 +1128,7 @@ private struct CleanupSettings: View {
         let key = switch action {
         case .previewed: "Previewed"
         case .trashed: "Moved to Trash"
+        case .deleted: "Deleted permanently"
         case .skipped: "Skipped"
         case .failed: "Failed"
         }
@@ -1142,6 +1143,7 @@ private struct CleanupSettings: View {
         case .logs: "Logs"
         case .projects: "Projects"
         case .installers: "Installers"
+        case .trash: "Trash"
         case .applications: "Applications"
         case .maintenance: "Maintenance"
         }
@@ -1165,6 +1167,7 @@ private struct CleanupSettings: View {
         switch action {
         case .previewed: "eye"
         case .trashed: "trash"
+        case .deleted: "trash.slash"
         case .skipped: "shield"
         case .failed: "exclamationmark.triangle"
         }
@@ -1174,6 +1177,7 @@ private struct CleanupSettings: View {
         switch action {
         case .previewed: MoniPalette.blue
         case .trashed: MoniPalette.green
+        case .deleted: MoniPalette.red
         case .skipped: MoniPalette.orange
         case .failed: MoniPalette.red
         }
