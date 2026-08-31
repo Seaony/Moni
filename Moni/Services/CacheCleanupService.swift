@@ -327,7 +327,9 @@ nonisolated enum CacheCleanupService {
             if item.category == .utmCaches
                 || (item.category == .userCaches && pathsEqual(item.path, utmApplicationCacheRoot())) {
                 guard utmIsSafe,
-                      item.category == .userCaches || utmCacheItemIsAllowed(item.path) else {
+                      item.category == .userCaches
+                        || (utmCacheItemIsAllowed(item.path)
+                            && ContainerCacheSafety.isConclusivelyIdle(at: item.path)) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -651,7 +653,11 @@ nonisolated enum CacheCleanupService {
             unreadableItemCount += finalUpdate.unreadableItemCount
             items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
                 let name = URL(fileURLWithPath: path).lastPathComponent
-                guard !name.hasPrefix("."), utmCacheItemIsAllowed(path) else { return nil }
+                guard !name.hasPrefix("."),
+                      utmCacheItemIsAllowed(path),
+                      ContainerCacheSafety.isConclusivelyIdle(at: path) else {
+                    return nil
+                }
                 return CacheCleanupItem(path: path, category: .utmCaches, sizeBytes: size)
             })
         }
