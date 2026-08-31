@@ -24,6 +24,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case memoryExceptionReports
     case xcodeDocumentationCaches
     case xcodeSimulatorSystemCaches
+    case xcodeRuntimeVolumes
 
     var titleKey: String {
         switch self {
@@ -40,6 +41,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .memoryExceptionReports: "Memory exception reports"
         case .xcodeDocumentationCaches: "Old Xcode documentation indexes"
         case .xcodeSimulatorSystemCaches: "CoreSimulator system caches"
+        case .xcodeRuntimeVolumes: "Unused Xcode runtime volumes"
         }
     }
 }
@@ -539,7 +541,7 @@ nonisolated enum SystemCleanupService {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         let directoryCategories: Set<SystemCleanupCategory> = [
             .rebuildableServiceCaches, .browserCodeSignatureCaches, .rebuildableGPUCaches,
-            .xcodeDocumentationCaches
+            .xcodeDocumentationCaches, .xcodeRuntimeVolumes
         ]
         let mixedKindCategories: Set<SystemCleanupCategory> = [.xcodeSimulatorSystemCaches]
         let minimumItemAge = category == .memoryExceptionReports
@@ -689,6 +691,32 @@ nonisolated enum SystemCleanupService {
                 && canonicalPathIsInside(url, root: root)
                 && pathDepth(url.path, root: root) == 1
                 && simulatorCleanupContext().isInactive
+        case .xcodeRuntimeVolumes:
+            let roots = [
+                "/Library/Developer/CoreSimulator/Volumes",
+                "/Library/Developer/CoreSimulator/Cryptex"
+            ]
+            return roots.contains { root in
+                pathIsInside(url.path, root: root)
+                    && canonicalPathIsInside(url, root: root)
+                    && pathDepth(url.path, root: root) == 1
+            } && runtimeVolumeIsUnused(url.path)
+        }
+    }
+
+    private static func runtimeVolumeIsUnused(_ path: String) -> Bool {
+        let result = run("/sbin/mount", arguments: [], timeout: 10)
+        guard !result.timedOut, result.status == 0 else { return false }
+        let mountPoints = result.output.split(whereSeparator: \.isNewline).compactMap { line -> String? in
+            guard let onRange = line.range(of: " on "),
+                  let optionsRange = line.range(of: " (", range: onRange.upperBound..<line.endIndex) else {
+                return nil
+            }
+            return String(line[onRange.upperBound..<optionsRange.lowerBound])
+        }
+        guard mountPoints.contains("/") else { return false }
+        return !mountPoints.contains { mountPoint in
+            pathsEqual(mountPoint, path) || pathIsInside(mountPoint, root: path)
         }
     }
 
@@ -950,6 +978,30 @@ nonisolated enum SystemCleanupService {
         [ -e "$simulator_path" ] && [ ! -L "$simulator_path" ]
     }
 
+    runtime_volume_unused() {
+        runtime_path=$1
+        runtime_mounts=$(/sbin/mount 2>/dev/null | /usr/bin/awk '{ marker=index($0, " on "); if (!marker) next; path=substr($0, marker + 4); options=index(path, " ("); if (options) print substr(path, 1, options - 1) }') || return 1
+        [ -n "$runtime_mounts" ] || return 1
+        printf '%s\n' "$runtime_mounts" | /usr/bin/grep -Fx '/' >/dev/null 2>&1 || return 1
+        while IFS= read -r runtime_mount; do
+            case "$runtime_mount" in "$runtime_path"|"$runtime_path"/*) return 1 ;; esac
+        done <<EOF
+    $runtime_mounts
+    EOF
+        return 0
+    }
+
+    xcode_runtime_volume_candidate() {
+        runtime_path=$1
+        runtime_parent=$(/usr/bin/dirname "$runtime_path") || return 1
+        case "$runtime_parent" in
+            /Library/Developer/CoreSimulator/Volumes|/Library/Developer/CoreSimulator/Cryptex) ;;
+            *) return 1 ;;
+        esac
+        [ -d "$runtime_path" ] && [ ! -L "$runtime_path" ] || return 1
+        runtime_volume_unused "$runtime_path"
+    }
+
     system_candidate_path() {
         candidate_path=$1
         candidate_category=$2
@@ -1014,6 +1066,9 @@ nonisolated enum SystemCleanupService {
             xcodeSimulatorSystemCaches)
                 coresimulator_system_candidate "$candidate_path"
                 ;;
+            xcodeRuntimeVolumes)
+                xcode_runtime_volume_candidate "$candidate_path"
+                ;;
             *)
                 return 1
                 ;;
@@ -1068,8 +1123,9 @@ nonisolated enum SystemCleanupService {
             directory:rebuildableGPUCaches) [ -d "$move_source" ] || return 1 ;;
             directory:xcodeDocumentationCaches) [ -d "$move_source" ] || return 1 ;;
             directory:xcodeSimulatorSystemCaches) [ -d "$move_source" ] || return 1 ;;
+            directory:xcodeRuntimeVolumes) [ -d "$move_source" ] || return 1 ;;
             file:xcodeSimulatorSystemCaches) [ -f "$move_source" ] || return 1 ;;
-            file:rebuildableServiceCaches|file:browserCodeSignatureCaches|file:rebuildableGPUCaches|file:xcodeDocumentationCaches) return 1 ;;
+            file:rebuildableServiceCaches|file:browserCodeSignatureCaches|file:rebuildableGPUCaches|file:xcodeDocumentationCaches|file:xcodeRuntimeVolumes) return 1 ;;
             file:*) [ -f "$move_source" ] || return 1 ;;
             *) return 1 ;;
         esac
@@ -1091,6 +1147,9 @@ nonisolated enum SystemCleanupService {
         if [ "$move_category" = 'xcodeSimulatorSystemCaches' ]; then
             simulator_inactive || return 1
             coresimulator_system_candidate "$move_source" || return 1
+        fi
+        if [ "$move_category" = 'xcodeRuntimeVolumes' ]; then
+            xcode_runtime_volume_candidate "$move_source" || return 1
         fi
         move_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
         [ "$move_size" = "$move_expected_size" ] || return 1
@@ -1130,6 +1189,9 @@ nonisolated enum SystemCleanupService {
         if [ "$move_category" = 'xcodeSimulatorSystemCaches' ]; then
             simulator_inactive || return 1
             coresimulator_system_candidate "$move_source" || return 1
+        fi
+        if [ "$move_category" = 'xcodeRuntimeVolumes' ]; then
+            xcode_runtime_volume_candidate "$move_source" || return 1
         fi
         move_final_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
         move_final_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
@@ -1327,6 +1389,35 @@ nonisolated enum SystemCleanupService {
         done < "$scan_file"
     }
 
+    runtime_volume_unused() {
+        runtime_path=$1
+        runtime_mounts=$(/sbin/mount 2>/dev/null | /usr/bin/awk '{ marker=index($0, " on "); if (!marker) next; path=substr($0, marker + 4); options=index(path, " ("); if (options) print substr(path, 1, options - 1) }') || return 1
+        [ -n "$runtime_mounts" ] || return 1
+        printf '%s\n' "$runtime_mounts" | /usr/bin/grep -Fx '/' >/dev/null 2>&1 || return 1
+        while IFS= read -r runtime_mount; do
+            case "$runtime_mount" in "$runtime_path"|"$runtime_path"/*) return 1 ;; esac
+        done <<EOF
+    $runtime_mounts
+    EOF
+        return 0
+    }
+
+    scan_xcode_runtime_volumes() {
+        for runtime_root in /Library/Developer/CoreSimulator/Volumes /Library/Developer/CoreSimulator/Cryptex; do
+            [ -d "$runtime_root" ] && [ ! -L "$runtime_root" ] || continue
+            /usr/bin/find "$runtime_root" -mindepth 1 -maxdepth 1 -type d ! -type l -print0 > "$scan_file"
+            scan_result=$?
+            if [ "$scan_result" -ne 0 ]; then
+                printf 'ERROR\txcodeRuntimeVolumes\n'
+                continue
+            fi
+            while IFS= read -r -d '' scan_path; do
+                runtime_volume_unused "$scan_path" || continue
+                scan_directory xcodeRuntimeVolumes "$scan_path"
+            done < "$scan_file"
+        done
+    }
+
     scan_code_signature_directories() {
         scan_root=/private/var/folders
         [ -d "$scan_root" ] && [ ! -L "$scan_root" ] || return 0
@@ -1380,6 +1471,7 @@ nonisolated enum SystemCleanupService {
     scan_family memoryExceptionReports /private/var/db/reportmemoryexception/MemoryLimitViolations
     scan_xcode_documentation_caches
     scan_coresimulator_system_caches
+    scan_xcode_runtime_volumes
 
     active_powerlog=/private/var/db/powerlog/Library/PerfPowerTelemetry/BackgroundProcessing/CurrentBackgroundProcessingDB.BGSQL
     if [ -f "$active_powerlog" ] && [ ! -L "$active_powerlog" ]; then
