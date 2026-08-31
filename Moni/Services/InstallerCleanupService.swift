@@ -101,6 +101,7 @@ nonisolated enum InstallerCleanupService {
         let validation = await Task.detached(priority: .utility) {
             revalidate(plan.items)
         }.value
+        await CleanupService.shared.recordRejectedItems(validation.rejectedItems, scope: .installers)
         let finalPlan = CleanupPlan(
             id: plan.cleanupPlan.id,
             createdAt: plan.cleanupPlan.createdAt,

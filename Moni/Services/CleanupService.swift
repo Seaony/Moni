@@ -235,6 +235,12 @@ actor CleanupService {
         loadHistory()
     }
 
+    func recordRejectedItems(_ items: [CleanupRejectedItem], scope: CleanupScope) {
+        appendHistory(items.map {
+            historyRecord(scope: scope, action: .skipped, path: $0.path, detail: $0.reason.rawValue)
+        })
+    }
+
     func eligiblePaths(
         _ paths: [String],
         whitelist: [String] = CleanupPreferences.whitelist()

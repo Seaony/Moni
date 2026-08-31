@@ -122,6 +122,7 @@ nonisolated enum ProjectArtifactService {
             paths: validation.items.map(\.path),
             scope: .projects
         )
+        await CleanupService.shared.recordRejectedItems(validation.rejectedItems, scope: .projects)
         let cleanupPlan = CleanupPlan(
             id: basePlan.id,
             createdAt: basePlan.createdAt,
@@ -140,6 +141,7 @@ nonisolated enum ProjectArtifactService {
         let validation = await Task.detached(priority: .utility) {
             revalidateForExecution(plan)
         }.value
+        await CleanupService.shared.recordRejectedItems(validation.rejectedItems, scope: .projects)
         let finalPlan = CleanupPlan(
             id: plan.cleanupPlan.id,
             createdAt: plan.cleanupPlan.createdAt,
