@@ -48,6 +48,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case goModuleCache
     case clangModuleCache
     case xcodeBuildCaches
+    case simulatorCaches
 
     var titleKey: String {
         switch self {
@@ -97,6 +98,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .goModuleCache: "Go module cache"
         case .clangModuleCache: "Clang module cache"
         case .xcodeBuildCaches: "Xcode build caches"
+        case .simulatorCaches: "Simulator caches"
         }
     }
 }
@@ -197,7 +199,7 @@ nonisolated enum CacheCleanupService {
         let resolvedPythonPackageCacheRoots = pythonPackageCacheRoots()
         let resolvedMiseCacheRoot = miseCacheRoot()
         discoveredItems.removeAll { item in
-            item.category == .userCaches
+            (item.category == .userCaches
                 && (pathsEqual(item.path, diaGeneralCacheRoot())
                     || pathsEqual(item.path, googleGeneralCacheRoot())
                     || pathsEqual(item.path, firefoxGeneralCacheRoot())
@@ -208,7 +210,9 @@ nonisolated enum CacheCleanupService {
                     || pathsEqual(item.path, heliumGeneralCacheRoot())
                     || pathsEqual(item.path, xcodeApplicationCacheRoot())
                     || resolvedPythonPackageCacheRoots.contains(where: { pathsEqual(item.path, $0) })
-                    || resolvedMiseCacheRoot.map { pathsEqual(item.path, $0) } == true)
+                    || resolvedMiseCacheRoot.map { pathsEqual(item.path, $0) } == true))
+                || (item.category == .userLogs
+                    && pathsEqual(item.path, coreSimulatorLogRoot()))
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -434,6 +438,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: xcodeBuildCaches.items)
         unreadableItemCount += xcodeBuildCaches.unreadableItemCount
 
+        let simulatorCaches = await scanSimulatorCaches()
+        discoveredItems.append(contentsOf: simulatorCaches.items)
+        unreadableItemCount += simulatorCaches.unreadableItemCount
+
         let developerBackupFiles = scanDeveloperBackupFiles()
         discoveredItems.append(contentsOf: developerBackupFiles.items)
         unreadableItemCount += developerBackupFiles.unreadableItemCount
@@ -611,7 +619,22 @@ nonisolated enum CacheCleanupService {
         let clangIsSafe = !requiresClangProbe || clangModuleCacheIsInactive()
         let xcodeBuildIsSafe = !items.contains { $0.category == .xcodeBuildCaches }
             || xcodeBuildToolsAreInactive()
+        let requiresSimulatorProbe = items.contains { $0.category == .simulatorCaches }
+        let simulatorIsSafe = !requiresSimulatorProbe || simulatorIsInactive()
+        let simulatorAllowedPaths = requiresSimulatorProbe
+            ? Set(simulatorCacheCandidatePaths())
+            : Set<String>()
         for item in items {
+            if item.category == .simulatorCaches {
+                guard simulatorIsSafe,
+                      simulatorAllowedPaths.contains(where: { pathsEqual($0, item.path) }),
+                      simulatorCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .xcodeBuildCaches {
                 guard xcodeBuildIsSafe,
                       xcodeBuildCacheItemIsAllowed(item.path) else {
@@ -1843,6 +1866,136 @@ nonisolated enum CacheCleanupService {
             ["-x", "XCBBuildService"],
             ["-x", "swift-frontend"]
         ])
+    }
+
+    private static func scanSimulatorCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard simulatorIsInactive() else { return ([], 0) }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for path in simulatorCacheCandidatePaths() {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard simulatorCacheItemIsAllowed(path),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .simulatorCaches,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func simulatorCacheItemIsAllowed(_ path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return isRealFileOrDirectory(at: normalized)
+            && !isSymbolicLink(at: normalized)
+            && !holdsCompiledModelCache(normalized)
+            && simulatorCacheCandidatePaths().contains { pathsEqual($0, normalized) }
+    }
+
+    private static func simulatorCacheCandidatePaths() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        var paths = directChildPaths(in: home + "/Library/Developer/CoreSimulator/Caches")
+        paths.append(contentsOf: directChildPaths(in: coreSimulatorLogRoot()))
+
+        let devicesRoot = home + "/Library/Developer/CoreSimulator/Devices"
+        for device in childDirectories(at: devicesRoot) {
+            paths.append(contentsOf: directChildPaths(in: device + "/data/tmp"))
+        }
+
+        let runtimesRoot = home + "/Library/Developer/CoreSimulator/Profiles/Runtimes"
+        for runtime in childDirectories(at: runtimesRoot) {
+            paths.append(contentsOf: directChildPaths(
+                in: runtime + "/Contents/Resources/RuntimeRoot/System/Library/Caches"
+            ))
+        }
+
+        let xctestDevices = home + "/Library/Developer/XCTestDevices"
+        if isRealDirectory(at: xctestDevices),
+           currentUserOwnsDirectory(at: xctestDevices),
+           !isSymbolicLink(at: xctestDevices) {
+            paths.append(xctestDevices)
+        }
+
+        var seen = Set<String>()
+        return paths.filter { seen.insert($0).inserted }
+    }
+
+    private static func directChildPaths(in root: String) -> [String] {
+        guard isRealDirectory(at: root),
+              currentUserOwnsDirectory(at: root),
+              let children = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+        return children.map { $0.standardizedFileURL.path }
+    }
+
+    private static func coreSimulatorLogRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/CoreSimulator", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func simulatorIsInactive() -> Bool {
+        guard processProbesAreInactive([
+            ["-x", "Xcode"],
+            ["-x", "Simulator"],
+            ["-x", "xcodebuild"],
+            ["-x", "xctest"],
+            ["-x", "XCTRunner"],
+            ["-x", "simctl"],
+            ["-f", "com.apple.dt.XCTest"],
+            ["-f", "XCTest"]
+        ]) else {
+            return false
+        }
+        return simulatorHasNoBootedDevices()
+    }
+
+    private static func simulatorHasNoBootedDevices() -> Bool {
+        let executable = "/usr/bin/xcrun"
+        guard FileManager.default.isExecutableFile(atPath: executable) else { return false }
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["simctl", "list", "devices", "booted", "-j"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let deadline = Date().addingTimeInterval(15)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+        guard process.terminationReason == .exit,
+              process.terminationStatus == 0,
+              let response = try? JSONSerialization.jsonObject(
+                with: output.fileHandleForReading.readDataToEndOfFile()
+              ) as? [String: Any],
+              let devices = response["devices"] as? [String: Any] else {
+            return false
+        }
+        return devices.values.allSatisfy { value in
+            guard let entries = value as? [[String: Any]] else { return false }
+            return entries.isEmpty
+        }
     }
 
     private static func scanDeveloperToolCaches() async -> (
