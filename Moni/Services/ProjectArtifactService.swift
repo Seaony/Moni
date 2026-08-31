@@ -1,6 +1,57 @@
 import Darwin
 import Foundation
 
+nonisolated enum ProjectArtifactPreferences {
+    static func searchRoots() -> [String] {
+        normalizedRoots(
+            UserDefaults.standard.stringArray(forKey: PreferenceKey.projectArtifactSearchRoots) ?? []
+        )
+    }
+
+    static func addSearchRoots(_ paths: [String]) {
+        UserDefaults.standard.set(
+            normalizedRoots(searchRoots() + paths),
+            forKey: PreferenceKey.projectArtifactSearchRoots
+        )
+    }
+
+    static func removeSearchRoot(_ path: String) {
+        let normalized = normalizedRoot(path)
+        UserDefaults.standard.set(
+            searchRoots().filter { normalizedRoot($0) != normalized },
+            forKey: PreferenceKey.projectArtifactSearchRoots
+        )
+    }
+
+    static func useAutomaticDiscovery() {
+        UserDefaults.standard.removeObject(forKey: PreferenceKey.projectArtifactSearchRoots)
+    }
+
+    private static func normalizedRoots(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        return paths.compactMap { path in
+            let normalized = normalizedRoot(path)
+            guard !normalized.isEmpty,
+                  seen.insert(normalized.lowercased()).inserted else {
+                return nil
+            }
+            return normalized
+        }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private static func normalizedRoot(_ path: String) -> String {
+        guard path.hasPrefix("/"),
+              !path.contains("\0"),
+              !path.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+            return ""
+        }
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        guard normalized != "/", normalized != home else { return "" }
+        return normalized
+    }
+}
+
 nonisolated enum ProjectArtifactActivity: String, Sendable {
     case old
     case recent
@@ -280,6 +331,12 @@ nonisolated enum ProjectArtifactService {
     private static func discoverSearchRoots() -> [String] {
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let configuredRoots = ProjectArtifactPreferences.searchRoots()
+        if !configuredRoots.isEmpty {
+            return deduplicatedPaths(configuredRoots.map { path in
+                existingDirectory(path) ?? URL(fileURLWithPath: path).standardizedFileURL.path
+            })
+        }
         let defaults = [
             "www", "dev", "Projects", "GitHub", "Code", "Workspace", "Repos", "Development",
             "Library/CloudStorage", ".codex/worktrees", ".claude/worktrees"

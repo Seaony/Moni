@@ -23,6 +23,7 @@ enum PreferenceKey {
     static let storageFolderCache = "storageFolderCache"
     static let storageFolderCacheDate = "storageFolderCacheDate"
     nonisolated static let cleanupWhitelist = "cleanupWhitelist"
+    nonisolated static let projectArtifactSearchRoots = "projectArtifactSearchRoots"
 
     static let showHost = "showHost"
     static let showCPU = "showCPU"
