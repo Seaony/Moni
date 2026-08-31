@@ -21,6 +21,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case rebuildableGPUCaches
     case systemDiagnostics
     case powerLogs
+    case memoryExceptionReports
 
     var titleKey: String {
         switch self {
@@ -34,6 +35,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .rebuildableGPUCaches: "Rebuildable GPU caches"
         case .systemDiagnostics: "System diagnostic logs"
         case .powerLogs: "Power logs"
+        case .memoryExceptionReports: "Memory exception reports"
         }
     }
 }
@@ -523,21 +525,29 @@ nonisolated enum SystemCleanupService {
         let directoryCategories: Set<SystemCleanupCategory> = [
             .rebuildableServiceCaches, .browserCodeSignatureCaches, .rebuildableGPUCaches
         ]
+        let minimumItemAge = category == .memoryExceptionReports
+            ? 30 * 24 * 60 * 60
+            : minimumAge
         guard (directoryCategories.contains(category) && kind == .directory)
                 || (!directoryCategories.contains(category) && kind == .file),
               categoryAllows(url: url, category: category),
-              let metadata = fileMetadata(at: url),
-              (kind == .file && metadata.isRegularFile)
-                || (kind == .directory && metadata.isDirectory),
-              !metadata.isSymbolicLink,
-              metadata.deviceID == expectedDeviceID,
-              metadata.fileID == expectedFileID,
-              metadata.modifiedDate == expectedModifiedDate,
-              kind == .directory || metadata.sizeBytes == expectedSizeBytes,
               kind == .directory
-                || referenceDate.timeIntervalSince(metadata.modifiedDate) >= minimumAge,
+                || referenceDate.timeIntervalSince(expectedModifiedDate) >= minimumItemAge,
               !isEndpointSecurityPath(url.path),
               !CleanupPreferences.isWhitelisted(url.path) else {
+            return nil
+        }
+        if let metadata = fileMetadata(at: url) {
+            guard (kind == .file && metadata.isRegularFile)
+                    || (kind == .directory && metadata.isDirectory),
+                  !metadata.isSymbolicLink,
+                  metadata.deviceID == expectedDeviceID,
+                  metadata.fileID == expectedFileID,
+                  metadata.modifiedDate == expectedModifiedDate,
+                  kind == .directory || metadata.sizeBytes == expectedSizeBytes else {
+                return nil
+            }
+        } else if category != .memoryExceptionReports || url.path != path {
             return nil
         }
         return SystemCleanupItem(
@@ -546,9 +556,9 @@ nonisolated enum SystemCleanupService {
             category: category,
             kind: kind,
             sizeBytes: expectedSizeBytes,
-            modifiedDate: metadata.modifiedDate,
-            deviceID: metadata.deviceID,
-            fileID: metadata.fileID
+            modifiedDate: expectedModifiedDate,
+            deviceID: expectedDeviceID,
+            fileID: expectedFileID
         )
     }
 
@@ -637,6 +647,11 @@ nonisolated enum SystemCleanupService {
                 && canonicalPathIsInside(url, root: root)
                 && pathDepth(url.path, root: root) <= 5
                 && !isActivePowerLogPath(url.path)
+        case .memoryExceptionReports:
+            let root = "/private/var/db/reportmemoryexception/MemoryLimitViolations"
+            return pathIsInside(url.path, root: root)
+                && canonicalPathIsInside(url, root: root)
+                && pathDepth(url.path, root: root) <= 5
         }
     }
 
@@ -846,6 +861,10 @@ nonisolated enum SystemCleanupService {
                 path_depth_ok "$candidate_path" /private/var/db/powerlog 5 || return 1
                 ! active_powerlog_path "$candidate_path"
                 ;;
+            memoryExceptionReports)
+                case "$candidate_path" in /private/var/db/reportmemoryexception/MemoryLimitViolations/*) ;; *) return 1 ;; esac
+                path_depth_ok "$candidate_path" /private/var/db/reportmemoryexception/MemoryLimitViolations 5
+                ;;
             *)
                 return 1
                 ;;
@@ -918,7 +937,9 @@ nonisolated enum SystemCleanupService {
         if [ "$move_kind" = 'file' ]; then
             move_mtime=${move_identity##*:}
             move_now=$(/bin/date +%s) || return 1
-            [ "$move_now" -ge "$move_mtime" ] && [ $((move_now - move_mtime)) -ge 604800 ] || return 1
+            move_minimum_age=604800
+            [ "$move_category" = 'memoryExceptionReports' ] && move_minimum_age=2592000
+            [ "$move_now" -ge "$move_mtime" ] && [ $((move_now - move_mtime)) -ge "$move_minimum_age" ] || return 1
         fi
 
         move_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
@@ -992,6 +1013,9 @@ nonisolated enum SystemCleanupService {
                 ;;
             powerLogs)
                 /usr/bin/find "$scan_root" -maxdepth 5 -type f -mtime +7 -print0 > "$scan_file"
+                ;;
+            memoryExceptionReports)
+                /usr/bin/find "$scan_root" -maxdepth 5 -type f -mtime +30 -print0 > "$scan_file"
                 ;;
             *)
                 return 1
@@ -1104,6 +1128,7 @@ nonisolated enum SystemCleanupService {
     scan_family systemDiagnostics /private/var/db/diagnostics
     scan_family systemDiagnostics /private/var/db/DiagnosticPipeline
     scan_family powerLogs /private/var/db/powerlog
+    scan_family memoryExceptionReports /private/var/db/reportmemoryexception/MemoryLimitViolations
 
     active_powerlog=/private/var/db/powerlog/Library/PerfPowerTelemetry/BackgroundProcessing/CurrentBackgroundProcessingDB.BGSQL
     if [ -f "$active_powerlog" ] && [ ! -L "$active_powerlog" ]; then
