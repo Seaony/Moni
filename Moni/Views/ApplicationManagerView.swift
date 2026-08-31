@@ -452,25 +452,41 @@ struct ApplicationManagerView: View {
 
         isPreparing = true
         let currentInventory = await ApplicationInventoryService.scan()
-        let currentApplication = currentInventory.applications.first {
+        guard let currentApplication = currentInventory.applications.first(where: {
             $0.path == application.path && $0.device == application.device && $0.inode == application.inode
+        }) else {
+            isPreparing = false
+            cleanupMessage = MoniLocalization.string("The selected application changed. Review it again before removal.")
+            return
         }
-        let allowedPaths: Set<String>
-        if let currentApplication {
-            let currentPreview = await ApplicationUninstallService.preview(
-                application: currentApplication,
-                inventory: currentInventory
-            )
-            allowedPaths = Set(currentPreview.items.map(\.path))
-        } else {
-            allowedPaths = [application.path]
+        guard !isRunning(currentApplication) else {
+            isPreparing = false
+            cleanupMessage = MoniLocalization.format("Quit %@ before uninstalling it.", currentApplication.name)
+            return
         }
+        let currentPreview = await ApplicationUninstallService.preview(
+            application: currentApplication,
+            inventory: currentInventory
+        )
+        guard currentPreview.homebrewCask == nil,
+              !currentPreview.homebrewProbeUnavailable else {
+            isPreparing = false
+            cleanupMessage = MoniLocalization.string("The Homebrew removal plan changed. Review it again before removal.")
+            return
+        }
+        let allowedPaths = Set(currentPreview.items.map(\.path))
         let finalPlan = CleanupPlan(
             id: confirmedPlan.id,
             createdAt: confirmedPlan.createdAt,
             scope: confirmedPlan.scope,
             candidates: confirmedPlan.candidates.filter { allowedPaths.contains($0.path) },
             rejectedItems: confirmedPlan.rejectedItems
+        )
+        let teardown = await ApplicationTeardownService.perform(
+            application: currentApplication,
+            confirmedCandidates: finalPlan.candidates,
+            inventory: currentInventory,
+            hasSharedBundleIdentifier: currentPreview.warnings.contains(.sharedBundleIdentifier)
         )
         let result = await CleanupService.shared.execute(finalPlan)
         isPreparing = false
@@ -485,6 +501,9 @@ struct ApplicationManagerView: View {
         }
         if !result.failedPaths.isEmpty {
             parts.append(MoniLocalization.format("%@ items could not be moved.", result.failedPaths.count.formatted()))
+        }
+        if teardown.failedActionCount > 0 {
+            parts.append(MoniLocalization.format("%@ background items could not be stopped.", teardown.failedActionCount.formatted()))
         }
         cleanupMessage = parts.isEmpty ? MoniLocalization.string("Nothing was moved.") : parts.joined(separator: " ")
         await scanApplications()
@@ -525,6 +544,19 @@ struct ApplicationManagerView: View {
             return
         }
 
+        let teardownPlan = await CleanupService.shared.preview(
+            paths: currentPreview.items
+                .filter { $0.kind == .launchAgent }
+                .map(\.path),
+            scope: .applications
+        )
+        let teardown = await ApplicationTeardownService.perform(
+            application: currentApplication,
+            confirmedCandidates: teardownPlan.candidates,
+            inventory: currentInventory,
+            hasSharedBundleIdentifier: currentPreview.warnings.contains(.sharedBundleIdentifier)
+        )
+
         let result = await HomebrewCaskService.uninstall(
             token: request.token,
             application: currentApplication,
@@ -552,6 +584,10 @@ struct ApplicationManagerView: View {
             cleanupMessage = MoniLocalization.string("The selected application changed. No removal was performed.")
         case .unavailable:
             cleanupMessage = MoniLocalization.string("Homebrew removal state could not be verified. No fallback removal was performed.")
+        }
+        if teardown.failedActionCount > 0 {
+            cleanupMessage = (cleanupMessage ?? "") + " "
+                + MoniLocalization.format("%@ background items could not be stopped.", teardown.failedActionCount.formatted())
         }
         isPreparing = false
         monitor.refresh(forceSlowMetrics: true)
