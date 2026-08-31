@@ -112,7 +112,9 @@ struct MaintenanceView: View {
     )
     @State private var timeMachineSnapshotReport = TimeMachineSnapshotReport(
         state: .unavailable,
-        snapshotCount: 0
+        snapshotCount: 0,
+        incompleteBackups: [],
+        unreadableItemCount: 0
     )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
@@ -292,7 +294,7 @@ struct MaintenanceView: View {
 
                     commandCard(
                         title: "Time Machine Snapshots",
-                        description: "Report local Time Machine snapshots without deleting them.",
+                        description: "Report local Time Machine snapshots and incomplete backups without deleting them.",
                         symbol: "clock.arrow.trianglehead.counterclockwise.rotate.90",
                         status: timeMachineSnapshotStatus,
                         buttonTitle: "Report only",
@@ -1175,20 +1177,33 @@ struct MaintenanceView: View {
     private var timeMachineSnapshotStatus: String {
         switch timeMachineSnapshotReport.state {
         case .ready:
-            MoniLocalization.format(
+            if !timeMachineSnapshotReport.incompleteBackups.isEmpty {
+                let size = timeMachineSnapshotReport.incompleteBackups.reduce(UInt64(0)) { partial, item in
+                    let (sum, overflow) = partial.addingReportingOverflow(item.sizeBytes)
+                    return overflow ? UInt64.max : sum
+                }
+                return MoniLocalization.format(
+                    "%@ incomplete backups · %@",
+                    timeMachineSnapshotReport.incompleteBackups.count.formatted(),
+                    maintenanceBytes(size)
+                )
+            }
+            return MoniLocalization.format(
                 "%@ local snapshots",
                 timeMachineSnapshotReport.snapshotCount.formatted()
             )
         case .none:
-            MoniLocalization.string("No local snapshots")
+            return timeMachineSnapshotReport.unreadableItemCount > 0
+                ? MoniLocalization.string("Backup scan incomplete")
+                : MoniLocalization.string("No snapshots or incomplete backups")
         case .busy:
-            MoniLocalization.string("Backup in progress")
+            return MoniLocalization.string("Backup in progress")
         case .notConfigured:
-            MoniLocalization.string("Time Machine not configured")
+            return MoniLocalization.string("Time Machine not configured")
         case .unavailable:
-            MoniLocalization.string("Time Machine unavailable")
+            return MoniLocalization.string("Time Machine unavailable")
         case .failed:
-            MoniLocalization.string("Inspection failed")
+            return MoniLocalization.string("Inspection failed")
         }
     }
 

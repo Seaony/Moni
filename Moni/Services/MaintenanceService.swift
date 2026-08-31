@@ -145,7 +145,7 @@ nonisolated enum MaintenanceService {
         ),
         task(
             "time_machine_snapshots", "Time Machine Snapshots",
-            "Report local Time Machine snapshots without deleting them.",
+            "Report local Time Machine snapshots and incomplete backups without deleting them.",
             "clock.arrow.trianglehead.counterclockwise.rotate.90", .storage
         ),
         task(
