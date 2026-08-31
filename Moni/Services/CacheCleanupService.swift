@@ -19,6 +19,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case arcProfileCaches
     case vivaldiProfileCaches
     case qqBrowserProfileCaches
+    case puppeteerCaches
     case browserServiceWorkerCaches
     case browserOldVersions
     case edgeUpdaterOldVersions
@@ -50,6 +51,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .arcProfileCaches: "Arc profile caches"
         case .vivaldiProfileCaches: "Vivaldi profile caches"
         case .qqBrowserProfileCaches: "QQ Browser profile caches"
+        case .puppeteerCaches: "Puppeteer browser caches"
         case .browserServiceWorkerCaches: "Browser Service Worker caches"
         case .browserOldVersions: "Old browser versions"
         case .edgeUpdaterOldVersions: "Old Edge updater versions"
@@ -221,6 +223,10 @@ nonisolated enum CacheCleanupService {
             discoveredItems.append(contentsOf: qqBrowserProfileCaches.items)
             unreadableItemCount += qqBrowserProfileCaches.unreadableItemCount
         }
+
+        let puppeteerCaches = await scanPuppeteerCaches()
+        discoveredItems.append(contentsOf: puppeteerCaches.items)
+        unreadableItemCount += puppeteerCaches.unreadableItemCount
 
         let browserServiceWorkerCaches = await scanBrowserServiceWorkerCaches()
         discoveredItems.append(contentsOf: browserServiceWorkerCaches.items)
@@ -446,6 +452,14 @@ nonisolated enum CacheCleanupService {
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
+            if item.category == .puppeteerCaches {
+                guard puppeteerCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .edgeUpdaterOldVersions {
                 guard edgeUpdaterOldVersionItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -1239,6 +1253,29 @@ nonisolated enum CacheCleanupService {
         return (items, unreadableItemCount)
     }
 
+    private static func scanPuppeteerCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let root = puppeteerCacheRoot()
+        guard isRealDirectory(at: root) else { return ([], 0) }
+        var finalUpdate: DiskAnalysisUpdate?
+        for await update in DiskAnalyzer.updates(for: root) {
+            guard !Task.isCancelled else { return ([], 0) }
+            if update.isComplete { finalUpdate = update }
+        }
+        guard let finalUpdate else { return ([], 1) }
+        let items: [CacheCleanupItem] = finalUpdate.entrySizes.compactMap { path, size in
+            guard puppeteerCacheItemIsAllowed(path) else { return nil }
+            return CacheCleanupItem(
+                path: path,
+                category: .puppeteerCaches,
+                sizeBytes: size
+            )
+        }
+        return (items, finalUpdate.unreadableItemCount)
+    }
+
     private static func scanBrowserServiceWorkerCaches() async -> (
         items: [CacheCleanupItem],
         unreadableItemCount: Int
@@ -1679,6 +1716,26 @@ nonisolated enum CacheCleanupService {
         })
         var seen: Set<String> = []
         return roots.filter { seen.insert($0).inserted }
+    }
+
+    private static func puppeteerCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let root = puppeteerCacheRoot()
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              isRealFileOrDirectory(at: url.path),
+              !holdsCompiledModelCache(url.path),
+              isRealDirectory(at: root),
+              pathsEqual(url.deletingLastPathComponent().path, root) else {
+            return false
+        }
+        return true
+    }
+
+    private static func puppeteerCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/puppeteer", isDirectory: true)
+            .standardizedFileURL.path
     }
 
     private static func browserServiceWorkerSources() -> [BrowserServiceWorkerSource] {
@@ -2575,6 +2632,13 @@ nonisolated enum CacheCleanupService {
         var value = stat()
         return path.withCString { lstat($0, &value) } == 0
             && value.st_mode & S_IFMT == S_IFDIR
+    }
+
+    private static func isRealFileOrDirectory(at path: String) -> Bool {
+        var value = stat()
+        guard path.withCString({ lstat($0, &value) }) == 0 else { return false }
+        let kind = value.st_mode & S_IFMT
+        return kind == S_IFDIR || kind == S_IFREG
     }
 
     private static func isSymbolicLink(at path: String) -> Bool {
