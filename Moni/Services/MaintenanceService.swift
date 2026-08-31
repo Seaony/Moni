@@ -176,6 +176,11 @@ nonisolated enum MaintenanceService {
             policy: .requiresInactiveApplications
         ),
         task(
+            "github_cli_cache_cleanup", "GitHub CLI Cache",
+            "Clear GitHub CLI cache data using gh's own maintenance command.",
+            "terminal", .storage, policy: .requiresInactiveApplications
+        ),
+        task(
             "homebrew_cleanup", "Homebrew Cleanup",
             "Remove Homebrew downloads and stale versions older than 30 days without running autoremove.",
             "mug", .storage

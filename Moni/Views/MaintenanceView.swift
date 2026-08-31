@@ -133,6 +133,11 @@ struct MaintenanceView: View {
         items: [],
         state: .unavailable
     )
+    @State private var githubCLICacheSnapshot = GitHubCLICacheMaintenanceSnapshot(
+        path: "",
+        sizeBytes: 0,
+        state: .unavailable
+    )
     @State private var homebrewSnapshot = HomebrewMaintenanceSnapshot(
         cachePath: "",
         cacheSizeBytes: 0,
@@ -178,6 +183,7 @@ struct MaintenanceView: View {
     @State private var confirmsNpmCacheCleanup = false
     @State private var confirmsNodeToolCacheCleanup = false
     @State private var confirmsPythonPackageCacheCleanup = false
+    @State private var confirmsGitHubCLICacheCleanup = false
     @State private var confirmsHomebrewCleanup = false
     @State private var resultMessage: String?
 
@@ -412,6 +418,19 @@ struct MaintenanceView: View {
                         isActionEnabled: pythonPackageCacheSnapshot.state == .ready
                     ) {
                         confirmsPythonPackageCacheCleanup = true
+                    }
+
+                    commandCard(
+                        title: "GitHub CLI Cache",
+                        description: "Clear GitHub CLI cache data using gh's own maintenance command.",
+                        symbol: "terminal",
+                        status: githubCLICacheStatus,
+                        buttonTitle: githubCLICacheButtonTitle,
+                        isAvailable: githubCLICacheSnapshot.state != .unavailable
+                            && githubCLICacheSnapshot.state != .failed,
+                        isActionEnabled: githubCLICacheSnapshot.state == .ready
+                    ) {
+                        confirmsGitHubCLICacheCleanup = true
                     }
 
                     commandCard(
@@ -932,6 +951,22 @@ struct MaintenanceView: View {
             ))
         }
         .confirmationDialog(
+            "Clean the GitHub CLI cache?",
+            isPresented: $confirmsGitHubCLICacheCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Clean GitHub CLI Cache", role: .destructive) {
+                Task { await cleanGitHubCLICache() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MoniLocalization.format(
+                "GitHub CLI will clear the cache at %@ using gh config clear-cache. The cache currently uses %@.",
+                githubCLICacheSnapshot.path,
+                maintenanceBytes(githubCLICacheSnapshot.sizeBytes)
+            ))
+        }
+        .confirmationDialog(
             "Clean Homebrew files?",
             isPresented: $confirmsHomebrewCleanup,
             titleVisibility: .visible
@@ -1103,7 +1138,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "28", MoniPalette.green)
+                catalogMetric("Available now", "29", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1625,6 +1660,31 @@ struct MaintenanceView: View {
         }
     }
 
+    private var githubCLICacheStatus: String {
+        switch githubCLICacheSnapshot.state {
+        case .ready:
+            MoniLocalization.format(
+                "%@ available",
+                maintenanceBytes(githubCLICacheSnapshot.sizeBytes)
+            )
+        case .healthy: MoniLocalization.string("No GitHub CLI cache to clean")
+        case .protected: MoniLocalization.string("Protected by whitelist")
+        case .busy: MoniLocalization.string("GitHub CLI is running")
+        case .unavailable: MoniLocalization.string("GitHub CLI cache command unavailable")
+        case .failed: MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var githubCLICacheButtonTitle: String {
+        switch githubCLICacheSnapshot.state {
+        case .ready: MoniLocalization.string("Review Cleanup")
+        case .healthy: MoniLocalization.string("No action needed")
+        case .protected: MoniLocalization.string("Protected")
+        case .busy: MoniLocalization.string("Close GitHub CLI first")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
     private var homebrewStatus: String {
         switch homebrewSnapshot.state {
         case .ready:
@@ -1926,15 +1986,16 @@ struct MaintenanceView: View {
         async let npmCacheResult = NpmCacheMaintenanceService.scan()
         async let nodeToolCacheResult = NodeToolCacheMaintenanceService.scan()
         async let pythonPackageCacheResult = PythonPackageCacheMaintenanceService.scan()
+        async let githubCLICacheResult = GitHubCLICacheMaintenanceService.scan()
         async let homebrewResult = HomebrewMaintenanceService.scan()
         async let timeMachineSnapshotResult = TimeMachineSnapshotService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, npmCache, nodeToolCaches, pythonPackageCaches, homebrew, timeMachineSnapshots) = await (
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, npmCache, nodeToolCaches, pythonPackageCaches, githubCLICache, homebrew, timeMachineSnapshots) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
             spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult, condaCacheResult,
             pnpmStoreResult, npmCacheResult, nodeToolCacheResult, pythonPackageCacheResult,
-            homebrewResult,
+            githubCLICacheResult, homebrewResult,
             timeMachineSnapshotResult
         )
         guard !Task.isCancelled else { return }
@@ -1961,6 +2022,7 @@ struct MaintenanceView: View {
         npmCacheSnapshot = npmCache
         nodeToolCacheSnapshot = nodeToolCaches
         pythonPackageCacheSnapshot = pythonPackageCaches
+        githubCLICacheSnapshot = githubCLICache
         homebrewSnapshot = homebrew
         timeMachineSnapshotReport = timeMachineSnapshots
         isScanning = false
@@ -2551,6 +2613,31 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("Corepack and Bun cache cleanup is unavailable because neither command could be found.")
         case .failed:
             resultMessage = MoniLocalization.string("Corepack and Bun cache cleanup did not complete successfully.")
+        }
+    }
+
+    private func cleanGitHubCLICache() async {
+        isRunning = true
+        let outcome = await GitHubCLICacheMaintenanceService.clean(githubCLICacheSnapshot)
+        githubCLICacheSnapshot = await GitHubCLICacheMaintenanceService.scan()
+        isRunning = false
+
+        switch outcome {
+        case let .cleaned(reclaimedBytes):
+            resultMessage = MoniLocalization.format(
+                "GitHub CLI cache cleanup completed and reclaimed %@.",
+                maintenanceBytes(reclaimedBytes)
+            )
+        case .noAction:
+            resultMessage = MoniLocalization.string("No GitHub CLI cache needed cleaning.")
+        case .protected:
+            resultMessage = MoniLocalization.string("GitHub CLI cache cleanup was skipped because the cache is protected by the whitelist.")
+        case .busy:
+            resultMessage = MoniLocalization.string("GitHub CLI cache cleanup was skipped because gh is running.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("GitHub CLI cache cleanup is unavailable because gh config clear-cache is not supported.")
+        case .failed:
+            resultMessage = MoniLocalization.string("GitHub CLI cache cleanup did not complete successfully.")
         }
     }
 }
