@@ -18,6 +18,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case staleWallpaperDownloads
     case rebuildableServiceCaches
     case browserCodeSignatureCaches
+    case rebuildableGPUCaches
 
     var titleKey: String {
         switch self {
@@ -28,6 +29,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .staleWallpaperDownloads: "Stale wallpaper downloads"
         case .rebuildableServiceCaches: "Rebuildable system caches"
         case .browserCodeSignatureCaches: "Browser code signature caches"
+        case .rebuildableGPUCaches: "Rebuildable GPU caches"
         }
     }
 }
@@ -110,9 +112,10 @@ nonisolated enum SystemCleanupService {
         guard FileManager.default.isExecutableFile(atPath: scriptExecutable) else {
             return SystemCleanupSnapshot(state: .unavailable, items: [], unreadableItemCount: 0)
         }
+        let shellScript = "scan_user_id=\(getuid())\n" + scanShellScript
         let result = run(
             scriptExecutable,
-            arguments: ["-e", administratorScript, scanShellScript],
+            arguments: ["-e", administratorScript, shellScript],
             timeout: 120
         )
         if result.timedOut {
@@ -390,7 +393,7 @@ nonisolated enum SystemCleanupService {
         }
         let url = URL(fileURLWithPath: path).standardizedFileURL
         let directoryCategories: Set<SystemCleanupCategory> = [
-            .rebuildableServiceCaches, .browserCodeSignatureCaches
+            .rebuildableServiceCaches, .browserCodeSignatureCaches, .rebuildableGPUCaches
         ]
         guard (directoryCategories.contains(category) && kind == .directory)
                 || (!directoryCategories.contains(category) && kind == .file),
@@ -480,6 +483,19 @@ nonisolated enum SystemCleanupService {
                 && canonicalPathIsInside(url, root: root)
                 && pathDepth(url.path, root: root) <= 5
                 && url.lastPathComponent.hasSuffix(".code_sign_clone")
+        case .rebuildableGPUCaches:
+            let root = "/private/var/folders"
+            let components = url.pathComponents
+            guard let cacheRootIndex = components.firstIndex(of: "C"),
+                  cacheRootIndex == 6,
+                  components.count == 9 else {
+                return false
+            }
+            let allowedNames = ["com.apple.gpuarchiver", "com.apple.metal", "com.apple.metalfe"]
+            return pathIsInside(url.path, root: root)
+                && canonicalPathIsInside(url, root: root)
+                && pathDepth(url.path, root: root) == 5
+                && allowedNames.contains(url.lastPathComponent)
         }
     }
 
@@ -654,6 +670,10 @@ nonisolated enum SystemCleanupService {
                 printf '%s\n' "$candidate_path" | /usr/bin/awk -F/ 'NF >= 8 && NF <= 9 && $2 == "private" && $3 == "var" && $4 == "folders" && $7 == "X" { valid=1 } END { exit valid ? 0 : 1 }' || return 1
                 case "$candidate_name" in *.code_sign_clone) return 0 ;; *) return 1 ;; esac
                 ;;
+            rebuildableGPUCaches)
+                printf '%s\n' "$candidate_path" | /usr/bin/awk -F/ 'NF == 9 && $2 == "private" && $3 == "var" && $4 == "folders" && $7 == "C" { valid=1 } END { exit valid ? 0 : 1 }' || return 1
+                case "$candidate_name" in com.apple.gpuarchiver|com.apple.metal|com.apple.metalfe) return 0 ;; *) return 1 ;; esac
+                ;;
             *)
                 return 1
                 ;;
@@ -666,6 +686,12 @@ nonisolated enum SystemCleanupService {
             *com.crowdstrike.*|*com.sentinelone.*|*com.sentinel-labs.*|*com.eset.*|*com.jamf.*|*com.jamfsoftware.*|*com.paloaltonetworks.*|*com.cisco.anyconnect*|*com.cisco.secureclient*) return 0 ;;
             *) return 1 ;;
         esac
+    }
+
+    gpu_cache_stale() {
+        gpu_path=$1
+        gpu_recent=$(/usr/bin/find "$gpu_path" -type f -mtime -1 -print -quit 2>/dev/null) || return 1
+        [ -z "$gpu_recent" ]
     }
 
     system_candidate_size() {
@@ -699,13 +725,22 @@ nonisolated enum SystemCleanupService {
         case "$move_kind:$move_category" in
             directory:rebuildableServiceCaches) [ -d "$move_source" ] || return 1 ;;
             directory:browserCodeSignatureCaches) [ -d "$move_source" ] || return 1 ;;
-            file:rebuildableServiceCaches|file:browserCodeSignatureCaches) return 1 ;;
+            directory:rebuildableGPUCaches) [ -d "$move_source" ] || return 1 ;;
+            file:rebuildableServiceCaches|file:browserCodeSignatureCaches|file:rebuildableGPUCaches) return 1 ;;
             file:*) [ -f "$move_source" ] || return 1 ;;
             *) return 1 ;;
         esac
         [ ! -L "$move_source" ] || return 1
         move_identity=$(/usr/bin/stat -f '%d:%i:%m' "$move_source" 2>/dev/null) || return 1
         [ "$move_identity" = "$move_expected_identity" ] || return 1
+        if [ "$move_category" = 'rebuildableGPUCaches' ]; then
+            move_cache_root=$(/usr/bin/dirname "$move_source") || return 1
+            move_cache_root=$(/usr/bin/dirname "$move_cache_root") || return 1
+            move_cache_owner=$(/usr/bin/stat -f '%u' "$move_cache_root" 2>/dev/null) || return 1
+            move_expected_owner=${expected_trash_identity##*:}
+            [ "$move_cache_owner" = "$move_expected_owner" ] || return 1
+            gpu_cache_stale "$move_source" || return 1
+        fi
         move_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
         [ "$move_size" = "$move_expected_size" ] || return 1
         if [ "$move_kind" = 'file' ]; then
@@ -730,6 +765,9 @@ nonisolated enum SystemCleanupService {
         system_candidate_path "$move_canonical_source" "$move_category" || return 1
 
         move_final_identity=$(/usr/bin/stat -f '%d:%i:%m' "$move_source" 2>/dev/null) || return 1
+        if [ "$move_category" = 'rebuildableGPUCaches' ]; then
+            gpu_cache_stale "$move_source" || return 1
+        fi
         move_final_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
         move_final_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
         [ "$move_final_identity" = "$move_expected_identity" ] || return 1
@@ -839,6 +877,29 @@ nonisolated enum SystemCleanupService {
         done < "$scan_file"
     }
 
+    scan_gpu_directories() {
+        scan_root=/private/var/folders
+        [ -d "$scan_root" ] && [ ! -L "$scan_root" ] || return 0
+        /usr/bin/find "$scan_root" -maxdepth 8 -type d \( -depth 3 ! -name C \) -prune -o -type d \( -name 'com.apple.gpuarchiver' -o -name 'com.apple.metal' -o -name 'com.apple.metalfe' \) -path '*/C/*' -print0 > "$scan_file"
+        scan_result=$?
+        if [ "$scan_result" -ne 0 ]; then
+            printf 'ERROR\trebuildableGPUCaches\n'
+            return 0
+        fi
+        while IFS= read -r -d '' scan_path; do
+            scan_cache_root=$(/usr/bin/dirname "$scan_path") || continue
+            scan_cache_root=$(/usr/bin/dirname "$scan_cache_root") || continue
+            scan_cache_owner=$(/usr/bin/stat -f '%u' "$scan_cache_root" 2>/dev/null) || continue
+            [ "$scan_cache_owner" = "$scan_user_id" ] || continue
+            scan_recent=$(/usr/bin/find "$scan_path" -type f -mtime -1 -print -quit 2>/dev/null) || {
+                printf 'ERROR\trebuildableGPUCaches\n'
+                continue
+            }
+            [ -z "$scan_recent" ] || continue
+            scan_directory rebuildableGPUCaches "$scan_path"
+        done < "$scan_file"
+    }
+
     scan_family systemCaches /Library/Caches
     scan_family crashReports /Library/Logs/DiagnosticReports
     scan_family systemLogs /private/var/log
@@ -848,5 +909,6 @@ nonisolated enum SystemCleanupService {
     scan_family staleWallpaperDownloads /private/var/folders
     scan_directory rebuildableServiceCaches /Library/Caches/com.apple.iconservices.store
     scan_code_signature_directories
+    scan_gpu_directories
     """#
 }
