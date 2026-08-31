@@ -67,6 +67,24 @@ nonisolated enum TimeMachineSnapshotService {
         }.value
     }
 
+    static func localSnapshotCount() async -> Int? {
+        await Task.detached(priority: .utility) {
+            let result = run(
+                timeMachineExecutable,
+                arguments: ["listlocalsnapshotdates", "/"],
+                timeout: 10
+            )
+            guard !result.timedOut, result.status == 0 else { return nil }
+            let pattern = #"^\d{4}-\d{2}-\d{2}-\d{6}$"#
+            return result.output
+                .split(whereSeparator: \.isNewline)
+                .filter { line in
+                    line.range(of: pattern, options: .regularExpression) != nil
+                }
+                .count
+        }.value
+    }
+
     static func previewCleanup(
         items: [TimeMachineIncompleteBackupItem]
     ) async -> TimeMachineBackupCleanupPlan {

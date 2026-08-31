@@ -859,6 +859,7 @@ private struct DiskBrowserView: View {
     @State private var pendingCleanupPlan: CleanupPlan?
     @State private var isCleaning = false
     @State private var cleanupMessage: String?
+    @State private var localSnapshotCount: Int?
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -1009,6 +1010,9 @@ private struct DiskBrowserView: View {
             loadError = result.error
             loadingPath = nil
         }
+        .task {
+            localSnapshotCount = await TimeMachineSnapshotService.localSnapshotCount()
+        }
         .sheet(item: $pendingCleanupPlan) { plan in
             CleanupConfirmationView(
                 plan: plan,
@@ -1049,6 +1053,19 @@ private struct DiskBrowserView: View {
                         .foregroundStyle(MoniPalette.foregroundTertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                }
+                if selectedPath == "/", let localSnapshotCount, localSnapshotCount > 0 {
+                    Text(
+                        MoniLocalization.format(
+                            localSnapshotCount == 1
+                                ? "%@ Time Machine local snapshot · snapshot-only space is not listed"
+                                : "%@ Time Machine local snapshots · snapshot-only space is not listed",
+                            localSnapshotCount.formatted()
+                        )
+                    )
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                    .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
