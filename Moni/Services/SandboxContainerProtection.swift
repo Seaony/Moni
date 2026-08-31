@@ -4,6 +4,11 @@ import Foundation
 nonisolated enum SandboxContainerProtection {
     static func permits(_ identifier: String) -> Bool {
         let normalized = identifier.lowercased()
+        let ownIdentifier = Bundle.main.bundleIdentifier?.lowercased()
+        if let ownIdentifier,
+           (normalized == ownIdentifier || normalized.hasPrefix(ownIdentifier + ".")) {
+            return false
+        }
         guard !normalized.isEmpty,
               !normalized.hasPrefix("com.apple."),
               !criticalFragments.contains(where: normalized.contains),

@@ -10,6 +10,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case identityAndSuggestionCaches
     case calendarCache
     case addressBookPhotoCaches
+    case sandboxedAppCaches
     case utmCaches
     case sharedContainerLogs
     case diaProfileCaches
@@ -43,6 +44,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .identityAndSuggestionCaches: "Identity and suggestion caches"
         case .calendarCache: "Calendar cache"
         case .addressBookPhotoCaches: "Address Book photo caches"
+        case .sandboxedAppCaches: "Sandboxed app caches"
         case .utmCaches: "UTM sandbox caches"
         case .sharedContainerLogs: "Shared container logs"
         case .diaProfileCaches: "Dia profile caches"
@@ -256,6 +258,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: googleUpdaterCaches.items)
         unreadableItemCount += googleUpdaterCaches.unreadableItemCount
 
+        let sandboxedAppCaches = await scanSandboxedAppCaches(processGuard: userCacheProcessGuard)
+        discoveredItems.append(contentsOf: sandboxedAppCaches.items)
+        unreadableItemCount += sandboxedAppCaches.unreadableItemCount
+
         let utmIsSafe = await Task.detached(priority: .utility) {
             utmIsInactive()
         }.value
@@ -466,7 +472,18 @@ nonisolated enum CacheCleanupService {
         let userCacheProcessGuard = items.contains { $0.category == .userCaches }
             ? UserCacheProcessGuard.capture()
             : nil
+        let sandboxProcessGuard = items.contains { $0.category == .sandboxedAppCaches }
+            ? UserCacheProcessGuard.capture()
+            : nil
         for item in items {
+            if item.category == .sandboxedAppCaches {
+                guard sandboxedAppCacheItemIsAllowed(item.path, processGuard: sandboxProcessGuard) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .heliumProfileCaches {
                 guard UserCacheProcessGuard.permits(owner: heliumOwner, using: heliumProcessGuard),
                       heliumProfileCacheItemIsAllowed(item.path) else {
@@ -964,6 +981,99 @@ nonisolated enum CacheCleanupService {
             })
         }
         return (items, unreadableItemCount)
+    }
+
+    private static func scanSandboxedAppCaches(
+        processGuard: UserCacheProcessGuard?
+    ) async -> (items: [CacheCleanupItem], unreadableItemCount: Int) {
+        let rootPath = sandboxContainerRoot()
+        guard isRealDirectory(at: rootPath) else {
+            return ([], FileManager.default.fileExists(atPath: rootPath) ? 1 : 0)
+        }
+
+        let containers: [URL]
+        do {
+            containers = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: rootPath, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for container in containers {
+            guard !Task.isCancelled else { return ([], 0) }
+            let identifier = container.lastPathComponent
+            guard SandboxContainerProtection.permits(identifier),
+                  UserCacheProcessGuard.permits(owner: identifier, using: processGuard),
+                  isRealDirectory(at: container.path) else {
+                continue
+            }
+
+            let cacheRoot = container
+                .appendingPathComponent("Data/Library/Caches", isDirectory: true)
+                .standardizedFileURL.path
+            guard isRealDirectory(at: cacheRoot) else { continue }
+
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: cacheRoot) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                guard sandboxedAppCacheItemIsAllowed(path, processGuard: processGuard) else {
+                    return nil
+                }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .sandboxedAppCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func sandboxedAppCacheItemIsAllowed(
+        _ path: String,
+        processGuard: UserCacheProcessGuard?
+    ) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard isRealFileOrDirectory(at: url.path),
+              !holdsCompiledModelCache(url.path) else {
+            return false
+        }
+
+        let cacheRoot = url.deletingLastPathComponent()
+        let library = cacheRoot.deletingLastPathComponent()
+        let data = library.deletingLastPathComponent()
+        let container = data.deletingLastPathComponent()
+        let identifier = container.lastPathComponent
+        return cacheRoot.lastPathComponent == "Caches"
+            && library.lastPathComponent == "Library"
+            && data.lastPathComponent == "Data"
+            && pathsEqual(container.deletingLastPathComponent().path, sandboxContainerRoot())
+            && isRealDirectory(at: sandboxContainerRoot())
+            && isRealDirectory(at: container.path)
+            && isRealDirectory(at: data.path)
+            && isRealDirectory(at: library.path)
+            && isRealDirectory(at: cacheRoot.path)
+            && SandboxContainerProtection.permits(identifier)
+            && UserCacheProcessGuard.permits(owner: identifier, using: processGuard)
+    }
+
+    private static func sandboxContainerRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Containers", isDirectory: true)
+            .standardizedFileURL.path
     }
 
     private static func scanDiaProfileCaches() async -> (
