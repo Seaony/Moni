@@ -17,6 +17,11 @@ private struct PendingMaintenanceAction: Identifiable {
     var id: UUID { plan.id }
 }
 
+private struct LegacyOverrideReview: Identifiable {
+    let id = UUID()
+    let overrides: [LegacySystemOverride]
+}
+
 struct MaintenanceView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var snapshot = FinderMaintenanceSnapshot(
@@ -41,6 +46,7 @@ struct MaintenanceView: View {
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
+    @State private var legacyOverrideReview: LegacyOverrideReview?
     @State private var resultMessage: String?
 
     var body: some View {
@@ -136,6 +142,20 @@ struct MaintenanceView: View {
                         confirmsDSStorePrevention = true
                     }
 
+                    commandCard(
+                        title: "Legacy Overrides",
+                        description: "Restore macOS defaults for hidden App Nap and disk image verification settings.",
+                        symbol: "slider.horizontal.3",
+                        status: legacyOverrideStatus,
+                        buttonTitle: settingsSnapshot.legacyOverrides.isEmpty ? "No overrides" : "Review Repair",
+                        isAvailable: true,
+                        isActionEnabled: !settingsSnapshot.legacyOverrides.isEmpty
+                    ) {
+                        legacyOverrideReview = LegacyOverrideReview(
+                            overrides: settingsSnapshot.legacyOverrides
+                        )
+                    }
+
                     catalogSummary
                 }
             }
@@ -148,6 +168,16 @@ struct MaintenanceView: View {
                 onConfirm: {
                     pendingAction = nil
                     Task { await execute(pending) }
+                }
+            )
+        }
+        .sheet(item: $legacyOverrideReview) { review in
+            LegacyOverrideConfirmationView(
+                overrides: review.overrides,
+                onCancel: { legacyOverrideReview = nil },
+                onConfirm: {
+                    legacyOverrideReview = nil
+                    Task { await removeLegacyOverrides(review.overrides) }
                 }
             )
         }
@@ -340,7 +370,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "7", MoniPalette.green)
+                catalogMetric("Available now", "8", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -399,6 +429,16 @@ struct MaintenanceView: View {
         return MoniLocalization.format(
             "%@ settings pending",
             settingsSnapshot.dsStoreKeysToEnable.count.formatted()
+        )
+    }
+
+    private var legacyOverrideStatus: String {
+        if settingsSnapshot.legacyOverrides.isEmpty {
+            return MoniLocalization.string("macOS defaults active")
+        }
+        return MoniLocalization.format(
+            "%@ overrides found",
+            settingsSnapshot.legacyOverrides.count.formatted()
         )
     }
 
@@ -510,6 +550,26 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("Finder .DS_Store prevention was already enabled or protected by the whitelist.")
         }
     }
+
+    private func removeLegacyOverrides(_ overrides: [LegacySystemOverride]) async {
+        isRunning = true
+        let result = await MaintenanceSettingsService.removeLegacyOverrides(overrides)
+        settingsSnapshot = await MaintenanceSettingsService.scan()
+        isRunning = false
+        if result.failedCount > 0 {
+            resultMessage = MoniLocalization.format(
+                "%@ legacy overrides could not be removed.",
+                result.failedCount.formatted()
+            )
+        } else if result.changedCount > 0 {
+            resultMessage = MoniLocalization.format(
+                "Removed %@ legacy overrides and restored macOS defaults.",
+                result.changedCount.formatted()
+            )
+        } else {
+            resultMessage = MoniLocalization.string("No active unprotected legacy overrides remained.")
+        }
+    }
 }
 
 private struct MaintenanceConfirmationView: View {
@@ -611,5 +671,56 @@ private struct MaintenanceConfirmationView: View {
         case .sharedFileLists: "No damaged shared file lists were found."
         case .launchAgents: "No LaunchAgents with missing executables were found."
         }
+    }
+}
+
+private struct LegacyOverrideConfirmationView: View {
+    let overrides: [LegacySystemOverride]
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Remove legacy overrides?")
+                    .font(.system(size: 18, weight: .bold))
+                Text("Only the listed preference keys will be deleted. macOS will resume its default behavior.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(overrides) { override in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(MoniLocalization.string(override.titleKey))
+                                .font(.system(size: 12.5, weight: .semibold))
+                            Text(override.key)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(MoniPalette.orange)
+                            Text(override.preferencePath)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MoniPalette.insetSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                }
+            }
+            .frame(maxHeight: 280)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Restore Defaults", role: .destructive, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 580)
     }
 }
