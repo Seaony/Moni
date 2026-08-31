@@ -39,6 +39,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case handoffClipboard
     case cachedDeviceFirmware
     case nodePackageCaches
+    case pythonPackageCaches
 
     var titleKey: String {
         switch self {
@@ -79,6 +80,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .handoffClipboard: "Handoff clipboard cache"
         case .cachedDeviceFirmware: "Cached device firmware"
         case .nodePackageCaches: "Node package caches"
+        case .pythonPackageCaches: "Python package caches"
         }
     }
 }
@@ -373,6 +375,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: nodePackageCaches.items)
         unreadableItemCount += nodePackageCaches.unreadableItemCount
 
+        let pythonPackageCaches = await scanPythonPackageCaches()
+        discoveredItems.append(contentsOf: pythonPackageCaches.items)
+        unreadableItemCount += pythonPackageCaches.unreadableItemCount
+
         let eligiblePaths = await CleanupService.shared.eligiblePaths(discoveredItems.map(\.path))
         let items = discoveredItems
             .filter { eligiblePaths.contains($0.path) }
@@ -520,7 +526,18 @@ nonisolated enum CacheCleanupService {
             : nil
         let nodePackageToolsAreSafe = !items.contains { $0.category == .nodePackageCaches }
             || nodePackageToolsAreInactive()
+        let pythonPackageToolsAreSafe = !items.contains { $0.category == .pythonPackageCaches }
+            || pythonPackageToolsAreInactive()
         for item in items {
+            if item.category == .pythonPackageCaches {
+                guard pythonPackageToolsAreSafe,
+                      pythonPackageCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .nodePackageCaches {
                 guard nodePackageToolsAreSafe,
                       nodePackageCacheItemIsAllowed(item.path) else {
@@ -1033,6 +1050,117 @@ nonisolated enum CacheCleanupService {
             ["-f", "(^|/)(npm|npx|tnpm|yarn|bun|corepack)([[:space:]]|$)"],
             ["-f", "/(npm|npx)-cli\\.js([[:space:]]|$)"]
         ])
+    }
+
+    private static func scanPythonPackageCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard pythonPackageToolsAreInactive(),
+              let root = pythonPackageCacheRoot(),
+              isRealDirectory(at: root) else {
+            return ([], 0)
+        }
+        let children: [URL]
+        do {
+            children = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for child in children {
+            guard !Task.isCancelled else { return ([], 0) }
+            let path = child.standardizedFileURL.path
+            guard pythonPackageCacheItemIsAllowed(path),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .pythonPackageCaches,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func pythonPackageCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard let root = pythonPackageCacheRoot() else { return false }
+        return !url.lastPathComponent.hasPrefix(".")
+            && isRealDirectory(at: root)
+            && isRealFileOrDirectory(at: url.path)
+            && !isSymbolicLink(at: url.path)
+            && pathsEqual(url.deletingLastPathComponent().path, root)
+    }
+
+    private static func pythonPackageCacheRoot() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let cacheRoot = home + "/.cache"
+        let candidates = [
+            ProcessInfo.processInfo.environment["UV_CACHE_DIR"],
+            uvCacheRootFromCommand(),
+            home + "/.cache/uv"
+        ].compactMap { $0 }
+        for candidate in candidates {
+            guard candidate.hasPrefix("/"),
+                  !candidate.contains("\0"),
+                  !candidate.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+                continue
+            }
+            let normalized = URL(fileURLWithPath: candidate).standardizedFileURL.path
+            if pathIsInside(normalized, root: home),
+               !pathsEqual(normalized, home),
+               !pathsEqual(normalized, cacheRoot) {
+                return normalized
+            }
+        }
+        return nil
+    }
+
+    private static func uvCacheRootFromCommand() -> String? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["uv", "cache", "dir"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        process.waitUntilExit()
+        guard process.terminationReason == .exit,
+              process.terminationStatus == 0 else {
+            return nil
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let value = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value, !value.isEmpty, !value.contains("\n"), !value.contains("\r") else {
+            return nil
+        }
+        return value
+    }
+
+    private static func pythonPackageToolsAreInactive() -> Bool {
+        processProbesAreInactive([["-f", "(^|/)uv([[:space:]]|$)"]])
     }
 
     private static func scanVirtualizationTemporaryData() async -> (
