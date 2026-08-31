@@ -38,6 +38,32 @@ nonisolated enum XcodeSimulatorMaintenanceService {
     private static let xcodeSelectExecutable = "/usr/bin/xcode-select"
     private static let commandTimeout: TimeInterval = 120
 
+    static func resolvedDeveloperDirectory() -> String? {
+        resolveDeveloperDirectory()
+    }
+
+    static func simulatorIsInactive(developerDirectory: String) -> Bool {
+        let processNames = ["Xcode", "Simulator", "xcodebuild", "xctest", "XCTRunner", "simctl"]
+        for processName in processNames {
+            guard processIsInactive(arguments: ["-x", processName]) else { return false }
+        }
+        for pattern in ["com.apple.dt.XCTest", "XCTest"] {
+            guard processIsInactive(arguments: ["-f", pattern]) else { return false }
+        }
+        guard let data = commandData(
+            arguments: ["simctl", "list", "devices", "booted", "-j"],
+            developerDirectory: developerDirectory,
+            timeout: 30
+        ), let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let devices = response["devices"] as? [String: Any] else {
+            return false
+        }
+        return devices.values.allSatisfy { value in
+            guard let entries = value as? [[String: Any]] else { return false }
+            return entries.isEmpty
+        }
+    }
+
     static func scan() async -> XcodeSimulatorMaintenanceSnapshot {
         guard let developerDirectory = resolveDeveloperDirectory() else {
             return XcodeSimulatorMaintenanceSnapshot(items: [], state: .unavailable)
@@ -331,6 +357,26 @@ nonisolated enum XcodeSimulatorMaintenanceService {
             let (sum, overflow) = total.addingReportingOverflow(item.sizeBytes)
             return overflow ? UInt64.max : sum
         }
+    }
+
+    private static func processIsInactive(arguments: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+        return process.terminationReason == .exit && process.terminationStatus == 1
     }
 
     private static func isRealDirectory(_ path: String) -> Bool {
