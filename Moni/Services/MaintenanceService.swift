@@ -144,6 +144,11 @@ nonisolated enum MaintenanceService {
             "shippingbox", .storage, policy: .requiresInactiveApplications
         ),
         task(
+            "conda_cache_cleanup", "Conda Cache Cleanup",
+            "Remove Conda index, tarball, and log caches using Conda's own cleanup command.",
+            "shippingbox.and.arrow.backward", .storage
+        ),
+        task(
             "time_machine_snapshots", "Time Machine",
             "Report local snapshots and review incomplete backups for removal with tmutil.",
             "clock.arrow.trianglehead.counterclockwise.rotate.90", .storage

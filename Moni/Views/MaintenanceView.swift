@@ -110,6 +110,11 @@ struct MaintenanceView: View {
         sizeBytes: 0,
         state: .unavailable
     )
+    @State private var condaCacheSnapshot = CondaCacheMaintenanceSnapshot(
+        paths: [],
+        sizeBytes: 0,
+        state: .unavailable
+    )
     @State private var timeMachineSnapshotReport = TimeMachineSnapshotReport(
         state: .unavailable,
         snapshotCount: 0,
@@ -143,6 +148,7 @@ struct MaintenanceView: View {
     @State private var confirmsSpotlightOptimization = false
     @State private var confirmsPeriodicMaintenance = false
     @State private var confirmsTartCachePrune = false
+    @State private var confirmsCondaCacheCleanup = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -298,6 +304,19 @@ struct MaintenanceView: View {
                         isActionEnabled: tartCacheSnapshot.state == .ready
                     ) {
                         confirmsTartCachePrune = true
+                    }
+
+                    commandCard(
+                        title: "Conda Cache Cleanup",
+                        description: "Remove Conda index, tarball, and log caches using Conda's own cleanup command.",
+                        symbol: "shippingbox.and.arrow.backward",
+                        status: condaCacheStatus,
+                        buttonTitle: condaCacheButtonTitle,
+                        isAvailable: condaCacheSnapshot.state == .ready
+                            || condaCacheSnapshot.state == .protected,
+                        isActionEnabled: condaCacheSnapshot.state == .ready
+                    ) {
+                        confirmsCondaCacheCleanup = true
                     }
 
                     commandCard(
@@ -711,6 +730,21 @@ struct MaintenanceView: View {
                 maintenanceBytes(tartCacheSnapshot.sizeBytes)
             ))
         }
+        .confirmationDialog(
+            "Clean Conda caches?",
+            isPresented: $confirmsCondaCacheCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Clean Conda Caches", role: .destructive) {
+                Task { await cleanCondaCaches() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MoniLocalization.format(
+                "Conda will remove index caches, downloaded package tarballs, and log files. Environments and installed packages are retained. Known package caches currently use %@.",
+                maintenanceBytes(condaCacheSnapshot.sizeBytes)
+            ))
+        }
     }
 
     private var header: some View {
@@ -871,7 +905,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "21", MoniPalette.green)
+                catalogMetric("Available now", "22", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1223,6 +1257,29 @@ struct MaintenanceView: View {
         }
     }
 
+    private var condaCacheStatus: String {
+        switch condaCacheSnapshot.state {
+        case .ready:
+            condaCacheSnapshot.sizeBytes == 0
+                ? MoniLocalization.string("Ready")
+                : MoniLocalization.format("%@ in known caches", maintenanceBytes(condaCacheSnapshot.sizeBytes))
+        case .protected:
+            MoniLocalization.string("Protected by whitelist")
+        case .unavailable:
+            MoniLocalization.string("Conda command unavailable")
+        case .failed:
+            MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var condaCacheButtonTitle: String {
+        switch condaCacheSnapshot.state {
+        case .ready: MoniLocalization.string("Review Cleanup")
+        case .protected: MoniLocalization.string("Protected")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
     private var timeMachineSnapshotStatus: String {
         switch timeMachineSnapshotReport.state {
         case .ready:
@@ -1468,12 +1525,13 @@ struct MaintenanceView: View {
         async let spotlightOptimizationResult = AdministratorMaintenanceService.scanSpotlightOptimization()
         async let periodicMaintenanceResult = AdministratorMaintenanceService.scanPeriodicMaintenance()
         async let tartCacheResult = TartCacheMaintenanceService.scan()
+        async let condaCacheResult = CondaCacheMaintenanceService.scan()
         async let timeMachineSnapshotResult = TimeMachineSnapshotService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, timeMachineSnapshots) = await (
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, timeMachineSnapshots) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
-            spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult,
+            spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult, condaCacheResult,
             timeMachineSnapshotResult
         )
         guard !Task.isCancelled else { return }
@@ -1494,6 +1552,7 @@ struct MaintenanceView: View {
         spotlightOptimizationState = spotlightOptimization
         periodicMaintenanceSnapshot = periodicMaintenance
         tartCacheSnapshot = tartCache
+        condaCacheSnapshot = condaCache
         timeMachineSnapshotReport = timeMachineSnapshots
         isScanning = false
     }
@@ -1887,6 +1946,27 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("Tart cache pruning is unavailable because the Tart command could not be found.")
         case .failed:
             resultMessage = MoniLocalization.string("Tart cache pruning did not complete successfully.")
+        }
+    }
+
+    private func cleanCondaCaches() async {
+        isRunning = true
+        let outcome = await CondaCacheMaintenanceService.clean()
+        condaCacheSnapshot = await CondaCacheMaintenanceService.scan()
+        isRunning = false
+
+        switch outcome {
+        case let .cleaned(reclaimedBytes):
+            resultMessage = MoniLocalization.format(
+                "Conda cache cleanup completed and reclaimed %@ from known package caches.",
+                maintenanceBytes(reclaimedBytes)
+            )
+        case .protected:
+            resultMessage = MoniLocalization.string("Conda cache cleanup was skipped because a package cache is protected by the whitelist.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Conda cache cleanup is unavailable because the Conda command could not be found.")
+        case .failed:
+            resultMessage = MoniLocalization.string("Conda cache cleanup did not complete successfully.")
         }
     }
 }
