@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum MaintenanceCategory: String, CaseIterable, Sendable {
@@ -289,6 +290,22 @@ nonisolated enum MaintenanceService {
         )
     }
 
+    static func unloadUserLaunchAgents(_ candidates: [CleanupCandidate]) async {
+        await Task.detached(priority: .utility) {
+            let root = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+                .standardizedFileURL.path + "/"
+            for candidate in candidates {
+                let url = URL(fileURLWithPath: candidate.path).standardizedFileURL
+                guard url.path.hasPrefix(root),
+                      url.deletingLastPathComponent().path + "/" == root,
+                      url.pathExtension.lowercased() == "plist",
+                      matchesIdentity(candidate) else { continue }
+                _ = run("/bin/launchctl", arguments: ["unload", candidate.path])
+            }
+        }.value
+    }
+
     private static func task(
         _ id: String,
         _ titleKey: String,
@@ -498,5 +515,13 @@ nonisolated enum MaintenanceService {
         let components = executablePath.split(separator: "/", omittingEmptySubsequences: true)
         guard components.count >= 2 else { return false }
         return FileManager.default.fileExists(atPath: "/Volumes/" + components[1])
+    }
+
+    private static func matchesIdentity(_ candidate: CleanupCandidate) -> Bool {
+        var value = stat()
+        let result = candidate.path.withCString { lstat($0, &value) }
+        return result == 0
+            && UInt64(value.st_dev) == candidate.device
+            && UInt64(value.st_ino) == candidate.inode
     }
 }
