@@ -14,6 +14,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case sharedContainerLogs
     case diaProfileCaches
     case chromeProfileCaches
+    case firefoxProfileCaches
     case googleUpdaterCaches
     case virtualizationTemporaryData
     case savedApplicationState
@@ -37,6 +38,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .sharedContainerLogs: "Shared container logs"
         case .diaProfileCaches: "Dia profile caches"
         case .chromeProfileCaches: "Chrome profile caches"
+        case .firefoxProfileCaches: "Firefox profile caches"
         case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
@@ -124,7 +126,8 @@ nonisolated enum CacheCleanupService {
         discoveredItems.removeAll {
             $0.category == .userCaches
                 && (pathsEqual($0.path, diaGeneralCacheRoot())
-                    || pathsEqual($0.path, googleGeneralCacheRoot()))
+                    || pathsEqual($0.path, googleGeneralCacheRoot())
+                    || pathsEqual($0.path, firefoxGeneralCacheRoot()))
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -143,6 +146,15 @@ nonisolated enum CacheCleanupService {
             let chromeProfileCaches = await scanChromeProfileCaches()
             discoveredItems.append(contentsOf: chromeProfileCaches.items)
             unreadableItemCount += chromeProfileCaches.unreadableItemCount
+        }
+
+        let firefoxIsSafe = await Task.detached(priority: .utility) {
+            firefoxIsInactive()
+        }.value
+        if firefoxIsSafe {
+            let firefoxProfileCaches = await scanFirefoxProfileCaches()
+            discoveredItems.append(contentsOf: firefoxProfileCaches.items)
+            unreadableItemCount += firefoxProfileCaches.unreadableItemCount
         }
 
         let googleUpdaterCaches = await scanGoogleUpdaterCaches()
@@ -343,12 +355,23 @@ nonisolated enum CacheCleanupService {
         let diaIsSafe = !requiresDiaProbe || diaIsInactive()
         let requiresChromeProbe = items.contains { $0.category == .chromeProfileCaches }
         let chromeIsSafe = !requiresChromeProbe || chromeIsInactive()
+        let requiresFirefoxProbe = items.contains { $0.category == .firefoxProfileCaches }
+        let firefoxIsSafe = !requiresFirefoxProbe || firefoxIsInactive()
         let userCacheProcessGuard = items.contains { $0.category == .userCaches }
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
             if item.category == .googleUpdaterCaches {
                 guard googleUpdaterCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .firefoxProfileCaches {
+                guard firefoxIsSafe,
+                      firefoxProfileCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -860,6 +883,12 @@ nonisolated enum CacheCleanupService {
             .standardizedFileURL.path
     }
 
+    private static func firefoxGeneralCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/Firefox", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
     private static func diaIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Dia"]])
     }
@@ -889,6 +918,35 @@ nonisolated enum CacheCleanupService {
                 return CacheCleanupItem(
                     path: path,
                     category: .chromeProfileCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func scanFirefoxProfileCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in firefoxProfileCacheRoots() where isRealDirectory(at: root) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: root) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                guard firefoxProfileCacheItemIsAllowed(path) else { return nil }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .firefoxProfileCaches,
                     sizeBytes: size
                 )
             })
@@ -1028,12 +1086,37 @@ nonisolated enum CacheCleanupService {
         return roots.filter { seen.insert($0).inserted }
     }
 
+    private static func firefoxProfileCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              !holdsCompiledModelCache(url.path) else {
+            return false
+        }
+        return firefoxProfileCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func firefoxProfileCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let profiles = home + "/Library/Application Support/Firefox/Profiles"
+        return [firefoxGeneralCacheRoot()] + childDirectories(at: profiles).map { profile in
+            profile + "/cache2"
+        }
+    }
+
     private static func chromeIsInactive() -> Bool {
         processProbesAreInactive([
             ["-x", "Google Chrome"],
             ["-x", "Google Chrome Helper"],
             ["-f", "/Google Chrome.app/"]
         ])
+    }
+
+    private static func firefoxIsInactive() -> Bool {
+        processProbesAreInactive([["-x", "Firefox"]])
     }
 
     private static func processProbesAreInactive(_ probes: [[String]]) -> Bool {
