@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 
 nonisolated enum InstallerSource: String, CaseIterable, Sendable {
+    case applications
     case downloads
     case desktop
     case documents
@@ -15,6 +16,7 @@ nonisolated enum InstallerSource: String, CaseIterable, Sendable {
 
     var titleKey: String {
         switch self {
+        case .applications: "Applications"
         case .downloads: "Downloads"
         case .desktop: "Desktop"
         case .documents: "Documents"
@@ -30,6 +32,7 @@ nonisolated enum InstallerSource: String, CaseIterable, Sendable {
 }
 
 nonisolated enum InstallerKind: String, Sendable {
+    case macOSApplication = "APP"
     case diskImage = "DMG"
     case package = "PKG"
     case metapackage = "MPKG"
@@ -45,6 +48,8 @@ nonisolated struct InstallerCleanupItem: Identifiable, Sendable {
     let kind: InstallerKind
     let sizeBytes: UInt64
     let modifiedDate: Date
+    let filesystemDeviceID: UInt64?
+    let filesystemFileID: UInt64?
 
     var id: String { path }
 }
@@ -74,6 +79,8 @@ nonisolated enum InstallerCleanupService {
 
     private static let maximumScanDepth = 2
     private static let maximumZipEntries = 50
+    private static let macOSInstallerMinimumAge: TimeInterval = 14 * 24 * 60 * 60
+    private static let macOSInstallerSizeTimeout: TimeInterval = 30
 
     static func scan() async -> InstallerCleanupSnapshot {
         let rawResult = await Task.detached(priority: .utility) {
@@ -120,6 +127,22 @@ nonisolated enum InstallerCleanupService {
         var rejectedItems: [CleanupRejectedItem] = []
         for item in items {
             let url = URL(fileURLWithPath: item.path)
+            if item.kind == .macOSApplication {
+                guard let deviceID = item.filesystemDeviceID,
+                      let fileID = item.filesystemFileID,
+                      macOSInstallerIsEligible(
+                          at: url,
+                          expectedDeviceID: deviceID,
+                          expectedFileID: fileID,
+                          expectedModifiedDate: item.modifiedDate,
+                          referenceDate: Date()
+                      ) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                allowedPaths.insert(item.path)
+                continue
+            }
             guard let metadata = fileMetadata(at: url),
                   metadata.isRegularFile,
                   !metadata.isSymbolicLink,
@@ -211,9 +234,17 @@ nonisolated enum InstallerCleanupService {
                     source: root.source,
                     kind: kind,
                     sizeBytes: metadata.sizeBytes,
-                    modifiedDate: metadata.modifiedDate
+                    modifiedDate: metadata.modifiedDate,
+                    filesystemDeviceID: nil,
+                    filesystemFileID: nil
                 )
             }
+        }
+
+        let macOSInstallers = scanMacOSInstallers(referenceDate: Date())
+        unreadableItemCount += macOSInstallers.unreadableItemCount
+        for item in macOSInstallers.items {
+            itemsByPath[item.path] = item
         }
 
         let items = itemsByPath.values.sorted {
@@ -226,6 +257,241 @@ nonisolated enum InstallerCleanupService {
             return $0.path.localizedStandardCompare($1.path) == .orderedAscending
         }
         return ScanResult(items: items, unreadableItemCount: unreadableItemCount)
+    }
+
+    private static func scanMacOSInstallers(referenceDate: Date) -> ScanResult {
+        guard softwareUpdateQueueIsExplicitlyEmpty() else {
+            return ScanResult(items: [], unreadableItemCount: 0)
+        }
+        let applications = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        let urls: [URL]
+        do {
+            urls = try FileManager.default.contentsOfDirectory(
+                at: applications,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return ScanResult(items: [], unreadableItemCount: 1)
+        }
+
+        var items: [InstallerCleanupItem] = []
+        var unreadableItemCount = 0
+        for url in urls where url.lastPathComponent.hasPrefix("Install macOS ") {
+            guard !Task.isCancelled else { return ScanResult(items: [], unreadableItemCount: 0) }
+            guard let identity = directoryIdentity(at: url) else {
+                continue
+            }
+            guard macOSInstallerIsEligible(
+                at: url,
+                expectedDeviceID: identity.deviceID,
+                expectedFileID: identity.fileID,
+                expectedModifiedDate: identity.modifiedDate,
+                referenceDate: referenceDate
+            ) else {
+                continue
+            }
+            guard let size = directoryAllocatedSize(at: url, timeout: macOSInstallerSizeTimeout) else {
+                unreadableItemCount += 1
+                continue
+            }
+            guard macOSInstallerIsEligible(
+                at: url,
+                expectedDeviceID: identity.deviceID,
+                expectedFileID: identity.fileID,
+                expectedModifiedDate: identity.modifiedDate,
+                referenceDate: referenceDate
+            ) else {
+                continue
+            }
+            items.append(InstallerCleanupItem(
+                path: url.standardizedFileURL.path,
+                name: url.lastPathComponent,
+                source: .applications,
+                kind: .macOSApplication,
+                sizeBytes: size,
+                modifiedDate: identity.modifiedDate,
+                filesystemDeviceID: identity.deviceID,
+                filesystemFileID: identity.fileID
+            ))
+        }
+        return ScanResult(items: items, unreadableItemCount: unreadableItemCount)
+    }
+
+    private static func macOSInstallerIsEligible(
+        at url: URL,
+        expectedDeviceID: UInt64,
+        expectedFileID: UInt64,
+        expectedModifiedDate: Date,
+        referenceDate: Date
+    ) -> Bool {
+        let standardized = url.standardizedFileURL
+        guard standardized.pathExtension.caseInsensitiveCompare("app") == .orderedSame,
+              standardized.lastPathComponent.hasPrefix("Install macOS "),
+              pathsEqual(standardized.deletingLastPathComponent().path, "/Applications"),
+              let identity = directoryIdentity(at: standardized),
+              identity.deviceID == expectedDeviceID,
+              identity.fileID == expectedFileID,
+              identity.modifiedDate == expectedModifiedDate,
+              referenceDate.timeIntervalSince(identity.modifiedDate) >= macOSInstallerMinimumAge,
+              softwareUpdateQueueIsExplicitlyEmpty(),
+              macOSInstallerProcessIsInactive(standardized.path),
+              let installerMajorVersion = macOSInstallerMajorVersion(at: standardized),
+              installerMajorVersion != ProcessInfo.processInfo.operatingSystemVersion.majorVersion else {
+            return false
+        }
+        return true
+    }
+
+    private static func softwareUpdateQueueIsExplicitlyEmpty() -> Bool {
+        let path = "/Library/Preferences/com.apple.SoftwareUpdate.plist"
+        let executable = "/usr/bin/plutil"
+        guard FileManager.default.fileExists(atPath: path),
+              FileManager.default.isExecutableFile(atPath: executable) else {
+            return false
+        }
+        let result = run(
+            executable,
+            arguments: ["-extract", "RecommendedUpdates", "json", "-o", "-", path],
+            timeout: 5
+        )
+        return result.status == 0
+            && !result.timedOut
+            && result.output.filter { !$0.isWhitespace } == "[]"
+    }
+
+    private static func macOSInstallerMajorVersion(at url: URL) -> Int? {
+        let plist = url.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: plist, options: .mappedIfSafe),
+              let values = try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+              ) as? [String: Any] else {
+            return nil
+        }
+        let rawVersion: String?
+        if let value = values["DTPlatformVersion"] as? String {
+            rawVersion = value
+        } else if let value = values["DTPlatformVersion"] as? NSNumber {
+            rawVersion = value.stringValue
+        } else {
+            rawVersion = nil
+        }
+        return rawVersion.flatMap { Int($0.split(separator: ".").first ?? "") }
+    }
+
+    private static func macOSInstallerProcessIsInactive(_ path: String) -> Bool {
+        let result = run("/usr/bin/pgrep", arguments: ["-f", path], timeout: 5)
+        return !result.timedOut && result.status == 1
+    }
+
+    private static func directoryAllocatedSize(at root: URL, timeout: TimeInterval) -> UInt64? {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        guard let rootMetadata = allocatedMetadata(at: root) else { return nil }
+        var total = rootMetadata.allocatedBytes
+        var encounteredError = false
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [],
+            errorHandler: { _, _ in
+                encounteredError = true
+                return false
+            }
+        ) else {
+            return nil
+        }
+        while let url = enumerator.nextObject() as? URL {
+            guard !Task.isCancelled,
+                  ProcessInfo.processInfo.systemUptime < deadline,
+                  let metadata = allocatedMetadata(at: url) else {
+                return nil
+            }
+            if metadata.isSymbolicLink {
+                enumerator.skipDescendants()
+                continue
+            }
+            let (sum, overflow) = total.addingReportingOverflow(metadata.allocatedBytes)
+            guard !overflow else { return nil }
+            total = sum
+        }
+        return encounteredError ? nil : total
+    }
+
+    private static func directoryIdentity(at url: URL) -> (
+        deviceID: UInt64,
+        fileID: UInt64,
+        modifiedDate: Date
+    )? {
+        var value = stat()
+        let result = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return lstat(path, &value)
+        }
+        guard result == 0, value.st_mode & S_IFMT == S_IFDIR else { return nil }
+        return (
+            UInt64(value.st_dev),
+            UInt64(value.st_ino),
+            Date(timeIntervalSince1970: TimeInterval(value.st_mtimespec.tv_sec))
+        )
+    }
+
+    private static func allocatedMetadata(at url: URL) -> (
+        allocatedBytes: UInt64,
+        isSymbolicLink: Bool
+    )? {
+        var value = stat()
+        let result = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return lstat(path, &value)
+        }
+        guard result == 0 else { return nil }
+        let kind = value.st_mode & S_IFMT
+        return (
+            value.st_blocks > 0 ? UInt64(value.st_blocks) * 512 : 0,
+            kind == S_IFLNK
+        )
+    }
+
+    private static func run(
+        _ executable: String,
+        arguments: [String],
+        timeout: TimeInterval
+    ) -> (status: Int32, output: String, timedOut: Bool) {
+        guard FileManager.default.isExecutableFile(atPath: executable) else {
+            return (-1, "", false)
+        }
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = pipe
+        var environment = ProcessInfo.processInfo.environment
+        environment["LC_ALL"] = "C"
+        process.environment = environment
+        do {
+            try process.run()
+        } catch {
+            return (-1, "", false)
+        }
+        let timeoutWork = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        timeoutWork.cancel()
+        return (
+            process.terminationStatus,
+            String(decoding: data, as: UTF8.self),
+            process.terminationReason == .uncaughtSignal && process.terminationStatus == SIGTERM
+        )
+    }
+
+    private static func pathsEqual(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.compare(rhs, options: [.caseInsensitive, .literal]) == .orderedSame
     }
 
     private static func installerKind(for url: URL) -> InstallerKind? {

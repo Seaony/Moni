@@ -27,7 +27,7 @@ struct InstallerCleanerView: View {
                 ContentUnavailableView(
                     "No installer files",
                     systemImage: "shippingbox",
-                    description: Text("No disk images, packages, signed archives, or installer ZIP files were found.")
+                    description: Text("No old macOS installers, disk images, packages, signed archives, or installer ZIP files were found.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
