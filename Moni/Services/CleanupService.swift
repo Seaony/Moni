@@ -352,6 +352,18 @@ actor CleanupService {
         })
     }
 
+    func recordRunResult(_ result: CleanupRunResult, scope: CleanupScope) {
+        appendHistory(
+            result.trashedPaths.map {
+                historyRecord(scope: scope, action: .trashed, path: $0, detail: nil)
+            } + result.rejectedItems.map {
+                historyRecord(scope: scope, action: .skipped, path: $0.path, detail: $0.reason.rawValue)
+            } + result.failedPaths.map {
+                historyRecord(scope: scope, action: .failed, path: $0, detail: nil)
+            }
+        )
+    }
+
     func eligiblePaths(
         _ paths: [String],
         whitelist: [String] = CleanupPreferences.whitelist()

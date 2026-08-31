@@ -81,6 +81,7 @@ nonisolated enum InstallerCleanupService {
     private static let maximumZipEntries = 50
     private static let macOSInstallerMinimumAge: TimeInterval = 14 * 24 * 60 * 60
     private static let macOSInstallerSizeTimeout: TimeInterval = 30
+    private static let cleanupPlanLifetime: TimeInterval = 5 * 60
 
     static func scan() async -> InstallerCleanupSnapshot {
         let rawResult = await Task.detached(priority: .utility) {
@@ -109,14 +110,42 @@ nonisolated enum InstallerCleanupService {
             revalidate(plan.items)
         }.value
         await CleanupService.shared.recordRejectedItems(validation.rejectedItems, scope: .installers)
-        let finalPlan = CleanupPlan(
+        let macOSInstallerPaths = Set(plan.items.compactMap { item in
+            item.kind == .macOSApplication ? item.path : nil
+        })
+        let standardPlan = CleanupPlan(
             id: plan.cleanupPlan.id,
             createdAt: plan.cleanupPlan.createdAt,
             scope: plan.cleanupPlan.scope,
-            candidates: plan.cleanupPlan.candidates.filter { validation.allowedPaths.contains($0.path) },
+            candidates: plan.cleanupPlan.candidates.filter {
+                validation.allowedPaths.contains($0.path) && !macOSInstallerPaths.contains($0.path)
+            },
             rejectedItems: plan.cleanupPlan.rejectedItems + validation.rejectedItems
         )
-        return await CleanupService.shared.execute(finalPlan)
+        let standardResult = await CleanupService.shared.execute(standardPlan)
+
+        let macOSInstallerCandidates = plan.cleanupPlan.candidates.filter {
+            validation.allowedPaths.contains($0.path) && macOSInstallerPaths.contains($0.path)
+        }
+        let macOSInstallerItems = Dictionary(
+            uniqueKeysWithValues: plan.items
+                .filter { $0.kind == .macOSApplication }
+                .map { ($0.path, $0) }
+        )
+        let macOSInstallerResult = await Task.detached(priority: .userInitiated) {
+            executeMacOSInstallerCleanup(
+                candidates: macOSInstallerCandidates,
+                itemsByPath: macOSInstallerItems,
+                planCreatedAt: plan.cleanupPlan.createdAt
+            )
+        }.value
+        await CleanupService.shared.recordRunResult(macOSInstallerResult, scope: .installers)
+
+        return CleanupRunResult(
+            trashedPaths: standardResult.trashedPaths + macOSInstallerResult.trashedPaths,
+            rejectedItems: standardResult.rejectedItems + macOSInstallerResult.rejectedItems,
+            failedPaths: standardResult.failedPaths + macOSInstallerResult.failedPaths
+        )
     }
 
     private static func revalidate(_ items: [InstallerCleanupItem]) -> (
@@ -155,6 +184,193 @@ nonisolated enum InstallerCleanupService {
         }
         return (allowedPaths, rejectedItems)
     }
+
+    private static func executeMacOSInstallerCleanup(
+        candidates: [CleanupCandidate],
+        itemsByPath: [String: InstallerCleanupItem],
+        planCreatedAt: Date
+    ) -> CleanupRunResult {
+        guard Date().timeIntervalSince(planCreatedAt) <= cleanupPlanLifetime else {
+            return CleanupRunResult(
+                trashedPaths: [],
+                rejectedItems: candidates.map {
+                    CleanupRejectedItem(path: $0.path, reason: .expired)
+                },
+                failedPaths: []
+            )
+        }
+
+        var trashedPaths: [String] = []
+        var rejectedItems: [CleanupRejectedItem] = []
+        var failedPaths: [String] = []
+        for candidate in candidates {
+            guard !Task.isCancelled else { break }
+            guard let item = itemsByPath[candidate.path],
+                  let deviceID = item.filesystemDeviceID,
+                  let fileID = item.filesystemFileID,
+                  candidate.device == deviceID,
+                  candidate.inode == fileID,
+                  macOSInstallerIsEligible(
+                      at: URL(fileURLWithPath: candidate.path),
+                      expectedDeviceID: deviceID,
+                      expectedFileID: fileID,
+                      expectedModifiedDate: item.modifiedDate,
+                      referenceDate: Date()
+                  ) else {
+                rejectedItems.append(CleanupRejectedItem(path: candidate.path, reason: .changed))
+                continue
+            }
+
+            do {
+                try FileManager.default.trashItem(
+                    at: URL(fileURLWithPath: candidate.path),
+                    resultingItemURL: nil
+                )
+                trashedPaths.append(candidate.path)
+                continue
+            } catch {
+                guard let trash = userTrashIdentity(),
+                      trash.deviceID == candidate.device,
+                      let destination = uniqueTrashDestination(
+                          for: URL(fileURLWithPath: candidate.path).lastPathComponent,
+                          in: trash.path
+                      ),
+                      privilegedTrashMacOSInstaller(
+                          candidate,
+                          item: item,
+                          trash: trash,
+                          destination: destination
+                      ) else {
+                    failedPaths.append(candidate.path)
+                    continue
+                }
+                trashedPaths.append(candidate.path)
+            }
+        }
+        return CleanupRunResult(
+            trashedPaths: trashedPaths,
+            rejectedItems: rejectedItems,
+            failedPaths: failedPaths
+        )
+    }
+
+    private static func userTrashIdentity() -> (
+        path: String,
+        deviceID: UInt64,
+        fileID: UInt64
+    )? {
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash", isDirectory: true)
+            .standardizedFileURL.path
+        if !pathExists(at: path) {
+            do {
+                try FileManager.default.createDirectory(
+                    atPath: path,
+                    withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: 0o700]
+                )
+            } catch {
+                return nil
+            }
+        }
+        var value = stat()
+        guard path.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFDIR,
+              value.st_uid == getuid() else {
+            return nil
+        }
+        return (path, UInt64(value.st_dev), UInt64(value.st_ino))
+    }
+
+    private static func uniqueTrashDestination(for name: String, in trashPath: String) -> String? {
+        guard !name.isEmpty, !name.contains("/") else { return nil }
+        let original = URL(fileURLWithPath: trashPath, isDirectory: true)
+            .appendingPathComponent(name)
+            .path
+        if !pathExists(at: original) { return original }
+
+        let url = URL(fileURLWithPath: name)
+        let extensionName = url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent
+        let suffix = UUID().uuidString
+        let uniqueName = extensionName.isEmpty
+            ? "\(stem) \(suffix)"
+            : "\(stem) \(suffix).\(extensionName)"
+        let destination = URL(fileURLWithPath: trashPath, isDirectory: true)
+            .appendingPathComponent(uniqueName)
+            .path
+        return pathExists(at: destination) ? nil : destination
+    }
+
+    private static func pathExists(at path: String) -> Bool {
+        var value = stat()
+        return path.withCString { lstat($0, &value) } == 0
+    }
+
+    private static func privilegedTrashMacOSInstaller(
+        _ candidate: CleanupCandidate,
+        item: InstallerCleanupItem,
+        trash: (path: String, deviceID: UInt64, fileID: UInt64),
+        destination: String
+    ) -> Bool {
+        guard let deviceID = item.filesystemDeviceID,
+              let fileID = item.filesystemFileID,
+              deviceID == candidate.device,
+              fileID == candidate.inode else {
+            return false
+        }
+        let expectedIdentity = "\(deviceID):\(fileID):\(Int64(item.modifiedDate.timeIntervalSince1970))"
+        let expectedTrashIdentity = "\(trash.deviceID):\(trash.fileID)"
+        let currentMajor = String(ProcessInfo.processInfo.operatingSystemVersion.majorVersion)
+        let result = run(
+            "/usr/bin/osascript",
+            arguments: [
+                "-e", privilegedTrashScript,
+                candidate.path, destination, trash.path,
+                expectedIdentity, expectedTrashIdentity, currentMajor
+            ],
+            timeout: 300
+        )
+        return !result.timedOut
+            && result.status == 0
+            && !pathExists(at: candidate.path)
+            && pathExists(at: destination)
+    }
+
+    private static let privilegedTrashScript = #"""
+    on run argv
+        set sourcePath to item 1 of argv
+        set destinationPath to item 2 of argv
+        set trashPath to item 3 of argv
+        set expectedIdentity to item 4 of argv
+        set expectedTrashIdentity to item 5 of argv
+        set currentMajor to item 6 of argv
+        set commandText to "source_path=" & quoted form of sourcePath & "; "
+        set commandText to commandText & "destination_path=" & quoted form of destinationPath & "; "
+        set commandText to commandText & "trash_path=" & quoted form of trashPath & "; "
+        set commandText to commandText & "expected_identity=" & quoted form of expectedIdentity & "; "
+        set commandText to commandText & "expected_trash_identity=" & quoted form of expectedTrashIdentity & "; "
+        set commandText to commandText & "current_major=" & quoted form of currentMajor & "; "
+        set commandText to commandText & "current_identity=$(/usr/bin/stat -f '%d:%i:%m' \"$source_path\") || exit 20; "
+        set commandText to commandText & "[ \"$current_identity\" = \"$expected_identity\" ] || exit 21; "
+        set commandText to commandText & "[ -d \"$source_path\" ] && [ ! -L \"$source_path\" ] || exit 22; "
+        set commandText to commandText & "trash_identity=$(/usr/bin/stat -f '%d:%i' \"$trash_path\") || exit 23; "
+        set commandText to commandText & "[ \"$trash_identity\" = \"$expected_trash_identity\" ] || exit 24; "
+        set commandText to commandText & "[ -d \"$trash_path\" ] && [ ! -L \"$trash_path\" ] || exit 25; "
+        set commandText to commandText & "[ ! -e \"$destination_path\" ] && [ ! -L \"$destination_path\" ] || exit 26; "
+        set commandText to commandText & "recommended=$(/usr/bin/plutil -extract RecommendedUpdates json -o - /Library/Preferences/com.apple.SoftwareUpdate.plist 2>/dev/null) || exit 27; "
+        set commandText to commandText & "recommended=$(printf '%s' \"$recommended\" | /usr/bin/tr -d '[:space:]'); [ \"$recommended\" = '[]' ] || exit 28; "
+        set commandText to commandText & "/usr/bin/pgrep -f \"$source_path\" >/dev/null 2>&1; process_status=$?; [ \"$process_status\" -eq 1 ] || exit 29; "
+        set commandText to commandText & "installer_version=$(/usr/libexec/PlistBuddy -c 'Print :DTPlatformVersion' \"$source_path/Contents/Info.plist\" 2>/dev/null) || exit 30; "
+        set commandText to commandText & "installer_major=${installer_version%%.*}; [ -n \"$installer_major\" ] && [ \"$installer_major\" != \"$current_major\" ] || exit 31; "
+        set commandText to commandText & "mtime=${current_identity##*:}; now=$(/bin/date +%s) || exit 32; [ \"$now\" -ge \"$mtime\" ] && [ $((now - mtime)) -ge 1209600 ] || exit 33; "
+        set commandText to commandText & "final_identity=$(/usr/bin/stat -f '%d:%i:%m' \"$source_path\") || exit 34; [ \"$final_identity\" = \"$expected_identity\" ] || exit 35; "
+        set commandText to commandText & "recommended=$(/usr/bin/plutil -extract RecommendedUpdates json -o - /Library/Preferences/com.apple.SoftwareUpdate.plist 2>/dev/null) || exit 36; recommended=$(printf '%s' \"$recommended\" | /usr/bin/tr -d '[:space:]'); [ \"$recommended\" = '[]' ] || exit 37; "
+        set commandText to commandText & "/usr/bin/pgrep -f \"$source_path\" >/dev/null 2>&1; process_status=$?; [ \"$process_status\" -eq 1 ] || exit 38; "
+        set commandText to commandText & "/bin/mv \"$source_path\" \"$destination_path\""
+        do shell script commandText with administrator privileges
+    end run
+    """#
 
     private static func scanSynchronously() -> ScanResult {
         let fileManager = FileManager.default
