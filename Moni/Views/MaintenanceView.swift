@@ -43,9 +43,15 @@ struct MaintenanceView: View {
         legacyOverrides: [],
         launchServicesAvailable: false
     )
+    @State private var quarantineSnapshot = QuarantineMaintenanceSnapshot(
+        databasePath: "",
+        entryCount: 0,
+        state: .unavailable
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
+    @State private var confirmsQuarantineCleanup = false
     @State private var legacyOverrideReview: LegacyOverrideReview?
     @State private var resultMessage: String?
 
@@ -156,6 +162,18 @@ struct MaintenanceView: View {
                         )
                     }
 
+                    commandCard(
+                        title: "Quarantine Database Cleanup",
+                        description: "Clear Gatekeeper download history without changing file quarantine flags.",
+                        symbol: "lock.doc",
+                        status: quarantineStatus,
+                        buttonTitle: quarantineSnapshot.entryCount > 0 ? "Review Cleanup" : "No history",
+                        isAvailable: quarantineSnapshot.state == .ready,
+                        isActionEnabled: quarantineSnapshot.entryCount > 0
+                    ) {
+                        confirmsQuarantineCleanup = true
+                    }
+
                     catalogSummary
                 }
             }
@@ -209,6 +227,22 @@ struct MaintenanceView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Finder will stop creating .DS_Store metadata files on network shares and removable USB volumes. Local folders are unchanged.")
+        }
+        .confirmationDialog(
+            "Clear Gatekeeper download history?",
+            isPresented: $confirmsQuarantineCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Clear History", role: .destructive) {
+                Task { await clearQuarantineHistory() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MoniLocalization.format(
+                "%@ download records will be deleted from %@. Existing file quarantine flags are unchanged.",
+                quarantineSnapshot.entryCount.formatted(),
+                quarantineSnapshot.databasePath
+            ))
         }
     }
 
@@ -370,7 +404,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "8", MoniPalette.green)
+                catalogMetric("Available now", "9", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -442,14 +476,30 @@ struct MaintenanceView: View {
         )
     }
 
+    private var quarantineStatus: String {
+        switch quarantineSnapshot.state {
+        case .ready:
+            quarantineSnapshot.entryCount == 0
+                ? MoniLocalization.string("History is empty")
+                : MoniLocalization.format("%@ records found", quarantineSnapshot.entryCount.formatted())
+        case .unavailable:
+            MoniLocalization.string("Unavailable")
+        case .protected:
+            MoniLocalization.string("Protected by whitelist")
+        case .failed:
+            MoniLocalization.string("Inspection failed")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
         async let preferenceResult = MaintenanceService.scanBrokenPreferences()
         async let repairResult = MaintenanceService.scanFileRepairs()
         async let settingsResult = MaintenanceSettingsService.scan()
-        let (finder, preferences, repairs, settings) = await (
-            finderResult, preferenceResult, repairResult, settingsResult
+        async let quarantineResult = MaintenanceDiagnosticsService.scanQuarantineHistory()
+        let (finder, preferences, repairs, settings, quarantine) = await (
+            finderResult, preferenceResult, repairResult, settingsResult, quarantineResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -457,6 +507,7 @@ struct MaintenanceView: View {
         preferenceUnreadableItemCount = preferences.unreadableItemCount
         fileRepairSnapshot = repairs
         settingsSnapshot = settings
+        quarantineSnapshot = quarantine
         isScanning = false
     }
 
@@ -568,6 +619,28 @@ struct MaintenanceView: View {
             )
         } else {
             resultMessage = MoniLocalization.string("No active unprotected legacy overrides remained.")
+        }
+    }
+
+    private func clearQuarantineHistory() async {
+        isRunning = true
+        let result = await MaintenanceDiagnosticsService.clearQuarantineHistory()
+        quarantineSnapshot = await MaintenanceDiagnosticsService.scanQuarantineHistory()
+        isRunning = false
+        switch result.state {
+        case .ready where result.removedCount > 0:
+            resultMessage = MoniLocalization.format(
+                "Cleared %@ Gatekeeper download records.",
+                result.removedCount.formatted()
+            )
+        case .ready:
+            resultMessage = MoniLocalization.string("Gatekeeper download history was already empty.")
+        case .protected:
+            resultMessage = MoniLocalization.string("Gatekeeper history is protected by the cleanup whitelist.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Gatekeeper history cleanup is unavailable.")
+        case .failed:
+            resultMessage = MoniLocalization.string("Gatekeeper download history could not be cleared.")
         }
     }
 }
