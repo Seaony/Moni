@@ -120,7 +120,8 @@ struct MaintenanceView: View {
     @State private var systemCleanupSnapshot = SystemCleanupSnapshot(
         state: .notScanned,
         items: [],
-        unreadableItemCount: 0
+        unreadableItemCount: 0,
+        activePowerLogNotice: nil
     )
     @State private var pendingSystemCleanup: SystemCleanupPlan?
     @State private var pendingAction: PendingMaintenanceAction?
@@ -1288,6 +1289,12 @@ struct MaintenanceView: View {
                 maintenanceBytes(total)
             )
         case .empty:
+            if let notice = systemCleanupSnapshot.activePowerLogNotice {
+                return MoniLocalization.format(
+                    "Active database kept · %@",
+                    maintenanceBytes(notice.sizeBytes)
+                )
+            }
             return MoniLocalization.string("No old system files")
         case .unavailable:
             return MoniLocalization.string("Unavailable")
@@ -1320,7 +1327,14 @@ struct MaintenanceView: View {
         case .ready:
             await prepareSystemCleanup()
         case .empty:
-            resultMessage = MoniLocalization.string("No old system caches or logs were found.")
+            if let notice = result.activePowerLogNotice {
+                resultMessage = MoniLocalization.format(
+                    "The active power telemetry database is %@ and was kept.",
+                    maintenanceBytes(notice.sizeBytes)
+                )
+            } else {
+                resultMessage = MoniLocalization.string("No old system caches or logs were found.")
+            }
         case .cancelled:
             resultMessage = MoniLocalization.string("System cleanup scan was cancelled.")
         case .unavailable:
@@ -1333,9 +1347,19 @@ struct MaintenanceView: View {
     }
 
     private func prepareSystemCleanup() async {
-        let plan = await SystemCleanupService.previewCleanup(items: systemCleanupSnapshot.items)
+        let plan = await SystemCleanupService.previewCleanup(
+            items: systemCleanupSnapshot.items,
+            activePowerLogNotice: systemCleanupSnapshot.activePowerLogNotice
+        )
         if plan.cleanupPlan.candidates.isEmpty {
-            resultMessage = MoniLocalization.string("No scanned system files can be cleaned.")
+            if let notice = systemCleanupSnapshot.activePowerLogNotice {
+                resultMessage = MoniLocalization.format(
+                    "No scanned system files can be cleaned. The active power telemetry database is %@ and was kept.",
+                    maintenanceBytes(notice.sizeBytes)
+                )
+            } else {
+                resultMessage = MoniLocalization.string("No scanned system files can be cleaned.")
+            }
         } else {
             pendingSystemCleanup = plan
         }
@@ -1354,7 +1378,8 @@ struct MaintenanceView: View {
         systemCleanupSnapshot = SystemCleanupSnapshot(
             state: remainingItems.isEmpty ? .empty : .ready,
             items: remainingItems,
-            unreadableItemCount: systemCleanupSnapshot.unreadableItemCount
+            unreadableItemCount: systemCleanupSnapshot.unreadableItemCount,
+            activePowerLogNotice: systemCleanupSnapshot.activePowerLogNotice
         )
 
         var parts: [String] = []
@@ -2394,6 +2419,26 @@ private struct SystemCleanupConfirmationView: View {
                 )
                 .font(.system(size: 11.5))
                 .foregroundStyle(MoniPalette.orange)
+            }
+
+            if let notice = plan.activePowerLogNotice {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label(
+                        MoniLocalization.format(
+                            "Power telemetry database · %@ · active, kept",
+                            maintenanceBytes(notice.sizeBytes)
+                        ),
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(MoniPalette.orange)
+                    Text(notice.path)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
             }
 
             HStack {

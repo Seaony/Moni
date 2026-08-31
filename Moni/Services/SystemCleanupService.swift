@@ -60,11 +60,18 @@ nonisolated struct SystemCleanupSnapshot: Sendable {
     let state: SystemCleanupScanState
     let items: [SystemCleanupItem]
     let unreadableItemCount: Int
+    let activePowerLogNotice: SystemCleanupNotice?
+}
+
+nonisolated struct SystemCleanupNotice: Sendable {
+    let path: String
+    let sizeBytes: UInt64
 }
 
 nonisolated struct SystemCleanupPlan: Identifiable, Sendable {
     let cleanupPlan: CleanupPlan
     let items: [SystemCleanupItem]
+    let activePowerLogNotice: SystemCleanupNotice?
 
     var id: UUID { cleanupPlan.id }
 }
@@ -86,9 +93,15 @@ nonisolated enum SystemCleanupService {
         }.value
     }
 
-    static func previewCleanup(items: [SystemCleanupItem]) async -> SystemCleanupPlan {
+    static func previewCleanup(
+        items: [SystemCleanupItem],
+        activePowerLogNotice: SystemCleanupNotice?
+    ) async -> SystemCleanupPlan {
         let plan = await Task.detached(priority: .utility) {
-            previewCleanupSynchronously(items: items)
+            previewCleanupSynchronously(
+                items: items,
+                activePowerLogNotice: activePowerLogNotice
+            )
         }.value
         await CleanupService.shared.recordPreview(plan.cleanupPlan)
         return plan
@@ -114,7 +127,12 @@ nonisolated enum SystemCleanupService {
 
     private static func scanSynchronously(referenceDate: Date) -> SystemCleanupSnapshot {
         guard FileManager.default.isExecutableFile(atPath: scriptExecutable) else {
-            return SystemCleanupSnapshot(state: .unavailable, items: [], unreadableItemCount: 0)
+            return SystemCleanupSnapshot(
+                state: .unavailable,
+                items: [],
+                unreadableItemCount: 0,
+                activePowerLogNotice: nil
+            )
         }
         let shellScript = "scan_user_id=\(getuid())\n" + scanShellScript
         let result = run(
@@ -123,7 +141,12 @@ nonisolated enum SystemCleanupService {
             timeout: 120
         )
         if result.timedOut {
-            return SystemCleanupSnapshot(state: .failed, items: [], unreadableItemCount: 0)
+            return SystemCleanupSnapshot(
+                state: .failed,
+                items: [],
+                unreadableItemCount: 0,
+                activePowerLogNotice: nil
+            )
         }
         if result.status != 0 {
             let cancelled = result.output.localizedCaseInsensitiveContains("User canceled")
@@ -131,13 +154,15 @@ nonisolated enum SystemCleanupService {
             return SystemCleanupSnapshot(
                 state: cancelled ? .cancelled : .failed,
                 items: [],
-                unreadableItemCount: 0
+                unreadableItemCount: 0,
+                activePowerLogNotice: nil
             )
         }
 
         var itemsByPath: [String: SystemCleanupItem] = [:]
         var unreadableItemCount = 0
         var scanFailed = false
+        var activePowerLogNotice: SystemCleanupNotice?
         for line in result.output.split(whereSeparator: \.isNewline) {
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard let recordType = fields.first else { continue }
@@ -147,6 +172,19 @@ nonisolated enum SystemCleanupService {
             }
             if recordType == "ERROR" {
                 scanFailed = true
+                continue
+            }
+            if recordType == "NOTICE" {
+                if fields.count == 4,
+                   fields[1] == "activePowerLog",
+                   let sizeBytes = UInt64(fields[2]),
+                   let pathData = Data(base64Encoded: String(fields[3])),
+                   let path = String(data: pathData, encoding: .utf8) {
+                    activePowerLogNotice = validatedActivePowerLogNotice(
+                        path: path,
+                        expectedSizeBytes: sizeBytes
+                    )
+                }
                 continue
             }
             guard recordType == "ITEM",
@@ -181,7 +219,8 @@ nonisolated enum SystemCleanupService {
             return SystemCleanupSnapshot(
                 state: .failed,
                 items: [],
-                unreadableItemCount: unreadableItemCount
+                unreadableItemCount: unreadableItemCount,
+                activePowerLogNotice: activePowerLogNotice
             )
         }
 
@@ -197,8 +236,26 @@ nonisolated enum SystemCleanupService {
         return SystemCleanupSnapshot(
             state: items.isEmpty ? .empty : .ready,
             items: items,
-            unreadableItemCount: unreadableItemCount
+            unreadableItemCount: unreadableItemCount,
+            activePowerLogNotice: activePowerLogNotice
         )
+    }
+
+    private static func validatedActivePowerLogNotice(
+        path: String,
+        expectedSizeBytes: UInt64
+    ) -> SystemCleanupNotice? {
+        let warningThresholdBytes: UInt64 = 10 * 1024 * 1024 * 1024
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard isActivePowerLogPath(url.path),
+              expectedSizeBytes >= warningThresholdBytes,
+              let metadata = fileMetadata(at: url),
+              metadata.isRegularFile,
+              !metadata.isSymbolicLink,
+              metadata.logicalSizeBytes == expectedSizeBytes else {
+            return nil
+        }
+        return SystemCleanupNotice(path: url.path, sizeBytes: expectedSizeBytes)
     }
 
     private static func executeCleanupSynchronously(_ plan: SystemCleanupPlan) -> CleanupRunResult {
@@ -317,7 +374,8 @@ nonisolated enum SystemCleanupService {
     }
 
     private static func previewCleanupSynchronously(
-        items: [SystemCleanupItem]
+        items: [SystemCleanupItem],
+        activePowerLogNotice: SystemCleanupNotice?
     ) -> SystemCleanupPlan {
         let referenceDate = Date()
         var candidates: [CleanupCandidate] = []
@@ -377,7 +435,8 @@ nonisolated enum SystemCleanupService {
                 candidates: candidates,
                 rejectedItems: rejectedItems
             ),
-            items: items
+            items: items,
+            activePowerLogNotice: activePowerLogNotice
         )
     }
 
@@ -593,6 +652,7 @@ nonisolated enum SystemCleanupService {
         fileID: UInt64,
         modifiedDate: Date,
         sizeBytes: UInt64,
+        logicalSizeBytes: UInt64,
         isRegularFile: Bool,
         isDirectory: Bool,
         isSymbolicLink: Bool
@@ -602,7 +662,7 @@ nonisolated enum SystemCleanupService {
             guard let path else { return Int32(-1) }
             return lstat(path, &value)
         }
-        guard result == 0, value.st_blocks >= 0 else { return nil }
+        guard result == 0, value.st_blocks >= 0, value.st_size >= 0 else { return nil }
         let kind = value.st_mode & S_IFMT
         let (sizeBytes, overflow) = UInt64(value.st_blocks).multipliedReportingOverflow(by: 512)
         guard !overflow else { return nil }
@@ -611,6 +671,7 @@ nonisolated enum SystemCleanupService {
             UInt64(value.st_ino),
             Date(timeIntervalSince1970: TimeInterval(value.st_mtimespec.tv_sec)),
             sizeBytes,
+            UInt64(value.st_size),
             kind == S_IFREG,
             kind == S_IFDIR,
             kind == S_IFLNK
@@ -1043,5 +1104,21 @@ nonisolated enum SystemCleanupService {
     scan_family systemDiagnostics /private/var/db/diagnostics
     scan_family systemDiagnostics /private/var/db/DiagnosticPipeline
     scan_family powerLogs /private/var/db/powerlog
+
+    active_powerlog=/private/var/db/powerlog/Library/PerfPowerTelemetry/BackgroundProcessing/CurrentBackgroundProcessingDB.BGSQL
+    if [ -f "$active_powerlog" ] && [ ! -L "$active_powerlog" ]; then
+        active_powerlog_size=$(/usr/bin/stat -f '%z' "$active_powerlog" 2>/dev/null) || active_powerlog_size=''
+        case "$active_powerlog_size" in
+            ''|*[!0-9]*) ;;
+            *)
+                if [ "$active_powerlog_size" -ge 10737418240 ]; then
+                    active_powerlog_encoded=$(printf '%s' "$active_powerlog" | /usr/bin/base64 -b 0) || active_powerlog_encoded=''
+                    if [ -n "$active_powerlog_encoded" ]; then
+                        printf 'NOTICE\tactivePowerLog\t%s\t%s\n' "$active_powerlog_size" "$active_powerlog_encoded"
+                    fi
+                fi
+                ;;
+        esac
+    fi
     """#
 }
