@@ -115,6 +115,7 @@ struct MaintenanceView: View {
         sizeBytes: 0,
         state: .unavailable
     )
+    @State private var nixGarbageCollectionState: NixGarbageCollectionState = .unavailable
     @State private var timeMachineSnapshotReport = TimeMachineSnapshotReport(
         state: .unavailable,
         snapshotCount: 0,
@@ -149,6 +150,7 @@ struct MaintenanceView: View {
     @State private var confirmsPeriodicMaintenance = false
     @State private var confirmsTartCachePrune = false
     @State private var confirmsCondaCacheCleanup = false
+    @State private var confirmsNixGarbageCollection = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -317,6 +319,19 @@ struct MaintenanceView: View {
                         isActionEnabled: condaCacheSnapshot.state == .ready
                     ) {
                         confirmsCondaCacheCleanup = true
+                    }
+
+                    commandCard(
+                        title: "Nix Garbage Collection",
+                        description: "Remove Nix generations and unreachable store paths older than 30 days.",
+                        symbol: "arrow.trianglehead.2.clockwise.rotate.90",
+                        status: nixGarbageCollectionStatus,
+                        buttonTitle: nixGarbageCollectionButtonTitle,
+                        isAvailable: nixGarbageCollectionState == .ready
+                            || nixGarbageCollectionState == .protected,
+                        isActionEnabled: nixGarbageCollectionState == .ready
+                    ) {
+                        confirmsNixGarbageCollection = true
                     }
 
                     commandCard(
@@ -745,6 +760,18 @@ struct MaintenanceView: View {
                 maintenanceBytes(condaCacheSnapshot.sizeBytes)
             ))
         }
+        .confirmationDialog(
+            "Collect old Nix data?",
+            isPresented: $confirmsNixGarbageCollection,
+            titleVisibility: .visible
+        ) {
+            Button("Run Nix Garbage Collection", role: .destructive) {
+                Task { await collectNixGarbage() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Nix will delete profile generations older than 30 days, then remove store paths that are no longer reachable. Current and recent generations are retained.")
+        }
     }
 
     private var header: some View {
@@ -905,7 +932,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "22", MoniPalette.green)
+                catalogMetric("Available now", "23", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1280,6 +1307,22 @@ struct MaintenanceView: View {
         }
     }
 
+    private var nixGarbageCollectionStatus: String {
+        switch nixGarbageCollectionState {
+        case .ready: MoniLocalization.string("Ready")
+        case .protected: MoniLocalization.string("Protected by whitelist")
+        case .unavailable: MoniLocalization.string("Nix command unavailable")
+        }
+    }
+
+    private var nixGarbageCollectionButtonTitle: String {
+        switch nixGarbageCollectionState {
+        case .ready: MoniLocalization.string("Review Collection")
+        case .protected: MoniLocalization.string("Protected")
+        case .unavailable: MoniLocalization.string("Unavailable")
+        }
+    }
+
     private var timeMachineSnapshotStatus: String {
         switch timeMachineSnapshotReport.state {
         case .ready:
@@ -1553,6 +1596,7 @@ struct MaintenanceView: View {
         periodicMaintenanceSnapshot = periodicMaintenance
         tartCacheSnapshot = tartCache
         condaCacheSnapshot = condaCache
+        nixGarbageCollectionState = NixGarbageCollectionService.scan()
         timeMachineSnapshotReport = timeMachineSnapshots
         isScanning = false
     }
@@ -1967,6 +2011,24 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("Conda cache cleanup is unavailable because the Conda command could not be found.")
         case .failed:
             resultMessage = MoniLocalization.string("Conda cache cleanup did not complete successfully.")
+        }
+    }
+
+    private func collectNixGarbage() async {
+        isRunning = true
+        let outcome = await NixGarbageCollectionService.collect()
+        nixGarbageCollectionState = NixGarbageCollectionService.scan()
+        isRunning = false
+
+        switch outcome {
+        case .completed:
+            resultMessage = MoniLocalization.string("Nix garbage collection completed.")
+        case .protected:
+            resultMessage = MoniLocalization.string("Nix garbage collection was skipped because /nix/store is protected by the whitelist.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Nix garbage collection is unavailable because the command or store could not be found.")
+        case .failed:
+            resultMessage = MoniLocalization.string("Nix garbage collection did not complete successfully.")
         }
     }
 }

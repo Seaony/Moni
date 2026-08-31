@@ -149,6 +149,11 @@ nonisolated enum MaintenanceService {
             "shippingbox.and.arrow.backward", .storage
         ),
         task(
+            "nix_garbage_collection", "Nix Garbage Collection",
+            "Remove Nix generations and unreachable store paths older than 30 days.",
+            "arrow.trianglehead.2.clockwise.rotate.90", .storage
+        ),
+        task(
             "time_machine_snapshots", "Time Machine",
             "Report local snapshots and review incomplete backups for removal with tmutil.",
             "clock.arrow.trianglehead.counterclockwise.rotate.90", .storage
