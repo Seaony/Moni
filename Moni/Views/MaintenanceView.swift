@@ -4,6 +4,8 @@ private enum FinderMaintenanceAction: String, Identifiable {
     case finderCache
     case savedApplicationStates
     case brokenPreferences
+    case sharedFileLists
+    case launchAgents
 
     var id: String { rawValue }
 }
@@ -26,6 +28,11 @@ struct MaintenanceView: View {
     @State private var isRunning = false
     @State private var brokenPreferencePaths: [String] = []
     @State private var preferenceUnreadableItemCount = 0
+    @State private var fileRepairSnapshot = MaintenanceFileRepairSnapshot(
+        brokenSharedFileListPaths: [],
+        brokenLaunchAgentPaths: [],
+        unreadableItemCount: 0
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var resultMessage: String?
 
@@ -33,39 +40,75 @@ struct MaintenanceView: View {
         VStack(spacing: 12) {
             header
 
-            HStack(spacing: 12) {
-                maintenanceCard(
-                    title: "Finder Cache Refresh",
-                    description: "Refresh Quick Look thumbnails and icon services caches.",
-                    symbol: "photo.stack",
-                    count: snapshot.cachePaths.count,
-                    buttonTitle: "Review Refresh"
-                ) {
-                    Task { await prepare(.finderCache, paths: snapshot.cachePaths) }
-                }
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: 12) {
+                    HStack(spacing: 12) {
+                        maintenanceCard(
+                            title: "Finder Cache Refresh",
+                            description: "Refresh Quick Look thumbnails and icon services caches.",
+                            symbol: "photo.stack",
+                            count: snapshot.cachePaths.count,
+                            buttonTitle: "Review Refresh"
+                        ) {
+                            Task { await prepare(.finderCache, paths: snapshot.cachePaths) }
+                        }
 
-                maintenanceCard(
-                    title: "App State Cleanup",
-                    description: "Move saved application states older than 30 days to Trash.",
-                    symbol: "clock.arrow.circlepath",
-                    count: snapshot.staleSavedStatePaths.count,
-                    buttonTitle: "Review Cleanup"
-                ) {
-                    Task { await prepare(.savedApplicationStates, paths: snapshot.staleSavedStatePaths) }
+                        maintenanceCard(
+                            title: "App State Cleanup",
+                            description: "Move saved application states older than 30 days to Trash.",
+                            symbol: "clock.arrow.circlepath",
+                            count: snapshot.staleSavedStatePaths.count,
+                            buttonTitle: "Review Cleanup"
+                        ) {
+                            Task { await prepare(.savedApplicationStates, paths: snapshot.staleSavedStatePaths) }
+                        }
+                    }
+
+                    maintenanceCard(
+                        title: "Broken Config Repair",
+                        description: "Find malformed third-party preference files and move them to Trash.",
+                        symbol: "wrench.and.screwdriver",
+                        count: brokenPreferencePaths.count,
+                        buttonTitle: "Review Repair"
+                    ) {
+                        Task { await prepare(.brokenPreferences, paths: brokenPreferencePaths) }
+                    }
+
+                    HStack(spacing: 12) {
+                        maintenanceCard(
+                            title: "Shared File Lists",
+                            description: "Find malformed Finder favorites and shared file lists.",
+                            symbol: "list.bullet.rectangle",
+                            count: fileRepairSnapshot.brokenSharedFileListPaths.count,
+                            buttonTitle: "Review Repair"
+                        ) {
+                            Task {
+                                await prepare(
+                                    .sharedFileLists,
+                                    paths: fileRepairSnapshot.brokenSharedFileListPaths
+                                )
+                            }
+                        }
+
+                        maintenanceCard(
+                            title: "Launch Agents Cleanup",
+                            description: "Unload user LaunchAgents whose executable no longer exists.",
+                            symbol: "bolt.badge.xmark",
+                            count: fileRepairSnapshot.brokenLaunchAgentPaths.count,
+                            buttonTitle: "Review Cleanup"
+                        ) {
+                            Task {
+                                await prepare(
+                                    .launchAgents,
+                                    paths: fileRepairSnapshot.brokenLaunchAgentPaths
+                                )
+                            }
+                        }
+                    }
+
+                    catalogSummary
                 }
             }
-
-            maintenanceCard(
-                title: "Broken Config Repair",
-                description: "Find malformed third-party preference files and move them to Trash.",
-                symbol: "wrench.and.screwdriver",
-                count: brokenPreferencePaths.count,
-                buttonTitle: "Review Repair"
-            ) {
-                Task { await prepare(.brokenPreferences, paths: brokenPreferencePaths) }
-            }
-
-            catalogSummary
         }
         .task { await scan() }
         .sheet(item: $pendingAction) { pending in
@@ -192,7 +235,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "3", MoniPalette.green)
+                catalogMetric("Available now", "5", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -239,18 +282,22 @@ struct MaintenanceView: View {
     }
 
     private var unreadableItemCount: Int {
-        snapshot.unreadableItemCount + preferenceUnreadableItemCount
+        snapshot.unreadableItemCount
+            + preferenceUnreadableItemCount
+            + fileRepairSnapshot.unreadableItemCount
     }
 
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
         async let preferenceResult = MaintenanceService.scanBrokenPreferences()
-        let (finder, preferences) = await (finderResult, preferenceResult)
+        async let repairResult = MaintenanceService.scanFileRepairs()
+        let (finder, preferences, repairs) = await (finderResult, preferenceResult, repairResult)
         guard !Task.isCancelled else { return }
         snapshot = finder
         brokenPreferencePaths = preferences.paths
         preferenceUnreadableItemCount = preferences.unreadableItemCount
+        fileRepairSnapshot = repairs
         isScanning = false
     }
 
@@ -261,6 +308,9 @@ struct MaintenanceView: View {
 
     private func execute(_ pending: PendingMaintenanceAction) async {
         isRunning = true
+        if pending.action == .launchAgents {
+            await MaintenanceService.unloadUserLaunchAgents(pending.plan.candidates)
+        }
         let cleanupResult = await CleanupService.shared.execute(pending.plan)
         var parts: [String] = []
 
@@ -293,16 +343,23 @@ struct MaintenanceView: View {
                 parts.append(MoniLocalization.string("One or more Finder services could not be refreshed."))
             }
         } else if parts.isEmpty {
-            let message = pending.action == .savedApplicationStates
-                ? "No old application states needed cleanup."
-                : "No damaged preference files needed repair."
-            parts.append(MoniLocalization.string(message))
+            parts.append(MoniLocalization.string(noChangeMessage(for: pending.action)))
         }
 
         await scan()
         isRunning = false
         monitor.refresh(forceSlowMetrics: true)
         resultMessage = parts.joined(separator: " ")
+    }
+
+    private func noChangeMessage(for action: FinderMaintenanceAction) -> String {
+        switch action {
+        case .finderCache: "Finder caches did not need cleanup."
+        case .savedApplicationStates: "No old application states needed cleanup."
+        case .brokenPreferences: "No damaged preference files needed repair."
+        case .sharedFileLists: "Shared file lists are healthy."
+        case .launchAgents: "Launch Agents are healthy."
+        }
     }
 }
 
@@ -354,6 +411,10 @@ private struct MaintenanceConfirmationView: View {
                 Label("Quick Look and icon services will be rebuilt after cleanup.", systemImage: "arrow.clockwise")
                     .font(.system(size: 11.5))
                     .foregroundStyle(MoniPalette.foregroundSecondary)
+            } else if pending.action == .launchAgents {
+                Label("Listed LaunchAgent jobs will be unloaded before their files are moved.", systemImage: "stop.circle")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
             }
 
             HStack {
@@ -376,6 +437,10 @@ private struct MaintenanceConfirmationView: View {
             MoniLocalization.string("Listed saved states will be moved to Trash. Applications can recreate them when needed.")
         case .brokenPreferences:
             MoniLocalization.string("Listed malformed preference files will be moved to Trash. Applications can recreate them when needed.")
+        case .sharedFileLists:
+            MoniLocalization.string("Listed malformed shared file lists will be moved to Trash. Finder can recreate them when needed.")
+        case .launchAgents:
+            MoniLocalization.string("Listed LaunchAgents point to missing executables and will be moved to Trash after unloading.")
         }
     }
 
@@ -384,6 +449,8 @@ private struct MaintenanceConfirmationView: View {
         case .finderCache: "Refresh Finder caches?"
         case .savedApplicationStates: "Clean old application states?"
         case .brokenPreferences: "Repair broken preferences?"
+        case .sharedFileLists: "Repair shared file lists?"
+        case .launchAgents: "Clean broken LaunchAgents?"
         }
     }
 
@@ -392,6 +459,8 @@ private struct MaintenanceConfirmationView: View {
         case .finderCache: "Finder services can still be refreshed."
         case .savedApplicationStates: "No saved application states older than 30 days were found."
         case .brokenPreferences: "No damaged third-party preference files were found."
+        case .sharedFileLists: "No damaged shared file lists were found."
+        case .launchAgents: "No LaunchAgents with missing executables were found."
         }
     }
 }

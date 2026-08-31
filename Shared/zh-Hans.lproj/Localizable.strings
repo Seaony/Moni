@@ -548,3 +548,17 @@
 "Repair broken preferences?" = "修复损坏的偏好设置？";
 "No damaged third-party preference files were found." = "未找到损坏的第三方偏好设置文件。";
 "Listed malformed preference files will be moved to Trash. Applications can recreate them when needed." = "列出的损坏偏好设置文件会被移到废纸篓，应用可在需要时重新创建。";
+"Shared File Lists" = "共享文件列表";
+"Find malformed Finder favorites and shared file lists." = "查找损坏的 Finder 收藏与共享文件列表。";
+"Launch Agents Cleanup" = "启动代理清理";
+"Unload user LaunchAgents whose executable no longer exists." = "卸载可执行文件已不存在的用户启动代理。";
+"Finder caches did not need cleanup." = "Finder 缓存不需要清理。";
+"Shared file lists are healthy." = "共享文件列表状态正常。";
+"Launch Agents are healthy." = "启动代理状态正常。";
+"Listed LaunchAgent jobs will be unloaded before their files are moved." = "移动文件前会先卸载列出的启动代理任务。";
+"Listed malformed shared file lists will be moved to Trash. Finder can recreate them when needed." = "列出的损坏共享文件列表会被移到废纸篓，Finder 可在需要时重新创建。";
+"Listed LaunchAgents point to missing executables and will be moved to Trash after unloading." = "列出的启动代理指向不存在的可执行文件，将在卸载后移到废纸篓。";
+"Repair shared file lists?" = "修复共享文件列表？";
+"Clean broken LaunchAgents?" = "清理失效启动代理？";
+"No damaged shared file lists were found." = "未找到损坏的共享文件列表。";
+"No LaunchAgents with missing executables were found." = "未找到可执行文件缺失的启动代理。";
