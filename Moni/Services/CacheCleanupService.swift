@@ -12,6 +12,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case addressBookPhotoCaches
     case utmCaches
     case sharedContainerLogs
+    case browserProfileCaches
     case virtualizationTemporaryData
     case savedApplicationState
     case recentItems
@@ -32,6 +33,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .addressBookPhotoCaches: "Address Book photo caches"
         case .utmCaches: "UTM sandbox caches"
         case .sharedContainerLogs: "Shared container logs"
+        case .browserProfileCaches: "Browser profile caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
@@ -113,6 +115,19 @@ nonisolated enum CacheCleanupService {
                 }
                 return CacheCleanupItem(path: path, category: source.category, sizeBytes: size)
             })
+        }
+
+        discoveredItems.removeAll {
+            $0.category == .userCaches && pathsEqual($0.path, diaGeneralCacheRoot())
+        }
+
+        let diaIsSafe = await Task.detached(priority: .utility) {
+            diaIsInactive()
+        }.value
+        if diaIsSafe {
+            let browserProfileCaches = await scanDiaProfileCaches()
+            discoveredItems.append(contentsOf: browserProfileCaches.items)
+            unreadableItemCount += browserProfileCaches.unreadableItemCount
         }
 
         let utmIsSafe = await Task.detached(priority: .utility) {
@@ -305,10 +320,21 @@ nonisolated enum CacheCleanupService {
                 || ($0.category == .userCaches && pathsEqual($0.path, utmApplicationCacheRoot()))
         }
         let utmIsSafe = !requiresUTMProbe || utmIsInactive()
+        let requiresDiaProbe = items.contains { $0.category == .browserProfileCaches }
+        let diaIsSafe = !requiresDiaProbe || diaIsInactive()
         let userCacheProcessGuard = items.contains { $0.category == .userCaches }
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
+            if item.category == .browserProfileCaches {
+                guard diaIsSafe,
+                      diaProfileCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .userCaches,
                !UserCacheProcessGuard.permits(item.path, using: userCacheProcessGuard) {
                 rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -694,6 +720,122 @@ nonisolated enum CacheCleanupService {
             })
         }
         return (items, unreadableItemCount)
+    }
+
+    private static func scanDiaProfileCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in diaProfileCacheRoots() where isRealDirectory(at: root) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: root) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                guard !name.hasPrefix("."), diaProfileCacheItemIsAllowed(path) else {
+                    return nil
+                }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .browserProfileCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func diaProfileCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              !holdsCompiledModelCache(url.path) else {
+            return false
+        }
+        return diaProfileCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func diaProfileCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let cacheUserData = home + "/Library/Caches/Dia/User Data"
+        let supportUserData = home + "/Library/Application Support/Dia/User Data"
+        var roots = [
+            supportUserData + "/GraphiteDawnCache",
+            supportUserData + "/GPUPersistentCache",
+            supportUserData + "/component_crx_cache",
+            supportUserData + "/extensions_crx_cache"
+        ]
+        roots.append(contentsOf: childDirectories(at: cacheUserData).flatMap { profile in
+            [profile + "/Cache", profile + "/Code Cache"]
+        })
+        roots.append(contentsOf: childDirectories(at: supportUserData).flatMap { profile in
+            [
+                profile + "/DawnGraphiteCache",
+                profile + "/DawnWebGPUCache",
+                profile + "/GPUCache"
+            ]
+        })
+        var seen: Set<String> = []
+        return roots.filter { seen.insert($0).inserted }
+    }
+
+    private static func childDirectories(at path: String) -> [String] {
+        guard isRealDirectory(at: path),
+              let urls = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: path, isDirectory: true),
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+        return urls.compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true,
+                  values.isSymbolicLink != true else {
+                return nil
+            }
+            return url.standardizedFileURL.path
+        }
+    }
+
+    private static func diaGeneralCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/Dia", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func diaIsInactive() -> Bool {
+        let executable = "/usr/bin/pgrep"
+        guard FileManager.default.isExecutableFile(atPath: executable) else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["-x", "Dia"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let timeout = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5, execute: timeout)
+        process.waitUntilExit()
+        timeout.cancel()
+        return process.terminationReason == .exit && process.terminationStatus == 1
     }
 
     private static func scanSharedContainerLogs() async -> (
