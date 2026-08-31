@@ -152,13 +152,7 @@ actor CleanupService {
             candidates: candidates,
             rejectedItems: rejectedItems
         )
-        appendHistory(
-            candidates.map {
-                historyRecord(scope: scope, action: .previewed, path: $0.path, detail: nil)
-            } + rejectedItems.map {
-                historyRecord(scope: scope, action: .skipped, path: $0.path, detail: $0.reason.rawValue)
-            }
-        )
+        recordPreview(plan)
         return plan
     }
 
@@ -350,6 +344,16 @@ actor CleanupService {
         appendHistory(items.map {
             historyRecord(scope: scope, action: .skipped, path: $0.path, detail: $0.reason.rawValue)
         })
+    }
+
+    func recordPreview(_ plan: CleanupPlan) {
+        appendHistory(
+            plan.candidates.map {
+                historyRecord(scope: plan.scope, action: .previewed, path: $0.path, detail: nil)
+            } + plan.rejectedItems.map {
+                historyRecord(scope: plan.scope, action: .skipped, path: $0.path, detail: $0.reason.rawValue)
+            }
+        )
     }
 
     func recordRunResult(_ result: CleanupRunResult, scope: CleanupScope) {

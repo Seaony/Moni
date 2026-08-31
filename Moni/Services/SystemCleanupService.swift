@@ -19,6 +19,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case rebuildableServiceCaches
     case browserCodeSignatureCaches
     case rebuildableGPUCaches
+    case systemDiagnostics
 
     var titleKey: String {
         switch self {
@@ -30,6 +31,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .rebuildableServiceCaches: "Rebuildable system caches"
         case .browserCodeSignatureCaches: "Browser code signature caches"
         case .rebuildableGPUCaches: "Rebuildable GPU caches"
+        case .systemDiagnostics: "System diagnostic logs"
         }
     }
 }
@@ -83,11 +85,11 @@ nonisolated enum SystemCleanupService {
     }
 
     static func previewCleanup(items: [SystemCleanupItem]) async -> SystemCleanupPlan {
-        let plan = await CleanupService.shared.preview(
-            paths: items.map(\.path),
-            scope: .maintenance
-        )
-        return SystemCleanupPlan(cleanupPlan: plan, items: items)
+        let plan = await Task.detached(priority: .utility) {
+            previewCleanupSynchronously(items: items)
+        }.value
+        await CleanupService.shared.recordPreview(plan.cleanupPlan)
+        return plan
     }
 
     static func executeCleanup(_ plan: SystemCleanupPlan) async -> CleanupRunResult {
@@ -312,6 +314,71 @@ nonisolated enum SystemCleanupService {
         )
     }
 
+    private static func previewCleanupSynchronously(
+        items: [SystemCleanupItem]
+    ) -> SystemCleanupPlan {
+        let referenceDate = Date()
+        var candidates: [CleanupCandidate] = []
+        var rejectedItems: [CleanupRejectedItem] = []
+        var seenCanonicalPaths: Set<String> = []
+
+        for item in items {
+            if CleanupPreferences.isWhitelisted(item.path) {
+                rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .whitelisted))
+                continue
+            }
+            guard let current = validatedItem(
+                path: item.path,
+                category: item.category,
+                kind: item.kind,
+                expectedDeviceID: item.deviceID,
+                expectedFileID: item.fileID,
+                expectedModifiedDate: item.modifiedDate,
+                expectedSizeBytes: item.sizeBytes,
+                referenceDate: referenceDate
+            ) else {
+                rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                continue
+            }
+            let canonicalPath = URL(fileURLWithPath: current.path)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL.path
+            guard seenCanonicalPaths.insert(canonicalPath).inserted else { continue }
+            candidates.append(CleanupCandidate(
+                path: current.path,
+                canonicalPath: canonicalPath,
+                device: current.deviceID,
+                inode: current.fileID
+            ))
+        }
+
+        candidates.sort {
+            let lhsDepth = $0.canonicalPath.split(separator: "/").count
+            let rhsDepth = $1.canonicalPath.split(separator: "/").count
+            if lhsDepth != rhsDepth { return lhsDepth < rhsDepth }
+            return $0.canonicalPath.localizedStandardCompare($1.canonicalPath) == .orderedAscending
+        }
+        candidates = candidates.reduce(into: []) { result, candidate in
+            guard !result.contains(where: {
+                pathIsInside(candidate.canonicalPath, root: $0.canonicalPath)
+            }) else {
+                return
+            }
+            result.append(candidate)
+        }
+
+        return SystemCleanupPlan(
+            cleanupPlan: CleanupPlan(
+                id: UUID(),
+                createdAt: referenceDate,
+                scope: .maintenance,
+                candidates: candidates,
+                rejectedItems: rejectedItems
+            ),
+            items: items
+        )
+    }
+
     private static func userTrashIdentity() -> (
         path: String,
         deviceID: UInt64,
@@ -496,6 +563,13 @@ nonisolated enum SystemCleanupService {
                 && canonicalPathIsInside(url, root: root)
                 && pathDepth(url.path, root: root) == 5
                 && allowedNames.contains(url.lastPathComponent)
+        case .systemDiagnostics:
+            let roots = ["/private/var/db/diagnostics", "/private/var/db/DiagnosticPipeline"]
+            return roots.contains { root in
+                pathIsInside(url.path, root: root)
+                    && canonicalPathIsInside(url, root: root)
+                    && pathDepth(url.path, root: root) <= 5
+            }
         }
     }
 
@@ -674,6 +748,13 @@ nonisolated enum SystemCleanupService {
                 printf '%s\n' "$candidate_path" | /usr/bin/awk -F/ 'NF == 9 && $2 == "private" && $3 == "var" && $4 == "folders" && $7 == "C" { valid=1 } END { exit valid ? 0 : 1 }' || return 1
                 case "$candidate_name" in com.apple.gpuarchiver|com.apple.metal|com.apple.metalfe) return 0 ;; *) return 1 ;; esac
                 ;;
+            systemDiagnostics)
+                case "$candidate_path" in
+                    /private/var/db/diagnostics/*) path_depth_ok "$candidate_path" /private/var/db/diagnostics 5 ;;
+                    /private/var/db/DiagnosticPipeline/*) path_depth_ok "$candidate_path" /private/var/db/DiagnosticPipeline 5 ;;
+                    *) return 1 ;;
+                esac
+                ;;
             *)
                 return 1
                 ;;
@@ -805,6 +886,9 @@ nonisolated enum SystemCleanupService {
             staleWallpaperDownloads)
                 /usr/bin/find "$scan_root" -maxdepth 10 -type f -name 'CFNetworkDownload_*.tmp' -mtime +7 -path '*/T/com.apple.idleassetsd/*' -print0 > "$scan_file"
                 ;;
+            systemDiagnostics)
+                /usr/bin/find "$scan_root" -maxdepth 5 -type f -mtime +7 -print0 > "$scan_file"
+                ;;
             *)
                 return 1
                 ;;
@@ -910,5 +994,7 @@ nonisolated enum SystemCleanupService {
     scan_directory rebuildableServiceCaches /Library/Caches/com.apple.iconservices.store
     scan_code_signature_directories
     scan_gpu_directories
+    scan_family systemDiagnostics /private/var/db/diagnostics
+    scan_family systemDiagnostics /private/var/db/DiagnosticPipeline
     """#
 }
