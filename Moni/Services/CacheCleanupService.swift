@@ -9,6 +9,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case recentItems
     case incompleteDownloads
     case oldMailAttachments
+    case handoffClipboard
 
     var titleKey: String {
         switch self {
@@ -19,6 +20,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .recentItems: "Recent items"
         case .incompleteDownloads: "Incomplete downloads"
         case .oldMailAttachments: "Old Mail attachments"
+        case .handoffClipboard: "Handoff clipboard cache"
         }
     }
 }
@@ -104,6 +106,10 @@ nonisolated enum CacheCleanupService {
         }.value
         discoveredItems.append(contentsOf: recentItems.items)
         unreadableItemCount += recentItems.unreadableItemCount
+
+        let handoffClipboard = await scanHandoffClipboard(referenceDate: Date())
+        discoveredItems.append(contentsOf: handoffClipboard.items)
+        unreadableItemCount += handoffClipboard.unreadableItemCount
 
         let eligiblePaths = await CleanupService.shared.eligiblePaths(discoveredItems.map(\.path))
         let items = discoveredItems
@@ -220,6 +226,14 @@ nonisolated enum CacheCleanupService {
         let requiresMailProbe = items.contains { $0.category == .oldMailAttachments }
         let mailIsSafe = !requiresMailProbe || mailIsInactive()
         for item in items {
+            if item.category == .handoffClipboard {
+                guard handoffItemIsStale(at: item.path, referenceDate: Date()) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .recentItems {
                 guard recentItemSize(at: item.path) == item.sizeBytes else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -249,6 +263,80 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanHandoffClipboard(referenceDate: Date) async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let root = handoffClipboardRoot()
+        guard isRealDirectory(at: root) else {
+            return ([], FileManager.default.fileExists(atPath: root) ? 1 : 0)
+        }
+
+        var finalUpdate: DiskAnalysisUpdate?
+        for await update in DiskAnalyzer.updates(for: root) {
+            guard !Task.isCancelled else { return ([], 0) }
+            if update.isComplete { finalUpdate = update }
+        }
+        guard let finalUpdate else { return ([], 1) }
+
+        var unreadableItemCount = finalUpdate.unreadableItemCount
+        let items = finalUpdate.entrySizes.compactMap { path, size -> CacheCleanupItem? in
+            guard handoffItemIsStale(at: path, referenceDate: referenceDate) else {
+                if FileManager.default.fileExists(atPath: path) {
+                    let url = URL(fileURLWithPath: path)
+                    if (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                        .contentModificationDate == nil {
+                        unreadableItemCount += 1
+                    }
+                }
+                return nil
+            }
+            return CacheCleanupItem(
+                path: path,
+                category: .handoffClipboard,
+                sizeBytes: size
+            )
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func handoffItemIsStale(at path: String, referenceDate: Date) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let root = handoffClipboardRoot()
+        guard isRealDirectory(at: root),
+              url.deletingLastPathComponent().path.compare(
+                root,
+                options: [.caseInsensitive, .literal]
+              ) == .orderedSame,
+              !isSymbolicLink(at: url.path),
+              let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate,
+              modified < referenceDate.addingTimeInterval(-handoffMinimumAge) else {
+            return false
+        }
+        return true
+    }
+
+    private static func handoffClipboardRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Group Containers", isDirectory: true)
+            .appendingPathComponent("group.com.apple.coreservices.useractivityd", isDirectory: true)
+            .appendingPathComponent("shared-pasteboard", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func isRealDirectory(at path: String) -> Bool {
+        var value = stat()
+        return path.withCString { lstat($0, &value) } == 0
+            && value.st_mode & S_IFMT == S_IFDIR
+    }
+
+    private static func isSymbolicLink(at path: String) -> Bool {
+        var value = stat()
+        return path.withCString { lstat($0, &value) } == 0
+            && value.st_mode & S_IFMT == S_IFLNK
     }
 
     private static func scanRecentItems() -> (
@@ -479,4 +567,5 @@ nonisolated enum CacheCleanupService {
     ]
     private static let mailAttachmentMinimumAge: TimeInterval = 30 * 24 * 60 * 60
     private static let mailDownloadsMinimumBytes: UInt64 = 5 * 1024 * 1024
+    private static let handoffMinimumAge: TimeInterval = 60 * 60
 }
