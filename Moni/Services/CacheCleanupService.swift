@@ -8,6 +8,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case oldCrashReports
     case messagesPreviewCaches
     case identityAndSuggestionCaches
+    case calendarCache
     case utmCaches
     case savedApplicationState
     case recentItems
@@ -24,6 +25,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .oldCrashReports: "Old crash reports"
         case .messagesPreviewCaches: "Messages preview caches"
         case .identityAndSuggestionCaches: "Identity and suggestion caches"
+        case .calendarCache: "Calendar cache"
         case .utmCaches: "UTM sandbox caches"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
@@ -143,6 +145,10 @@ nonisolated enum CacheCleanupService {
         let identityAndSuggestionCaches = await scanIdentityAndSuggestionCaches()
         discoveredItems.append(contentsOf: identityAndSuggestionCaches.items)
         unreadableItemCount += identityAndSuggestionCaches.unreadableItemCount
+
+        let calendarCache = await scanCalendarCache()
+        discoveredItems.append(contentsOf: calendarCache.items)
+        unreadableItemCount += calendarCache.unreadableItemCount
 
         let handoffClipboard = await scanHandoffClipboard(referenceDate: Date())
         discoveredItems.append(contentsOf: handoffClipboard.items)
@@ -274,6 +280,14 @@ nonisolated enum CacheCleanupService {
         }
         let utmIsSafe = !requiresUTMProbe || utmIsInactive()
         for item in items {
+            if item.category == .calendarCache {
+                guard calendarCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .identityAndSuggestionCaches {
                 guard identityAndSuggestionCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -353,6 +367,50 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanCalendarCache() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let path = calendarCachePath()
+        guard FileManager.default.fileExists(atPath: path) else { return ([], 0) }
+        guard calendarCacheItemIsAllowed(path) else { return ([], 1) }
+
+        var value = stat()
+        guard path.withCString({ lstat($0, &value) }) == 0 else { return ([], 1) }
+        let kind = value.st_mode & S_IFMT
+        let size: UInt64
+        var unreadableItemCount = 0
+        if kind == S_IFREG {
+            size = value.st_blocks > 0 ? UInt64(value.st_blocks) * 512 : 0
+        } else if kind == S_IFDIR {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: path) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else { return ([], 1) }
+            size = finalUpdate.scannedBytes
+            unreadableItemCount = finalUpdate.unreadableItemCount
+        } else {
+            return ([], 1)
+        }
+
+        return ([CacheCleanupItem(path: path, category: .calendarCache, sizeBytes: size)], unreadableItemCount)
+    }
+
+    private static func calendarCacheItemIsAllowed(_ path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return pathsEqual(normalized, calendarCachePath())
+            && !isSymbolicLink(at: normalized)
+    }
+
+    private static func calendarCachePath() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Calendars", isDirectory: true)
+            .appendingPathComponent("Calendar Cache")
+            .standardizedFileURL.path
     }
 
     private static func scanIdentityAndSuggestionCaches() async -> (

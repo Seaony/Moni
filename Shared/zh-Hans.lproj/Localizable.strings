@@ -169,6 +169,7 @@
 "Old crash reports" = "旧崩溃报告";
 "Messages preview caches" = "信息预览缓存";
 "Identity and suggestion caches" = "身份与建议缓存";
+"Calendar cache" = "日历缓存";
 "UTM sandbox caches" = "UTM 沙盒缓存";
 "Saved application states" = "已保存的应用状态";
 "Recent items" = "最近使用项目";
