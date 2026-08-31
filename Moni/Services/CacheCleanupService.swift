@@ -50,6 +50,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case xcodeBuildCaches
     case simulatorCaches
     case xcodeDeviceSupport
+    case gradleCaches
 
     var titleKey: String {
         switch self {
@@ -101,6 +102,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .xcodeBuildCaches: "Xcode build caches"
         case .simulatorCaches: "Simulator caches"
         case .xcodeDeviceSupport: "Old Xcode DeviceSupport"
+        case .gradleCaches: "Gradle caches"
         }
     }
 }
@@ -448,6 +450,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: xcodeDeviceSupport.items)
         unreadableItemCount += xcodeDeviceSupport.unreadableItemCount
 
+        let gradleCaches = await scanGradleCaches()
+        discoveredItems.append(contentsOf: gradleCaches.items)
+        unreadableItemCount += gradleCaches.unreadableItemCount
+
         let developerBackupFiles = scanDeveloperBackupFiles()
         discoveredItems.append(contentsOf: developerBackupFiles.items)
         unreadableItemCount += developerBackupFiles.unreadableItemCount
@@ -635,7 +641,18 @@ nonisolated enum CacheCleanupService {
         let deviceSupportAllowedPaths = requiresDeviceSupportProbe
             ? Set(xcodeDeviceSupportCandidatePaths())
             : Set<String>()
+        let gradleIsSafe = !items.contains { $0.category == .gradleCaches }
+            || gradleIsInactive()
         for item in items {
+            if item.category == .gradleCaches {
+                guard gradleIsSafe,
+                      gradleCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .xcodeDeviceSupport {
                 guard deviceSupportIsSafe,
                       deviceSupportAllowedPaths.contains(where: { pathsEqual($0, item.path) }),
@@ -2111,6 +2128,77 @@ nonisolated enum CacheCleanupService {
             ["-x", "swift-frontend"],
             ["-f", "com.apple.dt.XCTest"],
             ["-f", "XCTest"]
+        ])
+    }
+
+    private static func scanGradleCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard gradleIsInactive() else { return ([], 0) }
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in gradleCacheRoots() where isRealDirectory(at: root) {
+            let children: [URL]
+            do {
+                children = try FileManager.default.contentsOfDirectory(
+                    at: URL(fileURLWithPath: root, isDirectory: true),
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                unreadableItemCount += 1
+                continue
+            }
+            for child in children {
+                guard !Task.isCancelled else { return ([], 0) }
+                let path = child.standardizedFileURL.path
+                guard gradleCacheItemIsAllowed(path),
+                      let measurement = await cacheTargetSize(at: path),
+                      measurement.sizeBytes > 0 else {
+                    continue
+                }
+                unreadableItemCount += measurement.unreadableItemCount
+                items.append(CacheCleanupItem(
+                    path: path,
+                    category: .gradleCaches,
+                    sizeBytes: measurement.sizeBytes
+                ))
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func gradleCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return !url.lastPathComponent.hasPrefix(".")
+            && isRealFileOrDirectory(at: url.path)
+            && !isSymbolicLink(at: url.path)
+            && currentUserOwnsItem(at: url.path)
+            && !holdsCompiledModelCache(url.path)
+            && gradleCacheRoots().contains { root in
+                isRealDirectory(at: root)
+                    && pathsEqual(url.deletingLastPathComponent().path, root)
+            }
+    }
+
+    private static func gradleCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let caches = home + "/.gradle/caches"
+        let buildCaches = childDirectories(at: caches).filter {
+            URL(fileURLWithPath: $0).lastPathComponent.hasPrefix("build-cache-")
+        }
+        return buildCaches + [
+            home + "/.gradle/notifications",
+            home + "/.gradle/daemon",
+            home + "/.gradle/workers"
+        ]
+    }
+
+    private static func gradleIsInactive() -> Bool {
+        processProbesAreInactive([
+            ["-f", "org.gradle.launcher.daemon"],
+            ["-f", "GradleDaemon"]
         ])
     }
 
