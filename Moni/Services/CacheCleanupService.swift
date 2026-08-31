@@ -31,6 +31,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case virtualizationTemporaryData
     case savedApplicationState
     case finderMetadata
+    case externalVolumeMetadata
     case recentItems
     case incompleteDownloads
     case oldMailAttachments
@@ -68,6 +69,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
         case .finderMetadata: "Finder metadata"
+        case .externalVolumeMetadata: "External volume metadata"
         case .recentItems: "Recent items"
         case .incompleteDownloads: "Incomplete downloads"
         case .oldMailAttachments: "Old Mail attachments"
@@ -320,6 +322,12 @@ nonisolated enum CacheCleanupService {
         }.value
         discoveredItems.append(contentsOf: finderMetadata.items)
         unreadableItemCount += finderMetadata.unreadableItemCount
+
+        let externalVolumeMetadata = await Task.detached(priority: .utility) {
+            scanExternalVolumeMetadata()
+        }.value
+        discoveredItems.append(contentsOf: externalVolumeMetadata.items)
+        unreadableItemCount += externalVolumeMetadata.unreadableItemCount
 
         let oldCrashReports = await Task.detached(priority: .utility) {
             scanOldCrashReports(referenceDate: Date())
@@ -739,6 +747,14 @@ nonisolated enum CacheCleanupService {
             }
             if item.category == .finderMetadata {
                 guard finderMetadataSize(at: item.path) == item.sizeBytes else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .externalVolumeMetadata {
+                guard externalVolumeMetadataSize(at: item.path) == item.sizeBytes else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -3263,6 +3279,180 @@ nonisolated enum CacheCleanupService {
     private static let finderMetadataMaximumDepth = 5
     private static let finderMetadataMaximumFiles = 500
     private static let finderMetadataScanTimeout: TimeInterval = 15
+
+    private static func scanExternalVolumeMetadata() -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for volume in externalWritableVolumes() {
+            guard !Task.isCancelled else { return ([], 0) }
+            let result = scanExternalVolumeMetadata(at: volume)
+            items.append(contentsOf: result.items)
+            unreadableItemCount += result.unreadableItemCount
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func scanExternalVolumeMetadata(at volume: URL) -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard let volumeDevice = deviceIdentifier(at: volume.path) else { return ([], 1) }
+        var unreadableItemCount = 0
+        guard let enumerator = FileManager.default.enumerator(
+            at: volume,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+            options: [],
+            errorHandler: { _, _ in
+                unreadableItemCount += 1
+                return true
+            }
+        ) else {
+            return ([], 1)
+        }
+
+        let deadline = ProcessInfo.processInfo.systemUptime + externalVolumeMetadataScanTimeout
+        var finderMetadataCount = 0
+        var items: [CacheCleanupItem] = []
+        for case let url as URL in enumerator {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                return ([], unreadableItemCount + 1)
+            }
+            let standardized = url.standardizedFileURL
+            guard let metadata = externalVolumeMetadata(at: standardized.path) else {
+                unreadableItemCount += 1
+                enumerator.skipDescendants()
+                continue
+            }
+            if metadata.isDirectory {
+                if metadata.isSymbolicLink
+                    || metadata.device != volumeDevice
+                    || externalVolumeMetadataDirectoryIsExcluded(standardized.path) {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
+            guard metadata.device == volumeDevice,
+                  metadata.isRegularFile,
+                  !metadata.isSymbolicLink else {
+                continue
+            }
+
+            let name = standardized.lastPathComponent
+            if name == ".DS_Store" {
+                guard finderMetadataCount < finderMetadataMaximumFiles else { continue }
+            } else if !name.hasPrefix("._") {
+                continue
+            }
+            let canonical = standardized.resolvingSymlinksInPath().standardizedFileURL.path
+            guard pathIsInside(canonical, root: volume.path),
+                  !CleanupPreferences.isWhitelisted(standardized.path) else {
+                continue
+            }
+            if name == ".DS_Store" { finderMetadataCount += 1 }
+            items.append(CacheCleanupItem(
+                path: standardized.path,
+                category: .externalVolumeMetadata,
+                sizeBytes: metadata.allocatedBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func externalVolumeMetadataSize(at path: String) -> UInt64? {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let name = url.lastPathComponent
+        let canonical = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard name == ".DS_Store" || name.hasPrefix("._"),
+              !externalVolumeMetadataPathIsExcluded(url.path),
+              let volume = externalWritableVolumes().first(where: {
+                  pathIsInside(url.path, root: $0.path)
+              }),
+              pathIsInside(canonical, root: volume.path),
+              let volumeDevice = deviceIdentifier(at: volume.path),
+              let metadata = externalVolumeMetadata(at: url.path),
+              metadata.device == volumeDevice,
+              metadata.isRegularFile,
+              !metadata.isSymbolicLink else {
+            return nil
+        }
+        return metadata.allocatedBytes
+    }
+
+    private static func externalWritableVolumes() -> [URL] {
+        let keys: Set<URLResourceKey> = [
+            .volumeIsInternalKey, .volumeIsLocalKey, .volumeIsReadOnlyKey
+        ]
+        let volumes = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: Array(keys),
+            options: [.skipHiddenVolumes]
+        ) ?? []
+        return volumes.compactMap { volume in
+            let standardized = volume.standardizedFileURL
+            guard pathsEqual(standardized.deletingLastPathComponent().path, "/Volumes"),
+                  isRealDirectory(at: standardized.path),
+                  let values = try? standardized.resourceValues(forKeys: keys),
+                  values.volumeIsInternal == false,
+                  values.volumeIsLocal == true,
+                  values.volumeIsReadOnly == false else {
+                return nil
+            }
+            return standardized
+        }
+    }
+
+    private static func externalVolumeMetadataDirectoryIsExcluded(_ path: String) -> Bool {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        if name == "node_modules" || name == ".git" || name == ".Trash"
+            || name == ".Trashes" || name == ".TemporaryItems" {
+            return true
+        }
+        return path.hasSuffix("/Library/Application Support/MobileSync")
+            || path.hasSuffix("/Library/Developer")
+            || path.hasSuffix("/Library/Caches")
+    }
+
+    private static func externalVolumeMetadataPathIsExcluded(_ path: String) -> Bool {
+        var current = URL(fileURLWithPath: path).deletingLastPathComponent()
+        while !pathsEqual(current.path, "/Volumes"), current.path != "/" {
+            if externalVolumeMetadataDirectoryIsExcluded(current.path) { return true }
+            current.deleteLastPathComponent()
+        }
+        return false
+    }
+
+    private static func externalVolumeMetadata(at path: String) -> (
+        device: UInt64,
+        allocatedBytes: UInt64,
+        isDirectory: Bool,
+        isRegularFile: Bool,
+        isSymbolicLink: Bool
+    )? {
+        var value = stat()
+        guard path.withCString({ lstat($0, &value) }) == 0 else { return nil }
+        let kind = value.st_mode & S_IFMT
+        return (
+            UInt64(value.st_dev),
+            value.st_blocks > 0 ? UInt64(value.st_blocks) * 512 : 0,
+            kind == S_IFDIR,
+            kind == S_IFREG,
+            kind == S_IFLNK
+        )
+    }
+
+    private static func deviceIdentifier(at path: String) -> UInt64? {
+        var value = stat()
+        guard path.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFDIR else {
+            return nil
+        }
+        return UInt64(value.st_dev)
+    }
+
+    private static let externalVolumeMetadataScanTimeout: TimeInterval = 15
 
     private static func scanRecentItems() -> (
         items: [CacheCleanupItem],
