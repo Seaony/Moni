@@ -53,6 +53,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case gradleCaches
     case jetBrainsToolboxOldVersions
     case developerToolOldVersions
+    case obsoleteEditorExtensions
 
     var titleKey: String {
         switch self {
@@ -107,6 +108,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .gradleCaches: "Gradle caches"
         case .jetBrainsToolboxOldVersions: "Old JetBrains Toolbox versions"
         case .developerToolOldVersions: "Old developer tool versions"
+        case .obsoleteEditorExtensions: "Obsolete editor extensions"
         }
     }
 }
@@ -471,6 +473,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: developerToolVersions.items)
         unreadableItemCount += developerToolVersions.unreadableItemCount
 
+        let obsoleteEditorExtensions = await scanObsoleteEditorExtensions()
+        discoveredItems.append(contentsOf: obsoleteEditorExtensions.items)
+        unreadableItemCount += obsoleteEditorExtensions.unreadableItemCount
+
         let developerBackupFiles = scanDeveloperBackupFiles()
         discoveredItems.append(contentsOf: developerBackupFiles.items)
         unreadableItemCount += developerBackupFiles.unreadableItemCount
@@ -669,7 +675,20 @@ nonisolated enum CacheCleanupService {
         let developerToolVersionAllowedPaths = items.contains {
             $0.category == .developerToolOldVersions
         } ? Set(developerToolOldVersionCandidatePaths()) : Set<String>()
+        let obsoleteEditorExtensionAllowedPaths = items.contains {
+            $0.category == .obsoleteEditorExtensions
+        } ? Set(obsoleteEditorExtensionCandidatePaths()) : Set<String>()
         for item in items {
+            if item.category == .obsoleteEditorExtensions {
+                guard obsoleteEditorExtensionAllowedPaths.contains(where: {
+                    pathsEqual($0, item.path)
+                }), obsoleteEditorExtensionItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .developerToolOldVersions {
                 guard developerToolVersionAllowedPaths.contains(where: {
                     pathsEqual($0, item.path)
@@ -2589,6 +2608,87 @@ nonisolated enum CacheCleanupService {
             ["-x", "Claude"],
             ["-f", "/Claude.app/"]
         ])
+    }
+
+    private static func scanObsoleteEditorExtensions() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for path in obsoleteEditorExtensionCandidatePaths() {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard obsoleteEditorExtensionItemIsAllowed(path),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .obsoleteEditorExtensions,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func obsoleteEditorExtensionItemIsAllowed(_ path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return isRealDirectory(at: normalized)
+            && !isSymbolicLink(at: normalized)
+            && currentUserOwnsItem(at: normalized)
+            && !holdsCompiledModelCache(normalized)
+            && obsoleteEditorExtensionCandidatePaths().contains {
+                pathsEqual($0, normalized)
+            }
+    }
+
+    private static func obsoleteEditorExtensionCandidatePaths() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let roots = [
+            home + "/.vscode/extensions",
+            home + "/.vscode-insiders/extensions",
+            home + "/.cursor/extensions"
+        ]
+        var candidates: [String] = []
+        for root in roots where isRealDirectory(at: root) && currentUserOwnsDirectory(at: root) {
+            let marker = root + "/.obsolete"
+            var markerMetadata = stat()
+            guard marker.withCString({ lstat($0, &markerMetadata) }) == 0,
+                  markerMetadata.st_mode & S_IFMT == S_IFREG,
+                  markerMetadata.st_size >= 0,
+                  markerMetadata.st_size <= 1_048_576,
+                  currentUserOwnsItem(at: marker),
+                  let data = try? Data(contentsOf: URL(fileURLWithPath: marker)),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let obsolete = object as? [String: Any] else {
+                continue
+            }
+            for name in obsolete.keys {
+                guard !name.isEmpty,
+                      name != ".",
+                      name != "..",
+                      !name.contains("/"),
+                      !name.unicodeScalars.contains(where: {
+                        CharacterSet.controlCharacters.contains($0)
+                      }) else {
+                    continue
+                }
+                let target = URL(fileURLWithPath: root, isDirectory: true)
+                    .appendingPathComponent(name, isDirectory: true)
+                    .standardizedFileURL.path
+                guard pathsEqual(URL(fileURLWithPath: target).deletingLastPathComponent().path, root),
+                      isRealDirectory(at: target),
+                      !isSymbolicLink(at: target),
+                      currentUserOwnsItem(at: target) else {
+                    continue
+                }
+                candidates.append(target)
+            }
+        }
+        var seen = Set<String>()
+        return candidates.filter { seen.insert($0).inserted }
     }
 
     private static func scanDeveloperToolCaches() async -> (
