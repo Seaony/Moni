@@ -54,6 +54,13 @@ nonisolated struct InstallerCleanupSnapshot: Sendable {
     let unreadableItemCount: Int
 }
 
+nonisolated struct InstallerCleanupPlan: Identifiable, Sendable {
+    let cleanupPlan: CleanupPlan
+    let items: [InstallerCleanupItem]
+
+    var id: UUID { cleanupPlan.id }
+}
+
 nonisolated enum InstallerCleanupService {
     private struct SearchRoot: Sendable {
         let path: String
@@ -80,6 +87,49 @@ nonisolated enum InstallerCleanupService {
             items: rawResult.items.filter { eligiblePaths.contains($0.path) },
             unreadableItemCount: rawResult.unreadableItemCount
         )
+    }
+
+    static func previewCleanup(items: [InstallerCleanupItem]) async -> InstallerCleanupPlan {
+        let plan = await CleanupService.shared.preview(
+            paths: items.map(\.path),
+            scope: .installers
+        )
+        return InstallerCleanupPlan(cleanupPlan: plan, items: items)
+    }
+
+    static func executeCleanup(_ plan: InstallerCleanupPlan) async -> CleanupRunResult {
+        let validation = await Task.detached(priority: .utility) {
+            revalidate(plan.items)
+        }.value
+        let finalPlan = CleanupPlan(
+            id: plan.cleanupPlan.id,
+            createdAt: plan.cleanupPlan.createdAt,
+            scope: plan.cleanupPlan.scope,
+            candidates: plan.cleanupPlan.candidates.filter { validation.allowedPaths.contains($0.path) },
+            rejectedItems: plan.cleanupPlan.rejectedItems + validation.rejectedItems
+        )
+        return await CleanupService.shared.execute(finalPlan)
+    }
+
+    private static func revalidate(_ items: [InstallerCleanupItem]) -> (
+        allowedPaths: Set<String>,
+        rejectedItems: [CleanupRejectedItem]
+    ) {
+        var allowedPaths: Set<String> = []
+        var rejectedItems: [CleanupRejectedItem] = []
+        for item in items {
+            let url = URL(fileURLWithPath: item.path)
+            guard let metadata = fileMetadata(at: url),
+                  metadata.isRegularFile,
+                  !metadata.isSymbolicLink,
+                  metadata.sizeBytes == item.sizeBytes,
+                  installerKind(for: url) == item.kind else {
+                rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                continue
+            }
+            allowedPaths.insert(item.path)
+        }
+        return (allowedPaths, rejectedItems)
     }
 
     private static func scanSynchronously() -> ScanResult {
