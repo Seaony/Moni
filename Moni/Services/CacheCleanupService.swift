@@ -49,6 +49,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case clangModuleCache
     case xcodeBuildCaches
     case simulatorCaches
+    case xcodeDeviceSupport
 
     var titleKey: String {
         switch self {
@@ -99,6 +100,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .clangModuleCache: "Clang module cache"
         case .xcodeBuildCaches: "Xcode build caches"
         case .simulatorCaches: "Simulator caches"
+        case .xcodeDeviceSupport: "Old Xcode DeviceSupport"
         }
     }
 }
@@ -442,6 +444,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: simulatorCaches.items)
         unreadableItemCount += simulatorCaches.unreadableItemCount
 
+        let xcodeDeviceSupport = await scanXcodeDeviceSupport()
+        discoveredItems.append(contentsOf: xcodeDeviceSupport.items)
+        unreadableItemCount += xcodeDeviceSupport.unreadableItemCount
+
         let developerBackupFiles = scanDeveloperBackupFiles()
         discoveredItems.append(contentsOf: developerBackupFiles.items)
         unreadableItemCount += developerBackupFiles.unreadableItemCount
@@ -624,7 +630,22 @@ nonisolated enum CacheCleanupService {
         let simulatorAllowedPaths = requiresSimulatorProbe
             ? Set(simulatorCacheCandidatePaths())
             : Set<String>()
+        let requiresDeviceSupportProbe = items.contains { $0.category == .xcodeDeviceSupport }
+        let deviceSupportIsSafe = !requiresDeviceSupportProbe || deviceSupportToolsAreInactive()
+        let deviceSupportAllowedPaths = requiresDeviceSupportProbe
+            ? Set(xcodeDeviceSupportCandidatePaths())
+            : Set<String>()
         for item in items {
+            if item.category == .xcodeDeviceSupport {
+                guard deviceSupportIsSafe,
+                      deviceSupportAllowedPaths.contains(where: { pathsEqual($0, item.path) }),
+                      xcodeDeviceSupportItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .simulatorCaches {
                 guard simulatorIsSafe,
                       simulatorAllowedPaths.contains(where: { pathsEqual($0, item.path) }),
@@ -1996,6 +2017,101 @@ nonisolated enum CacheCleanupService {
             guard let entries = value as? [[String: Any]] else { return false }
             return entries.isEmpty
         }
+    }
+
+    private static func scanXcodeDeviceSupport() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard deviceSupportToolsAreInactive() else { return ([], 0) }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for path in xcodeDeviceSupportCandidatePaths() {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard xcodeDeviceSupportItemIsAllowed(path),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .xcodeDeviceSupport,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func xcodeDeviceSupportItemIsAllowed(_ path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return isRealFileOrDirectory(at: normalized)
+            && !isSymbolicLink(at: normalized)
+            && currentUserOwnsItem(at: normalized)
+            && !holdsCompiledModelCache(normalized)
+            && xcodeDeviceSupportCandidatePaths().contains { pathsEqual($0, normalized) }
+    }
+
+    private static func xcodeDeviceSupportCandidatePaths() -> [String] {
+        var candidates: [String] = []
+        for root in xcodeDeviceSupportRoots()
+            where isRealDirectory(at: root) && currentUserOwnsDirectory(at: root) {
+            let versionPaths = childDirectories(at: root)
+            let versions = versionPaths.compactMap { path -> (String, Date)? in
+                let values = try? URL(fileURLWithPath: path).resourceValues(
+                    forKeys: [.contentModificationDateKey]
+                )
+                guard let date = values?.contentModificationDate else { return nil }
+                return (path, date)
+            }.sorted { lhs, rhs in
+                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                return lhs.0.localizedStandardCompare(rhs.0) == .orderedAscending
+            }
+            guard versions.count == versionPaths.count else { continue }
+            let stalePaths = Set(versions.dropFirst(2).map { $0.0 })
+            candidates.append(contentsOf: stalePaths)
+
+            for version in versions.map({ $0.0 }) where !stalePaths.contains(version) {
+                candidates.append(contentsOf: directChildPaths(
+                    in: version + "/Symbols/System/Library/Caches"
+                ))
+            }
+            candidates.append(contentsOf: directChildPaths(in: root).filter {
+                URL(fileURLWithPath: $0).pathExtension.lowercased() == "log"
+            })
+        }
+        var seen = Set<String>()
+        return candidates.filter { seen.insert($0).inserted }
+    }
+
+    private static func currentUserOwnsItem(at path: String) -> Bool {
+        var value = stat()
+        return path.withCString { lstat($0, &value) } == 0 && value.st_uid == getuid()
+    }
+
+    private static func xcodeDeviceSupportRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return [
+            home + "/Library/Developer/Xcode/iOS DeviceSupport",
+            home + "/Library/Developer/Xcode/watchOS DeviceSupport",
+            home + "/Library/Developer/Xcode/tvOS DeviceSupport"
+        ]
+    }
+
+    private static func deviceSupportToolsAreInactive() -> Bool {
+        processProbesAreInactive([
+            ["-x", "Xcode"],
+            ["-x", "Simulator"],
+            ["-x", "xcodebuild"],
+            ["-x", "xctest"],
+            ["-x", "XCTRunner"],
+            ["-x", "simctl"],
+            ["-x", "XCBBuildService"],
+            ["-x", "swift-frontend"],
+            ["-f", "com.apple.dt.XCTest"],
+            ["-f", "XCTest"]
+        ])
     }
 
     private static func scanDeveloperToolCaches() async -> (
