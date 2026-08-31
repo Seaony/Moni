@@ -72,6 +72,9 @@ nonisolated enum CacheCleanupService {
 
     static func scan() async -> CacheCleanupSnapshot {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let userCacheProcessGuard = await Task.detached(priority: .utility) {
+            UserCacheProcessGuard.capture()
+        }.value
         let sources = [
             Source(path: home + "/Library/Caches", category: .userCaches),
             Source(path: home + "/Library/Logs", category: .userLogs),
@@ -102,7 +105,12 @@ nonisolated enum CacheCleanupService {
             unreadableItemCount += finalUpdate.unreadableItemCount
             discoveredItems.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
                 let name = URL(fileURLWithPath: path).lastPathComponent
-                guard size > 0, !name.hasPrefix(".") else { return nil }
+                guard size > 0,
+                      !name.hasPrefix("."),
+                      source.category != .userCaches
+                        || UserCacheProcessGuard.permits(path, using: userCacheProcessGuard) else {
+                    return nil
+                }
                 return CacheCleanupItem(path: path, category: source.category, sizeBytes: size)
             })
         }
@@ -297,7 +305,15 @@ nonisolated enum CacheCleanupService {
                 || ($0.category == .userCaches && pathsEqual($0.path, utmApplicationCacheRoot()))
         }
         let utmIsSafe = !requiresUTMProbe || utmIsInactive()
+        let userCacheProcessGuard = items.contains { $0.category == .userCaches }
+            ? UserCacheProcessGuard.capture()
+            : nil
         for item in items {
+            if item.category == .userCaches,
+               !UserCacheProcessGuard.permits(item.path, using: userCacheProcessGuard) {
+                rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                continue
+            }
             if item.category == .sharedContainerLogs {
                 guard sharedContainerLogItemIsAllowed(item.path),
                       !holdsCompiledModelCache(item.path),
