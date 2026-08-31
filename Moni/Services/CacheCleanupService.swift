@@ -15,6 +15,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case diaProfileCaches
     case chromeProfileCaches
     case firefoxProfileCaches
+    case braveProfileCaches
     case googleUpdaterCaches
     case virtualizationTemporaryData
     case savedApplicationState
@@ -39,6 +40,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .diaProfileCaches: "Dia profile caches"
         case .chromeProfileCaches: "Chrome profile caches"
         case .firefoxProfileCaches: "Firefox profile caches"
+        case .braveProfileCaches: "Brave profile caches"
         case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
@@ -127,7 +129,8 @@ nonisolated enum CacheCleanupService {
             $0.category == .userCaches
                 && (pathsEqual($0.path, diaGeneralCacheRoot())
                     || pathsEqual($0.path, googleGeneralCacheRoot())
-                    || pathsEqual($0.path, firefoxGeneralCacheRoot()))
+                    || pathsEqual($0.path, firefoxGeneralCacheRoot())
+                    || pathsEqual($0.path, braveGeneralCacheRoot()))
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -155,6 +158,15 @@ nonisolated enum CacheCleanupService {
             let firefoxProfileCaches = await scanFirefoxProfileCaches()
             discoveredItems.append(contentsOf: firefoxProfileCaches.items)
             unreadableItemCount += firefoxProfileCaches.unreadableItemCount
+        }
+
+        let braveIsSafe = await Task.detached(priority: .utility) {
+            braveIsInactive()
+        }.value
+        if braveIsSafe {
+            let braveProfileCaches = await scanBraveProfileCaches()
+            discoveredItems.append(contentsOf: braveProfileCaches.items)
+            unreadableItemCount += braveProfileCaches.unreadableItemCount
         }
 
         let googleUpdaterCaches = await scanGoogleUpdaterCaches()
@@ -357,12 +369,23 @@ nonisolated enum CacheCleanupService {
         let chromeIsSafe = !requiresChromeProbe || chromeIsInactive()
         let requiresFirefoxProbe = items.contains { $0.category == .firefoxProfileCaches }
         let firefoxIsSafe = !requiresFirefoxProbe || firefoxIsInactive()
+        let requiresBraveProbe = items.contains { $0.category == .braveProfileCaches }
+        let braveIsSafe = !requiresBraveProbe || braveIsInactive()
         let userCacheProcessGuard = items.contains { $0.category == .userCaches }
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
             if item.category == .googleUpdaterCaches {
                 guard googleUpdaterCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .braveProfileCaches {
+                guard braveIsSafe,
+                      braveProfileCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -889,6 +912,12 @@ nonisolated enum CacheCleanupService {
             .standardizedFileURL.path
     }
 
+    private static func braveGeneralCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/BraveSoftware", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
     private static func diaIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Dia"]])
     }
@@ -947,6 +976,35 @@ nonisolated enum CacheCleanupService {
                 return CacheCleanupItem(
                     path: path,
                     category: .firefoxProfileCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func scanBraveProfileCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in braveProfileCacheRoots() where isRealDirectory(at: root) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: root) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                guard braveProfileCacheItemIsAllowed(path) else { return nil }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .braveProfileCaches,
                     sizeBytes: size
                 )
             })
@@ -1107,6 +1165,45 @@ nonisolated enum CacheCleanupService {
         }
     }
 
+    private static func braveProfileCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              !holdsCompiledModelCache(url.path) else {
+            return false
+        }
+        return braveProfileCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func braveProfileCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let cacheRoot = home + "/Library/Caches/BraveSoftware/Brave-Browser"
+        let supportRoot = home + "/Library/Application Support/BraveSoftware/Brave-Browser"
+        var roots = [
+            cacheRoot,
+            supportRoot + "/component_crx_cache",
+            supportRoot + "/ShaderCache",
+            supportRoot + "/GrShaderCache",
+            supportRoot + "/GraphiteDawnCache",
+            supportRoot + "/Crashpad/completed"
+        ]
+        roots.append(contentsOf: childDirectories(at: supportRoot).flatMap { profile in
+            [
+                profile + "/Application Cache",
+                profile + "/Code Cache",
+                profile + "/GPUCache",
+                profile + "/DawnCache",
+                profile + "/GrShaderCache",
+                profile + "/GraphiteDawnCache"
+            ]
+        })
+        var seen: Set<String> = []
+        return roots.filter { seen.insert($0).inserted }
+    }
+
     private static func chromeIsInactive() -> Bool {
         processProbesAreInactive([
             ["-x", "Google Chrome"],
@@ -1117,6 +1214,10 @@ nonisolated enum CacheCleanupService {
 
     private static func firefoxIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Firefox"]])
+    }
+
+    private static func braveIsInactive() -> Bool {
+        processProbesAreInactive([["-x", "Brave Browser"]])
     }
 
     private static func processProbesAreInactive(_ probes: [[String]]) -> Bool {
