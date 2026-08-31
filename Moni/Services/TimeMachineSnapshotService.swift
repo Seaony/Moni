@@ -24,6 +24,10 @@ nonisolated struct TimeMachineIncompleteBackupItem: Identifiable, Sendable {
     let modifiedDate: Date
     let deviceID: UInt64
     let fileID: UInt64
+    let backupRootPath: String
+    let backupRootDeviceID: UInt64
+    let backupRootFileID: UInt64
+    let isMountedBundle: Bool
 
     var id: String { path }
 }
@@ -51,6 +55,7 @@ nonisolated enum TimeMachineSnapshotService {
     private static let timeMachineExecutable = "/usr/bin/tmutil"
     private static let defaultsExecutable = "/usr/bin/defaults"
     private static let diskUsageExecutable = "/usr/bin/du"
+    private static let diskImageExecutable = "/usr/bin/hdiutil"
     private static let minimumIncompleteBackupAge: TimeInterval = 48 * 60 * 60
     private static let incompleteBackupScanTimeout: TimeInterval = 60
     private static let incompleteBackupSizeTimeout: TimeInterval = 30
@@ -193,6 +198,7 @@ nonisolated enum TimeMachineSnapshotService {
             guard let item = itemsByPath[candidate.path],
                   candidate.device == item.deviceID,
                   candidate.inode == item.fileID,
+                  backupRootIsStillEligible(item),
                   candidateIsStillEligible(
                       at: URL(fileURLWithPath: candidate.path),
                       expected: (
@@ -221,6 +227,9 @@ nonisolated enum TimeMachineSnapshotService {
             arguments.append(
                 "\(entry.item.deviceID):\(entry.item.fileID):\(Int64(entry.item.modifiedDate.timeIntervalSince1970))"
             )
+            arguments.append(entry.item.backupRootPath)
+            arguments.append("\(entry.item.backupRootDeviceID):\(entry.item.backupRootFileID)")
+            arguments.append(entry.item.isMountedBundle ? "bundle" : "direct")
         }
         let execution = run("/usr/bin/osascript", arguments: arguments, timeout: 300)
         let removedIndexes = Set(execution.output.split(whereSeparator: \.isNewline).compactMap { line -> Int? in
@@ -254,20 +263,25 @@ nonisolated enum TimeMachineSnapshotService {
     private static let privilegedDeleteScript = #"""
     on run argv
         set commandText to "tm_idle() { status=$(/usr/bin/tmutil status 2>/dev/null) || return 1; printf '%s\\n' \"$status\" | /usr/bin/grep -Eq '(^|[[:space:]])(\"Running\"|Running)[[:space:]]*=' || return 1; printf '%s\\n' \"$status\" | /usr/bin/grep -Eq '(^|[[:space:]])(\"Running\"|Running)[[:space:]]*=[[:space:]]*1([[:space:]]*;|$)' && return 1; return 0; }; "
-        set commandText to commandText & "tm_candidate_path() { case \"$1\" in /Volumes/*/Backups.backupdb/*) return 0 ;; *) return 1 ;; esac; }; "
+        set commandText to commandText & "tm_candidate_path() { source_path_arg=$1; root_path_arg=$2; root_kind_arg=$3; case \"$source_path_arg\" in \"$root_path_arg\"/*) ;; *) return 1 ;; esac; case \"$root_kind_arg\" in direct) [ \"$(/usr/bin/basename \"$root_path_arg\")\" = 'Backups.backupdb' ] && [ \"$(/usr/bin/dirname \"$(/usr/bin/dirname \"$root_path_arg\")\")\" = '/Volumes' ] ;; bundle) [ \"$(/usr/bin/dirname \"$root_path_arg\")\" = '/Volumes' ] ;; *) return 1 ;; esac; }; "
         set argumentCount to count of argv
         set candidateIndex to 0
-        repeat with argumentIndex from 1 to argumentCount by 2
+        repeat with argumentIndex from 1 to argumentCount by 5
             set candidateIndex to candidateIndex + 1
+            set candidateIndexText to candidateIndex as text
             set sourcePath to item argumentIndex of argv
             set expectedIdentity to item (argumentIndex + 1) of argv
-            set commandText to commandText & "( source_path=" & quoted form of sourcePath & "; expected_identity=" & quoted form of expectedIdentity & "; "
-            set commandText to commandText & "tm_candidate_path \"$source_path\" && [ -d \"$source_path\" ] && [ ! -L \"$source_path\" ] && "
+            set rootPath to item (argumentIndex + 2) of argv
+            set expectedRootIdentity to item (argumentIndex + 3) of argv
+            set rootKind to item (argumentIndex + 4) of argv
+            set commandText to commandText & "( source_path=" & quoted form of sourcePath & "; expected_identity=" & quoted form of expectedIdentity & "; root_path=" & quoted form of rootPath & "; expected_root_identity=" & quoted form of expectedRootIdentity & "; root_kind=" & quoted form of rootKind & "; "
+            set commandText to commandText & "tm_candidate_path \"$source_path\" \"$root_path\" \"$root_kind\" && [ -d \"$root_path\" ] && [ ! -L \"$root_path\" ] && [ -d \"$source_path\" ] && [ ! -L \"$source_path\" ] && "
+            set commandText to commandText & "root_identity=$(/usr/bin/stat -f '%d:%i' \"$root_path\") && [ \"$root_identity\" = \"$expected_root_identity\" ] && "
             set commandText to commandText & "case \"${source_path##*/}\" in *.inProgress|*.inprogress) true ;; *) false ;; esac && "
             set commandText to commandText & "tm_idle && current_identity=$(/usr/bin/stat -f '%d:%i:%m' \"$source_path\") && [ \"$current_identity\" = \"$expected_identity\" ] && "
             set commandText to commandText & "mtime=${current_identity##*:} && now=$(/bin/date +%s) && [ \"$now\" -ge \"$mtime\" ] && [ $((now - mtime)) -ge 172800 ] && "
-            set commandText to commandText & "tm_idle && final_identity=$(/usr/bin/stat -f '%d:%i:%m' \"$source_path\") && [ \"$final_identity\" = \"$expected_identity\" ] && "
-            set commandText to commandText & "/usr/bin/tmutil delete \"$source_path\" ) && printf 'REMOVED:%s\\n' " & candidateIndex & " || printf 'FAILED:%s\\n' " & candidateIndex & "; "
+            set commandText to commandText & "tm_idle && final_root_identity=$(/usr/bin/stat -f '%d:%i' \"$root_path\") && [ \"$final_root_identity\" = \"$expected_root_identity\" ] && final_identity=$(/usr/bin/stat -f '%d:%i:%m' \"$source_path\") && [ \"$final_identity\" = \"$expected_identity\" ] && "
+            set commandText to commandText & "/usr/bin/tmutil delete \"$source_path\" ) && printf 'REMOVED:%s\\n' " & candidateIndexText & " || printf 'FAILED:%s\\n' " & candidateIndexText & "; "
         end repeat
         do shell script commandText with administrator privileges
     end run
@@ -280,7 +294,8 @@ nonisolated enum TimeMachineSnapshotService {
         let deadline = ProcessInfo.processInfo.systemUptime + incompleteBackupScanTimeout
         var items: [TimeMachineIncompleteBackupItem] = []
         var unreadableItemCount = 0
-        for volume in localBackupVolumes() {
+        let volumes = localBackupVolumes()
+        for volume in volumes {
             guard !Task.isCancelled else { return ([], 0) }
             guard ProcessInfo.processInfo.systemUptime < deadline else {
                 return (items, unreadableItemCount + 1)
@@ -290,6 +305,8 @@ nonisolated enum TimeMachineSnapshotService {
             let result = scanIncompleteBackups(
                 at: root,
                 rootDeviceID: rootIdentity.deviceID,
+                rootFileID: rootIdentity.fileID,
+                isMountedBundle: false,
                 referenceDate: referenceDate,
                 deadline: deadline
             )
@@ -299,6 +316,30 @@ nonisolated enum TimeMachineSnapshotService {
                 unreadableItemCount += 1
             }
         }
+        let mountedBundles = mountedBackupBundleRoots(on: volumes)
+        unreadableItemCount += mountedBundles.unreadableItemCount
+        for root in mountedBundles.roots {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard ProcessInfo.processInfo.systemUptime < deadline,
+                  let rootIdentity = directoryIdentity(at: root) else {
+                unreadableItemCount += 1
+                continue
+            }
+            let result = scanIncompleteBackups(
+                at: root,
+                rootDeviceID: rootIdentity.deviceID,
+                rootFileID: rootIdentity.fileID,
+                isMountedBundle: true,
+                referenceDate: referenceDate,
+                deadline: deadline
+            )
+            if result.completed {
+                items.append(contentsOf: result.items)
+            } else {
+                unreadableItemCount += 1
+            }
+        }
+        items = Dictionary(grouping: items, by: \.path).compactMap { $0.value.first }
         return (
             items.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending },
             unreadableItemCount
@@ -308,6 +349,8 @@ nonisolated enum TimeMachineSnapshotService {
     private static func scanIncompleteBackups(
         at root: URL,
         rootDeviceID: UInt64,
+        rootFileID: UInt64,
+        isMountedBundle: Bool,
         referenceDate: Date,
         deadline: TimeInterval
     ) -> (
@@ -374,10 +417,89 @@ nonisolated enum TimeMachineSnapshotService {
                 sizeBytes: size,
                 modifiedDate: identity.modifiedDate,
                 deviceID: identity.deviceID,
-                fileID: identity.fileID
+                fileID: identity.fileID,
+                backupRootPath: root.standardizedFileURL.path,
+                backupRootDeviceID: rootDeviceID,
+                backupRootFileID: rootFileID,
+                isMountedBundle: isMountedBundle
             ))
         }
         return (encounteredError ? [] : items, !encounteredError)
+    }
+
+    private static func mountedBackupBundleRoots(on volumes: [URL]) -> (
+        roots: [URL],
+        unreadableItemCount: Int
+    ) {
+        var bundlePaths: Set<String> = []
+        var unreadableItemCount = 0
+        for volume in volumes {
+            let urls: [URL]
+            do {
+                urls = try FileManager.default.contentsOfDirectory(
+                    at: volume,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                unreadableItemCount += 1
+                continue
+            }
+            for url in urls {
+                let extensionName = url.pathExtension.lowercased()
+                guard extensionName == "backupbundle" || extensionName == "sparsebundle",
+                      directoryIdentity(at: url) != nil else {
+                    continue
+                }
+                bundlePaths.insert(url.standardizedFileURL.path)
+            }
+        }
+        guard !bundlePaths.isEmpty else { return ([], unreadableItemCount) }
+        guard FileManager.default.isExecutableFile(atPath: diskImageExecutable) else {
+            return ([], unreadableItemCount + 1)
+        }
+
+        let result = run(diskImageExecutable, arguments: ["info", "-plist"], timeout: 8)
+        guard !result.timedOut,
+              result.status == 0,
+              let data = result.output.data(using: .utf8),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data,
+                  options: [],
+                  format: nil
+              ) as? [String: Any],
+              let images = plist["images"] as? [[String: Any]] else {
+            return ([], unreadableItemCount + 1)
+        }
+
+        var rootsByPath: [String: URL] = [:]
+        for image in images {
+            guard let rawImagePath = image["image-path"] as? String else { continue }
+            let imagePath = URL(fileURLWithPath: rawImagePath).standardizedFileURL.path
+            guard bundlePaths.contains(where: { pathsEqual($0, imagePath) }),
+                  let entities = image["system-entities"] as? [[String: Any]] else {
+                continue
+            }
+            for entity in entities {
+                guard let rawMountPath = entity["mount-point"] as? String else { continue }
+                let root = URL(fileURLWithPath: rawMountPath, isDirectory: true).standardizedFileURL
+                guard mountedBundleRootIsEligible(root) else { continue }
+                rootsByPath[root.path] = root
+            }
+        }
+        return (Array(rootsByPath.values), unreadableItemCount)
+    }
+
+    private static func mountedBundleRootIsEligible(_ root: URL) -> Bool {
+        let keys: Set<URLResourceKey> = [.volumeIsLocalKey, .volumeIsReadOnlyKey]
+        guard pathsEqual(root.deletingLastPathComponent().path, "/Volumes"),
+              directoryIdentity(at: root) != nil,
+              let values = try? root.resourceValues(forKeys: keys),
+              values.volumeIsLocal == true,
+              values.volumeIsReadOnly == false else {
+            return false
+        }
+        return true
     }
 
     private static func localBackupVolumes() -> [URL] {
@@ -421,6 +543,32 @@ nonisolated enum TimeMachineSnapshotService {
             return false
         }
         return true
+    }
+
+    private static func backupRootIsStillEligible(_ item: TimeMachineIncompleteBackupItem) -> Bool {
+        let root = URL(fileURLWithPath: item.backupRootPath, isDirectory: true).standardizedFileURL
+        guard let identity = directoryIdentity(at: root),
+              identity.deviceID == item.backupRootDeviceID,
+              identity.fileID == item.backupRootFileID else {
+            return false
+        }
+        if item.isMountedBundle {
+            guard mountedBundleRootIsEligible(root) else { return false }
+        } else {
+            guard root.lastPathComponent == "Backups.backupdb",
+                  pathsEqual(
+                      root.deletingLastPathComponent().deletingLastPathComponent().path,
+                      "/Volumes"
+                  ) else {
+                return false
+            }
+        }
+
+        let candidate = URL(fileURLWithPath: item.path).standardizedFileURL
+        let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let canonicalCandidate = candidate.resolvingSymlinksInPath().standardizedFileURL.path
+        return pathIsInside(candidate.path, root: root.path)
+            && pathIsInside(canonicalCandidate, root: canonicalRoot)
     }
 
     private static func timeMachineIsIdle() -> Bool {
@@ -472,6 +620,10 @@ nonisolated enum TimeMachineSnapshotService {
 
     private static func pathsEqual(_ lhs: String, _ rhs: String) -> Bool {
         lhs.compare(rhs, options: [.caseInsensitive, .literal]) == .orderedSame
+    }
+
+    private static func pathIsInside(_ path: String, root: String) -> Bool {
+        pathsEqual(path, root) || path.lowercased().hasPrefix(root.lowercased() + "/")
     }
 
     private static func run(
