@@ -534,12 +534,9 @@ nonisolated enum CacheCleanupService {
             || nodePackageToolsAreInactive()
         let pythonPackageToolsAreSafe = !items.contains { $0.category == .pythonPackageCaches }
             || pythonPackageToolsAreInactive()
-        let developerToolsAreSafe = !items.contains { $0.category == .developerToolCaches }
-            || githubCLIIsAvailable() && githubCLIIsInactive()
         for item in items {
             if item.category == .developerToolCaches {
-                guard developerToolsAreSafe,
-                      developerToolCacheItemIsAllowed(item.path) else {
+                guard developerToolCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -1184,51 +1181,73 @@ nonisolated enum CacheCleanupService {
         items: [CacheCleanupItem],
         unreadableItemCount: Int
     ) {
-        guard githubCLIIsAvailable(),
-              githubCLIIsInactive(),
-              let root = githubCLICacheRoot(),
-              isRealDirectory(at: root) else {
-            return ([], 0)
-        }
-        let children: [URL]
-        do {
-            children = try FileManager.default.contentsOfDirectory(
-                at: URL(fileURLWithPath: root, isDirectory: true),
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )
-        } catch {
-            return ([], 1)
-        }
-
         var items: [CacheCleanupItem] = []
         var unreadableItemCount = 0
-        for child in children {
-            guard !Task.isCancelled else { return ([], 0) }
-            let path = child.standardizedFileURL.path
-            guard developerToolCacheItemIsAllowed(path),
-                  let measurement = await cacheTargetSize(at: path),
-                  measurement.sizeBytes > 0 else {
+        for root in developerToolCacheRoots() where isRealDirectory(at: root) {
+            if githubCLICacheRoot().map({ pathsEqual(root, $0) }) == true,
+               (!githubCLIIsAvailable() || !githubCLIIsInactive()) {
                 continue
             }
-            unreadableItemCount += measurement.unreadableItemCount
-            items.append(CacheCleanupItem(
-                path: path,
-                category: .developerToolCaches,
-                sizeBytes: measurement.sizeBytes
-            ))
+            let children: [URL]
+            do {
+                children = try FileManager.default.contentsOfDirectory(
+                    at: URL(fileURLWithPath: root, isDirectory: true),
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                unreadableItemCount += 1
+                continue
+            }
+            for child in children {
+                guard !Task.isCancelled else { return ([], 0) }
+                let path = child.standardizedFileURL.path
+                guard developerToolCacheItemIsAllowed(path),
+                      let measurement = await cacheTargetSize(at: path),
+                      measurement.sizeBytes > 0 else {
+                    continue
+                }
+                unreadableItemCount += measurement.unreadableItemCount
+                items.append(CacheCleanupItem(
+                    path: path,
+                    category: .developerToolCaches,
+                    sizeBytes: measurement.sizeBytes
+                ))
+            }
         }
         return (items, unreadableItemCount)
     }
 
     private static func developerToolCacheItemIsAllowed(_ path: String) -> Bool {
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard let root = githubCLICacheRoot() else { return false }
-        return !url.lastPathComponent.hasPrefix(".")
-            && isRealDirectory(at: root)
-            && isRealFileOrDirectory(at: url.path)
-            && !isSymbolicLink(at: url.path)
-            && pathsEqual(url.deletingLastPathComponent().path, root)
+        guard !url.lastPathComponent.hasPrefix("."),
+              isRealFileOrDirectory(at: url.path),
+              !isSymbolicLink(at: url.path),
+              let root = developerToolCacheRoots().first(where: {
+                  isRealDirectory(at: $0)
+                      && pathsEqual(url.deletingLastPathComponent().path, $0)
+              }) else {
+            return false
+        }
+        if githubCLICacheRoot().map({ pathsEqual(root, $0) }) == true {
+            return githubCLIIsAvailable() && githubCLIIsInactive()
+        }
+        return true
+    }
+
+    private static func developerToolCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        var roots = [
+            home + "/.kube/cache",
+            home + "/.local/share/containers/storage/tmp",
+            home + "/.aws/cli/cache",
+            home + "/.config/gcloud/logs",
+            home + "/.azure/logs"
+        ]
+        if let githubRoot = githubCLICacheRoot() {
+            roots.append(githubRoot)
+        }
+        return roots
     }
 
     private static func githubCLICacheRoot() -> String? {
