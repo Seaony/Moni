@@ -18,6 +18,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case braveProfileCaches
     case arcProfileCaches
     case vivaldiProfileCaches
+    case qqBrowserProfileCaches
     case browserOldVersions
     case googleUpdaterCaches
     case virtualizationTemporaryData
@@ -46,6 +47,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .braveProfileCaches: "Brave profile caches"
         case .arcProfileCaches: "Arc profile caches"
         case .vivaldiProfileCaches: "Vivaldi profile caches"
+        case .qqBrowserProfileCaches: "QQ Browser profile caches"
         case .browserOldVersions: "Old browser versions"
         case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
@@ -144,7 +146,8 @@ nonisolated enum CacheCleanupService {
                     || pathsEqual($0.path, firefoxGeneralCacheRoot())
                     || pathsEqual($0.path, braveGeneralCacheRoot())
                     || pathsEqual($0.path, arcGeneralCacheRoot())
-                    || pathsEqual($0.path, vivaldiGeneralCacheRoot()))
+                    || pathsEqual($0.path, vivaldiGeneralCacheRoot())
+                    || pathsEqual($0.path, qqBrowserGeneralCacheRoot()))
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -199,6 +202,15 @@ nonisolated enum CacheCleanupService {
             let vivaldiProfileCaches = await scanVivaldiProfileCaches()
             discoveredItems.append(contentsOf: vivaldiProfileCaches.items)
             unreadableItemCount += vivaldiProfileCaches.unreadableItemCount
+        }
+
+        let qqBrowserIsSafe = await Task.detached(priority: .utility) {
+            qqBrowserIsInactive()
+        }.value
+        if qqBrowserIsSafe {
+            let qqBrowserProfileCaches = await scanQQBrowserProfileCaches()
+            discoveredItems.append(contentsOf: qqBrowserProfileCaches.items)
+            unreadableItemCount += qqBrowserProfileCaches.unreadableItemCount
         }
 
         let browserOldVersions = await scanBrowserOldVersions()
@@ -411,6 +423,8 @@ nonisolated enum CacheCleanupService {
         let arcIsSafe = !requiresArcProbe || arcIsInactive()
         let requiresVivaldiProbe = items.contains { $0.category == .vivaldiProfileCaches }
         let vivaldiIsSafe = !requiresVivaldiProbe || vivaldiIsInactive()
+        let requiresQQBrowserProbe = items.contains { $0.category == .qqBrowserProfileCaches }
+        let qqBrowserIsSafe = !requiresQQBrowserProbe || qqBrowserIsInactive()
         let userCacheProcessGuard = items.contains { $0.category == .userCaches }
             ? UserCacheProcessGuard.capture()
             : nil
@@ -425,6 +439,15 @@ nonisolated enum CacheCleanupService {
             }
             if item.category == .googleUpdaterCaches {
                 guard googleUpdaterCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .qqBrowserProfileCaches {
+                guard qqBrowserIsSafe,
+                      qqBrowserProfileCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -996,6 +1019,12 @@ nonisolated enum CacheCleanupService {
             .standardizedFileURL.path
     }
 
+    private static func qqBrowserGeneralCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/com.tencent.QQBrowser3", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
     private static func diaIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Dia"]])
     }
@@ -1141,6 +1170,35 @@ nonisolated enum CacheCleanupService {
                 return CacheCleanupItem(
                     path: path,
                     category: .vivaldiProfileCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func scanQQBrowserProfileCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in qqBrowserProfileCacheRoots() where isRealDirectory(at: root) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: root) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                guard qqBrowserProfileCacheItemIsAllowed(path) else { return nil }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .qqBrowserProfileCaches,
                     sizeBytes: size
                 )
             })
@@ -1476,6 +1534,40 @@ nonisolated enum CacheCleanupService {
         return roots.filter { seen.insert($0).inserted }
     }
 
+    private static func qqBrowserProfileCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              !holdsCompiledModelCache(url.path) else {
+            return false
+        }
+        return qqBrowserProfileCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func qqBrowserProfileCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let supportRoot = home + "/Library/Application Support/QQBrowser3"
+        var roots = [
+            qqBrowserGeneralCacheRoot(),
+            supportRoot + "/ShaderCache",
+            supportRoot + "/GrShaderCache",
+            supportRoot + "/GraphiteDawnCache",
+            supportRoot + "/component_crx_cache",
+            supportRoot + "/Crashpad/completed"
+        ]
+        roots.append(contentsOf: childDirectories(at: supportRoot).flatMap { profile in
+            [
+                profile + "/Code Cache",
+                profile + "/GPUCache"
+            ]
+        })
+        var seen: Set<String> = []
+        return roots.filter { seen.insert($0).inserted }
+    }
+
     private static func chromiumVersionSources() -> [ChromiumVersionSource] {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         return [
@@ -1612,6 +1704,10 @@ nonisolated enum CacheCleanupService {
 
     private static func vivaldiIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Vivaldi"]])
+    }
+
+    private static func qqBrowserIsInactive() -> Bool {
+        processProbesAreInactive([["-x", "QQBrowser3"]])
     }
 
     private static func processProbesAreInactive(_ probes: [[String]]) -> Bool {
