@@ -42,6 +42,8 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case pythonPackageCaches
     case developerToolCaches
     case miseCache
+    case rustCargoCache
+    case rustupDownloadsCache
     case clangModuleCache
 
     var titleKey: String {
@@ -86,6 +88,8 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .pythonPackageCaches: "Python package caches"
         case .developerToolCaches: "Developer tool caches"
         case .miseCache: "mise cache"
+        case .rustCargoCache: "Rust cargo cache"
+        case .rustupDownloadsCache: "Rustup downloads cache"
         case .clangModuleCache: "Clang module cache"
         }
     }
@@ -127,6 +131,11 @@ nonisolated enum CacheCleanupService {
     private struct BrowserServiceWorkerSource: Sendable {
         let cacheRoots: [String]
         let processProbes: [[String]]
+    }
+
+    private struct RustCacheRoots: Sendable {
+        let cargoRegistryCache: String?
+        let rustupDownloads: String?
     }
 
     static func scan() async -> CacheCleanupSnapshot {
@@ -397,6 +406,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: miseCache.items)
         unreadableItemCount += miseCache.unreadableItemCount
 
+        let rustCaches = await scanRustCaches()
+        discoveredItems.append(contentsOf: rustCaches.items)
+        unreadableItemCount += rustCaches.unreadableItemCount
+
         let clangModuleCache = await scanClangModuleCache()
         discoveredItems.append(contentsOf: clangModuleCache.items)
         unreadableItemCount += clangModuleCache.unreadableItemCount
@@ -558,10 +571,38 @@ nonisolated enum CacheCleanupService {
         let requiresMiseProbe = items.contains { $0.category == .miseCache }
         let miseRoot = requiresMiseProbe ? miseCacheRoot() : nil
         let miseIsSafe = !requiresMiseProbe || miseIsInactive()
+        let requiresRustValidation = items.contains {
+            $0.category == .rustCargoCache || $0.category == .rustupDownloadsCache
+        }
+        let rustRoots = requiresRustValidation ? rustCacheRoots() : RustCacheRoots(
+            cargoRegistryCache: nil,
+            rustupDownloads: nil
+        )
+        let rustBuildIsSafe = !items.contains { $0.category == .rustCargoCache }
+            || rustBuildToolsAreInactive()
         let requiresClangProbe = items.contains { $0.category == .clangModuleCache }
         let clangRoot = requiresClangProbe ? clangModuleCacheRoot() : nil
         let clangIsSafe = !requiresClangProbe || clangModuleCacheIsInactive()
         for item in items {
+            if item.category == .rustCargoCache {
+                guard rustBuildIsSafe,
+                      let root = rustRoots.cargoRegistryCache,
+                      rustCacheItemIsAllowed(item.path, root: root) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .rustupDownloadsCache {
+                guard let root = rustRoots.rustupDownloads,
+                      rustCacheItemIsAllowed(item.path, root: root) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .miseCache {
                 guard miseIsSafe,
                       let miseRoot,
@@ -1321,6 +1362,125 @@ nonisolated enum CacheCleanupService {
         processProbesAreInactive([["-x", "mise"]])
     }
 
+    private static func scanRustCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let roots = rustCacheRoots()
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        if rustBuildToolsAreInactive(), let root = roots.cargoRegistryCache {
+            let result = await scanRustCache(root: root, category: .rustCargoCache)
+            items.append(contentsOf: result.items)
+            unreadableItemCount += result.unreadableItemCount
+        }
+        if let root = roots.rustupDownloads {
+            let result = await scanRustCache(root: root, category: .rustupDownloadsCache)
+            items.append(contentsOf: result.items)
+            unreadableItemCount += result.unreadableItemCount
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func scanRustCache(
+        root: String,
+        category: CacheCleanupCategory
+    ) async -> (items: [CacheCleanupItem], unreadableItemCount: Int) {
+        let children: [URL]
+        do {
+            children = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return ([], 1)
+        }
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for child in children {
+            guard !Task.isCancelled else { return ([], 0) }
+            let path = child.standardizedFileURL.path
+            guard rustCacheItemIsAllowed(path, root: root),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: category,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func rustCacheItemIsAllowed(_ path: String, root: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return !url.lastPathComponent.hasPrefix(".")
+            && isRealDirectory(at: root)
+            && currentUserOwnsDirectory(at: root)
+            && isRealFileOrDirectory(at: url.path)
+            && !isSymbolicLink(at: url.path)
+            && pathsEqual(url.deletingLastPathComponent().path, root)
+    }
+
+    private static func rustCacheRoots() -> RustCacheRoots {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let cargoHome = rustToolHome(environmentKey: "CARGO_HOME", fallback: home + "/.cargo")
+        let rustupHome = rustToolHome(environmentKey: "RUSTUP_HOME", fallback: home + "/.rustup")
+        return RustCacheRoots(
+            cargoRegistryCache: rustCacheRoot(home: cargoHome, relativePath: "registry/cache"),
+            rustupDownloads: rustCacheRoot(home: rustupHome, relativePath: "downloads")
+        )
+    }
+
+    private static func rustToolHome(environmentKey: String, fallback: String) -> String {
+        guard let value = ProcessInfo.processInfo.environment[environmentKey],
+              value.hasPrefix("/"),
+              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              !value.contains("//"),
+              !value.split(separator: "/", omittingEmptySubsequences: false).contains("."),
+              !value.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+            return fallback
+        }
+        return URL(fileURLWithPath: value, isDirectory: true).standardizedFileURL.path
+    }
+
+    private static func rustCacheRoot(home: String, relativePath: String) -> String? {
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let lexicalHome = URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL.path
+        guard !["/", userHome, userHome + "/Library"].contains(where: {
+            pathsEqual(lexicalHome, $0)
+        }) else {
+            return nil
+        }
+        let physicalHome = URL(fileURLWithPath: lexicalHome, isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        let physicalRoot = URL(fileURLWithPath: lexicalHome, isDirectory: true)
+            .appendingPathComponent(relativePath, isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        guard isRealDirectory(at: physicalHome),
+              currentUserOwnsDirectory(at: physicalHome),
+              isRealDirectory(at: physicalRoot),
+              currentUserOwnsDirectory(at: physicalRoot),
+              pathIsInside(physicalRoot, root: physicalHome) else {
+            return nil
+        }
+        return physicalRoot
+    }
+
+    private static func rustBuildToolsAreInactive() -> Bool {
+        processProbesAreInactive([
+            ["-x", "cargo"],
+            ["-x", "rustc"],
+            ["-x", "rustdoc"],
+            ["-x", "clippy-driver"],
+            ["-x", "cargo-nextest"]
+        ])
+    }
+
     private static func scanClangModuleCache() async -> (
         items: [CacheCleanupItem],
         unreadableItemCount: Int
@@ -1610,7 +1770,6 @@ nonisolated enum CacheCleanupService {
             home + "/.pytest_cache",
             home + "/.jupyter/runtime",
             pyInstallerCacheRoot(),
-            home + "/.rustup/downloads",
             home + "/.rbenv/cache",
             home + "/.gem/specs",
             home + "/.bundle/cache",
