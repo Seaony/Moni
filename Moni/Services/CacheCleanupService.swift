@@ -13,6 +13,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case sandboxedAppCaches
     case utmCaches
     case sharedContainerLogs
+    case sharedContainerCaches
     case diaProfileCaches
     case chromeProfileCaches
     case firefoxProfileCaches
@@ -47,6 +48,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .sandboxedAppCaches: "Sandboxed app caches"
         case .utmCaches: "UTM sandbox caches"
         case .sharedContainerLogs: "Shared container logs"
+        case .sharedContainerCaches: "Shared container caches"
         case .diaProfileCaches: "Dia profile caches"
         case .chromeProfileCaches: "Chrome profile caches"
         case .firefoxProfileCaches: "Firefox profile caches"
@@ -279,6 +281,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: sharedContainerLogs.items)
         unreadableItemCount += sharedContainerLogs.unreadableItemCount
 
+        let sharedContainerCaches = await scanSharedContainerCaches(processGuard: userCacheProcessGuard)
+        discoveredItems.append(contentsOf: sharedContainerCaches.items)
+        unreadableItemCount += sharedContainerCaches.unreadableItemCount
+
         let virtualizationTemporaryData = await scanVirtualizationTemporaryData()
         discoveredItems.append(contentsOf: virtualizationTemporaryData.items)
         unreadableItemCount += virtualizationTemporaryData.unreadableItemCount
@@ -475,7 +481,21 @@ nonisolated enum CacheCleanupService {
         let sandboxProcessGuard = items.contains { $0.category == .sandboxedAppCaches }
             ? UserCacheProcessGuard.capture()
             : nil
+        let sharedContainerProcessGuard = items.contains { $0.category == .sharedContainerCaches }
+            ? UserCacheProcessGuard.capture()
+            : nil
         for item in items {
+            if item.category == .sharedContainerCaches {
+                guard sharedContainerCacheItemIsAllowed(
+                    item.path,
+                    processGuard: sharedContainerProcessGuard
+                ) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .sandboxedAppCaches {
                 guard sandboxedAppCacheItemIsAllowed(item.path, processGuard: sandboxProcessGuard) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -2377,6 +2397,117 @@ nonisolated enum CacheCleanupService {
             && sharedContainerLogRoots(containerPath).contains {
                 pathsEqual($0, url.deletingLastPathComponent().path) && isRealDirectory(at: $0)
             }
+    }
+
+    private static func scanSharedContainerCaches(
+        processGuard: UserCacheProcessGuard?
+    ) async -> (items: [CacheCleanupItem], unreadableItemCount: Int) {
+        let rootPath = sharedContainerRoot()
+        guard isRealDirectory(at: rootPath) else {
+            return ([], FileManager.default.fileExists(atPath: rootPath) ? 1 : 0)
+        }
+
+        let containers: [URL]
+        do {
+            containers = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: rootPath, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for container in containers {
+            guard !Task.isCancelled else { return ([], 0) }
+            let identifier = container.lastPathComponent
+            guard sharedContainerIsAllowed(container.path, identifier: identifier),
+                  sharedContainerCachesAreAllowed(identifier: identifier),
+                  UserCacheProcessGuard.permits(owner: identifier, using: processGuard) else {
+                continue
+            }
+
+            for cacheRoot in sharedContainerCacheRoots(container.path) where isRealDirectory(at: cacheRoot) {
+                var finalUpdate: DiskAnalysisUpdate?
+                for await update in DiskAnalyzer.updates(for: cacheRoot) {
+                    guard !Task.isCancelled else { return ([], 0) }
+                    if update.isComplete { finalUpdate = update }
+                }
+                guard let finalUpdate else {
+                    unreadableItemCount += 1
+                    continue
+                }
+                unreadableItemCount += finalUpdate.unreadableItemCount
+                items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                    guard sharedContainerCacheItemIsAllowed(path, processGuard: processGuard) else {
+                        return nil
+                    }
+                    return CacheCleanupItem(
+                        path: path,
+                        category: .sharedContainerCaches,
+                        sizeBytes: size
+                    )
+                })
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func sharedContainerCacheItemIsAllowed(
+        _ path: String,
+        processGuard: UserCacheProcessGuard?
+    ) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard isRealFileOrDirectory(at: url.path),
+              !holdsCompiledModelCache(url.path),
+              ContainerCacheSafety.hasNoVisibleOpenHandles(at: url.path) else {
+            return false
+        }
+
+        let parent = url.deletingLastPathComponent()
+        let root = sharedContainerRoot()
+        guard parent.path.hasPrefix(root + "/") else { return false }
+        let relativeParent = parent.path
+            .dropFirst(root.count + 1)
+            .split(separator: "/")
+            .map(String.init)
+        guard let identifier = relativeParent.first else { return false }
+        let containerPath = root + "/" + identifier
+        if relativeParent.count == 3 {
+            guard relativeParent[1] == "Library",
+                  isRealDirectory(at: containerPath + "/Library") else {
+                return false
+            }
+        } else if relativeParent.count != 2 {
+            return false
+        }
+
+        return isRealDirectory(at: root)
+            && sharedContainerIsAllowed(containerPath, identifier: identifier)
+            && sharedContainerCachesAreAllowed(identifier: identifier)
+            && sharedContainerCacheRoots(containerPath).contains {
+                pathsEqual($0, parent.path) && isRealDirectory(at: $0)
+            }
+            && UserCacheProcessGuard.permits(owner: identifier, using: processGuard)
+    }
+
+    private static func sharedContainerCachesAreAllowed(identifier: String) -> Bool {
+        let normalized = identifier.lowercased().hasPrefix("group.")
+            ? String(identifier.dropFirst("group.".count))
+            : identifier
+        return SandboxContainerProtection.permits(identifier)
+            && SandboxContainerProtection.permits(normalized)
+    }
+
+    private static func sharedContainerCacheRoots(_ containerPath: String) -> [String] {
+        [
+            containerPath + "/tmp",
+            containerPath + "/Library/tmp",
+            containerPath + "/Caches",
+            containerPath + "/Library/Caches"
+        ]
     }
 
     private static func sharedContainerIsAllowed(_ path: String, identifier: String) -> Bool {
