@@ -5,6 +5,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case userCaches
     case userLogs
     case diagnosticReports
+    case oldCrashReports
     case savedApplicationState
     case recentItems
     case incompleteDownloads
@@ -17,6 +18,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .userCaches: "User app caches"
         case .userLogs: "User app logs"
         case .diagnosticReports: "Diagnostic reports"
+        case .oldCrashReports: "Old crash reports"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
         case .incompleteDownloads: "Incomplete downloads"
@@ -108,6 +110,12 @@ nonisolated enum CacheCleanupService {
         }.value
         discoveredItems.append(contentsOf: recentItems.items)
         unreadableItemCount += recentItems.unreadableItemCount
+
+        let oldCrashReports = await Task.detached(priority: .utility) {
+            scanOldCrashReports(referenceDate: Date())
+        }.value
+        discoveredItems.append(contentsOf: oldCrashReports.items)
+        unreadableItemCount += oldCrashReports.unreadableItemCount
 
         let handoffClipboard = await scanHandoffClipboard(referenceDate: Date())
         discoveredItems.append(contentsOf: handoffClipboard.items)
@@ -234,6 +242,14 @@ nonisolated enum CacheCleanupService {
         let requiresMailProbe = items.contains { $0.category == .oldMailAttachments }
         let mailIsSafe = !requiresMailProbe || mailIsInactive()
         for item in items {
+            if item.category == .oldCrashReports {
+                guard oldCrashReportSize(at: item.path, referenceDate: Date()) == item.sizeBytes else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .cachedDeviceFirmware {
                 guard cachedDeviceFirmwareSize(at: item.path) == item.sizeBytes else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -279,6 +295,88 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanOldCrashReports(referenceDate: Date) -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let rootPath = crashReporterRoot()
+        guard isRealDirectory(at: rootPath) else {
+            return ([], FileManager.default.fileExists(atPath: rootPath) ? 1 : 0)
+        }
+
+        let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+        var unreadableItemCount = 0
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [
+                .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey
+            ],
+            options: [],
+            errorHandler: { _, _ in
+                unreadableItemCount += 1
+                return true
+            }
+        ) else {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        for case let url as URL in enumerator {
+            guard !Task.isCancelled else { return ([], 0) }
+            do {
+                let values = try url.resourceValues(forKeys: [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey
+                ])
+                if values.isSymbolicLink == true {
+                    if values.isDirectory == true { enumerator.skipDescendants() }
+                    continue
+                }
+                guard values.isRegularFile == true,
+                      let size = oldCrashReportSize(at: url.path, referenceDate: referenceDate) else {
+                    continue
+                }
+                items.append(CacheCleanupItem(
+                    path: url.standardizedFileURL.path,
+                    category: .oldCrashReports,
+                    sizeBytes: size
+                ))
+            } catch {
+                unreadableItemCount += 1
+                enumerator.skipDescendants()
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func oldCrashReportSize(at path: String, referenceDate: Date) -> UInt64? {
+        let root = crashReporterRoot()
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let canonicalPath = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let canonicalRoot = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
+        guard isRealDirectory(at: root),
+              pathIsInside(url.path, root: root),
+              pathIsInside(canonicalPath, root: canonicalRoot),
+              let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate,
+              modified < referenceDate.addingTimeInterval(-crashReportMinimumAge) else {
+            return nil
+        }
+        var value = stat()
+        guard url.path.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFREG,
+              value.st_blocks >= 0 else {
+            return nil
+        }
+        return UInt64(value.st_blocks) * 512
+    }
+
+    private static func crashReporterRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+            .appendingPathComponent("CrashReporter", isDirectory: true)
+            .standardizedFileURL.path
     }
 
     private static func scanCachedDeviceFirmware() -> (
@@ -734,4 +832,5 @@ nonisolated enum CacheCleanupService {
     private static let mailAttachmentMinimumAge: TimeInterval = 30 * 24 * 60 * 60
     private static let mailDownloadsMinimumBytes: UInt64 = 5 * 1024 * 1024
     private static let handoffMinimumAge: TimeInterval = 60 * 60
+    private static let crashReportMinimumAge: TimeInterval = 30 * 24 * 60 * 60
 }
