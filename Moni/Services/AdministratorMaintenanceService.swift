@@ -20,6 +20,23 @@ nonisolated struct NetworkCacheRefreshResult: Sendable {
     let refreshed: Bool
 }
 
+nonisolated enum NetworkStackState: Sendable {
+    case optimal
+    case needsRefresh
+    case activeVPN
+    case unavailable
+    case failed
+}
+
+nonisolated enum NetworkStackRefreshOutcome: Sendable {
+    case alreadyOptimal
+    case activeVPN
+    case unavailable
+    case inspectionFailed
+    case authorizationCancelled
+    case applied(routeFlushed: Bool, arpFlushed: Bool)
+}
+
 nonisolated enum AdministratorMaintenanceService {
     private struct CommandOutput: Sendable {
         let status: Int32
@@ -28,6 +45,10 @@ nonisolated enum AdministratorMaintenanceService {
 
     private static let scriptExecutable = "/usr/bin/osascript"
     private static let metadataUtilityExecutable = "/usr/bin/mdutil"
+    private static let networkConfigurationExecutable = "/usr/sbin/scutil"
+    private static let routeExecutable = "/sbin/route"
+    private static let dnsCacheExecutable = "/usr/bin/dscacheutil"
+    private static let arpExecutable = "/usr/sbin/arp"
 
     static func scanSystemMaintenance() async -> SystemMaintenanceSnapshot {
         await Task.detached(priority: .utility) {
@@ -55,6 +76,97 @@ nonisolated enum AdministratorMaintenanceService {
         }.value
     }
 
+    static func scanNetworkStack() async -> NetworkStackState {
+        await Task.detached(priority: .utility) {
+            inspectNetworkStack()
+        }.value
+    }
+
+    static func refreshNetworkStack() async -> NetworkStackRefreshOutcome {
+        await Task.detached(priority: .userInitiated) {
+            switch inspectNetworkStack() {
+            case .optimal:
+                return .alreadyOptimal
+            case .activeVPN:
+                return .activeVPN
+            case .unavailable:
+                return .unavailable
+            case .failed:
+                return .inspectionFailed
+            case .needsRefresh:
+                break
+            }
+
+            let command = """
+            /sbin/route -n flush >/dev/null 2>&1; route_status=$?; \
+            /usr/sbin/arp -a -d >/dev/null 2>&1; arp_status=$?; \
+            printf '%s:%s' "$route_status" "$arp_status"
+            """
+            let result = runPrivilegedCommand(command, timeout: 30)
+            guard result.status == 0 else { return .authorizationCancelled }
+            let statuses = result.output
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: ":", omittingEmptySubsequences: false)
+            guard statuses.count == 2,
+                  let routeStatus = Int32(statuses[0]),
+                  let arpStatus = Int32(statuses[1])
+            else {
+                return .inspectionFailed
+            }
+            return .applied(routeFlushed: routeStatus == 0, arpFlushed: arpStatus == 0)
+        }.value
+    }
+
+    private static func inspectNetworkStack() -> NetworkStackState {
+        let requiredExecutables = [
+            networkConfigurationExecutable,
+            routeExecutable,
+            dnsCacheExecutable,
+            arpExecutable
+        ]
+        guard requiredExecutables.allSatisfy(FileManager.default.isExecutableFile(atPath:)) else {
+            return .unavailable
+        }
+
+        let vpnResult = run(networkConfigurationExecutable, arguments: ["--nc", "list"], timeout: 8)
+        guard vpnResult.status == 0 else { return .failed }
+        let hasConnectedVPN = vpnResult.output
+            .split(whereSeparator: \.isNewline)
+            .contains { $0.hasPrefix("* (Connected)") }
+        if hasConnectedVPN { return .activeVPN }
+
+        let routeResult = run(routeExecutable, arguments: ["-n", "get", "default"], timeout: 8)
+        guard routeResult.status <= 1 else { return .failed }
+        if routeResult.status == 0 {
+            let routeInterface = defaultRouteInterface(in: routeResult.output)
+            let routeSuffix = routeInterface.dropFirst(4)
+            if routeInterface.hasPrefix("utun"),
+               !routeSuffix.isEmpty,
+               routeSuffix.allSatisfy(\.isNumber) {
+                return .activeVPN
+            }
+        }
+
+        let dnsResult = run(
+            dnsCacheExecutable,
+            arguments: ["-q", "host", "-a", "name", "example.com"],
+            timeout: 8
+        )
+        guard dnsResult.status <= 1 else { return .failed }
+        return routeResult.status == 0 && dnsResult.status == 0 ? .optimal : .needsRefresh
+    }
+
+    private static func defaultRouteInterface(in output: String) -> String {
+        for line in output.split(whereSeparator: \.isNewline) {
+            let components = line.split(separator: ":", maxSplits: 1)
+            guard components.count == 2,
+                  components[0].trimmingCharacters(in: .whitespaces) == "interface"
+            else { continue }
+            return components[1].trimmingCharacters(in: .whitespaces)
+        }
+        return ""
+    }
+
     private static func inspectSpotlightIndex() -> SpotlightIndexStatus {
         guard FileManager.default.isExecutableFile(atPath: metadataUtilityExecutable) else {
             return .unavailable
@@ -74,12 +186,21 @@ nonisolated enum AdministratorMaintenanceService {
         _ shellCommand: String,
         timeout: TimeInterval
     ) -> Bool {
-        guard FileManager.default.isExecutableFile(atPath: scriptExecutable) else { return false }
+        runPrivilegedCommand(shellCommand, timeout: timeout).status == 0
+    }
+
+    private static func runPrivilegedCommand(
+        _ shellCommand: String,
+        timeout: TimeInterval
+    ) -> CommandOutput {
+        guard FileManager.default.isExecutableFile(atPath: scriptExecutable) else {
+            return CommandOutput(status: -1, output: "")
+        }
         let escaped = shellCommand
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         let script = "do shell script \"\(escaped)\" with administrator privileges"
-        return run(scriptExecutable, arguments: ["-e", script], timeout: timeout).status == 0
+        return run(scriptExecutable, arguments: ["-e", script], timeout: timeout)
     }
 
     private static func run(
