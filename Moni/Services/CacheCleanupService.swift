@@ -385,6 +385,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: developerToolCaches.items)
         unreadableItemCount += developerToolCaches.unreadableItemCount
 
+        let developerBackupFiles = scanDeveloperBackupFiles()
+        discoveredItems.append(contentsOf: developerBackupFiles.items)
+        unreadableItemCount += developerBackupFiles.unreadableItemCount
+
         let eligiblePaths = await CleanupService.shared.eligiblePaths(discoveredItems.map(\.path))
         let items = discoveredItems
             .filter { eligiblePaths.contains($0.path) }
@@ -536,7 +540,8 @@ nonisolated enum CacheCleanupService {
             || pythonPackageToolsAreInactive()
         for item in items {
             if item.category == .developerToolCaches {
-                guard developerToolCacheItemIsAllowed(item.path) else {
+                guard developerToolCacheItemIsAllowed(item.path)
+                        || developerBackupFileSize(at: item.path) == item.sizeBytes else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -1216,6 +1221,59 @@ nonisolated enum CacheCleanupService {
             }
         }
         return (items, unreadableItemCount)
+    }
+
+    private static func scanDeveloperBackupFiles() -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        let fish = home.appendingPathComponent(".config/fish", isDirectory: true)
+        var candidates: [URL] = []
+        var unreadableItemCount = 0
+        for root in [home, fish] where isRealDirectory(at: root.path) {
+            do {
+                candidates.append(contentsOf: try FileManager.default.contentsOfDirectory(
+                    at: root,
+                    includingPropertiesForKeys: nil,
+                    options: []
+                ))
+            } catch {
+                unreadableItemCount += 1
+            }
+        }
+        let items = candidates.compactMap { candidate -> CacheCleanupItem? in
+            let path = candidate.standardizedFileURL.path
+            guard let size = developerBackupFileSize(at: path) else { return nil }
+            return CacheCleanupItem(
+                path: path,
+                category: .developerToolCaches,
+                sizeBytes: size
+            )
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func developerBackupFileSize(at path: String) -> UInt64? {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        let fish = home.appendingPathComponent(".config/fish", isDirectory: true)
+        let name = url.lastPathComponent
+        let isHomeBackup = pathsEqual(url.deletingLastPathComponent().path, home.path)
+            && (name == ".gitconfig.lock"
+                || name.hasPrefix(".gitconfig.bak")
+                || name.hasPrefix(".bash_history.bak")
+                || name.hasPrefix(".zsh_history.bak"))
+        let isFishBackup = pathsEqual(url.deletingLastPathComponent().path, fish.path)
+            && name.hasPrefix("fish_history.bak")
+        guard isHomeBackup || isFishBackup else { return nil }
+        var value = stat()
+        guard url.path.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFREG,
+              value.st_blocks >= 0 else {
+            return nil
+        }
+        return UInt64(value.st_blocks) * 512
     }
 
     private static func developerToolCacheItemIsAllowed(_ path: String) -> Bool {
