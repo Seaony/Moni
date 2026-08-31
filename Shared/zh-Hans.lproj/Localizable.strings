@@ -177,6 +177,7 @@
 "Chrome profile caches" = "Chrome 配置缓存";
 "Firefox profile caches" = "Firefox 配置缓存";
 "Brave profile caches" = "Brave 配置缓存";
+"Arc profile caches" = "Arc 配置缓存";
 "Google updater caches" = "Google 更新器缓存";
 "Virtualization temporary data" = "虚拟化临时数据";
 "Saved application states" = "已保存的应用状态";

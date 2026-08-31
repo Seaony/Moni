@@ -16,6 +16,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case chromeProfileCaches
     case firefoxProfileCaches
     case braveProfileCaches
+    case arcProfileCaches
     case googleUpdaterCaches
     case virtualizationTemporaryData
     case savedApplicationState
@@ -41,6 +42,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .chromeProfileCaches: "Chrome profile caches"
         case .firefoxProfileCaches: "Firefox profile caches"
         case .braveProfileCaches: "Brave profile caches"
+        case .arcProfileCaches: "Arc profile caches"
         case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
@@ -130,7 +132,8 @@ nonisolated enum CacheCleanupService {
                 && (pathsEqual($0.path, diaGeneralCacheRoot())
                     || pathsEqual($0.path, googleGeneralCacheRoot())
                     || pathsEqual($0.path, firefoxGeneralCacheRoot())
-                    || pathsEqual($0.path, braveGeneralCacheRoot()))
+                    || pathsEqual($0.path, braveGeneralCacheRoot())
+                    || pathsEqual($0.path, arcGeneralCacheRoot()))
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -167,6 +170,15 @@ nonisolated enum CacheCleanupService {
             let braveProfileCaches = await scanBraveProfileCaches()
             discoveredItems.append(contentsOf: braveProfileCaches.items)
             unreadableItemCount += braveProfileCaches.unreadableItemCount
+        }
+
+        let arcIsSafe = await Task.detached(priority: .utility) {
+            arcIsInactive()
+        }.value
+        if arcIsSafe {
+            let arcProfileCaches = await scanArcProfileCaches()
+            discoveredItems.append(contentsOf: arcProfileCaches.items)
+            unreadableItemCount += arcProfileCaches.unreadableItemCount
         }
 
         let googleUpdaterCaches = await scanGoogleUpdaterCaches()
@@ -371,12 +383,23 @@ nonisolated enum CacheCleanupService {
         let firefoxIsSafe = !requiresFirefoxProbe || firefoxIsInactive()
         let requiresBraveProbe = items.contains { $0.category == .braveProfileCaches }
         let braveIsSafe = !requiresBraveProbe || braveIsInactive()
+        let requiresArcProbe = items.contains { $0.category == .arcProfileCaches }
+        let arcIsSafe = !requiresArcProbe || arcIsInactive()
         let userCacheProcessGuard = items.contains { $0.category == .userCaches }
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
             if item.category == .googleUpdaterCaches {
                 guard googleUpdaterCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .arcProfileCaches {
+                guard arcIsSafe,
+                      arcProfileCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -918,6 +941,12 @@ nonisolated enum CacheCleanupService {
             .standardizedFileURL.path
     }
 
+    private static func arcGeneralCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/company.thebrowser.Browser", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
     private static func diaIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Dia"]])
     }
@@ -1005,6 +1034,35 @@ nonisolated enum CacheCleanupService {
                 return CacheCleanupItem(
                     path: path,
                     category: .braveProfileCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func scanArcProfileCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in arcProfileCacheRoots() where isRealDirectory(at: root) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: root) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                guard arcProfileCacheItemIsAllowed(path) else { return nil }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .arcProfileCaches,
                     sizeBytes: size
                 )
             })
@@ -1204,6 +1262,56 @@ nonisolated enum CacheCleanupService {
         return roots.filter { seen.insert($0).inserted }
     }
 
+    private static func arcProfileCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              !holdsCompiledModelCache(url.path) else {
+            return false
+        }
+        return arcProfileCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func arcProfileCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let supportRoot = home + "/Library/Application Support/Arc"
+        let userDataRoot = supportRoot + "/User Data"
+        var roots = [
+            arcGeneralCacheRoot(),
+            supportRoot + "/ShaderCache",
+            supportRoot + "/GrShaderCache",
+            supportRoot + "/GraphiteDawnCache",
+            supportRoot + "/Crashpad/completed",
+            userDataRoot + "/ShaderCache",
+            userDataRoot + "/GrShaderCache",
+            userDataRoot + "/GraphiteDawnCache",
+            userDataRoot + "/component_crx_cache",
+            userDataRoot + "/extensions_crx_cache",
+            userDataRoot + "/Crashpad/completed"
+        ]
+        roots.append(contentsOf: childDirectories(at: supportRoot).flatMap { profile in
+            arcProfileCacheDirectories(at: profile)
+        })
+        roots.append(contentsOf: childDirectories(at: userDataRoot).flatMap { profile in
+            arcProfileCacheDirectories(at: profile)
+        })
+        var seen: Set<String> = []
+        return roots.filter { seen.insert($0).inserted }
+    }
+
+    private static func arcProfileCacheDirectories(at profile: String) -> [String] {
+        [
+            profile + "/Code Cache",
+            profile + "/GPUCache",
+            profile + "/DawnCache",
+            profile + "/GrShaderCache",
+            profile + "/GraphiteDawnCache"
+        ]
+    }
+
     private static func chromeIsInactive() -> Bool {
         processProbesAreInactive([
             ["-x", "Google Chrome"],
@@ -1218,6 +1326,10 @@ nonisolated enum CacheCleanupService {
 
     private static func braveIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Brave Browser"]])
+    }
+
+    private static func arcIsInactive() -> Bool {
+        processProbesAreInactive([["-x", "Arc"]])
     }
 
     private static func processProbesAreInactive(_ probes: [[String]]) -> Bool {
