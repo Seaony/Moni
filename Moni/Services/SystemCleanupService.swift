@@ -16,6 +16,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case systemLogs
     case thirdPartyLogs
     case staleWallpaperDownloads
+    case rebuildableServiceCaches
 
     var titleKey: String {
         switch self {
@@ -24,14 +25,21 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .systemLogs: "System logs"
         case .thirdPartyLogs: "Third-party system logs"
         case .staleWallpaperDownloads: "Stale wallpaper downloads"
+        case .rebuildableServiceCaches: "Rebuildable system caches"
         }
     }
+}
+
+nonisolated enum SystemCleanupItemKind: String, Sendable {
+    case file
+    case directory
 }
 
 nonisolated struct SystemCleanupItem: Identifiable, Sendable {
     let path: String
     let name: String
     let category: SystemCleanupCategory
+    let kind: SystemCleanupItemKind
     let sizeBytes: UInt64
     let modifiedDate: Date
     let deviceID: UInt64
@@ -133,13 +141,14 @@ nonisolated enum SystemCleanupService {
                 continue
             }
             guard recordType == "ITEM",
-                  fields.count == 7,
-                  let category = SystemCleanupCategory(rawValue: String(fields[1])),
-                  let deviceID = UInt64(fields[2]),
-                  let fileID = UInt64(fields[3]),
-                  let modificationSeconds = Int64(fields[4]),
-                  let sizeBytes = UInt64(fields[5]),
-                  let pathData = Data(base64Encoded: String(fields[6])),
+                  fields.count == 8,
+                  let kind = SystemCleanupItemKind(rawValue: String(fields[1])),
+                  let category = SystemCleanupCategory(rawValue: String(fields[2])),
+                  let deviceID = UInt64(fields[3]),
+                  let fileID = UInt64(fields[4]),
+                  let modificationSeconds = Int64(fields[5]),
+                  let sizeBytes = UInt64(fields[6]),
+                  let pathData = Data(base64Encoded: String(fields[7])),
                   let path = String(data: pathData, encoding: .utf8) else {
                 scanFailed = true
                 continue
@@ -148,6 +157,7 @@ nonisolated enum SystemCleanupService {
             guard let item = validatedItem(
                 path: path,
                 category: category,
+                kind: kind,
                 expectedDeviceID: deviceID,
                 expectedFileID: fileID,
                 expectedModifiedDate: modifiedDate,
@@ -228,6 +238,7 @@ nonisolated enum SystemCleanupService {
                   validatedItem(
                       path: item.path,
                       category: item.category,
+                      kind: item.kind,
                       expectedDeviceID: item.deviceID,
                       expectedFileID: item.fileID,
                       expectedModifiedDate: item.modifiedDate,
@@ -265,9 +276,11 @@ nonisolated enum SystemCleanupService {
             arguments.append(entry.candidate.path)
             arguments.append(entry.destination)
             arguments.append(
-                "\(entry.item.deviceID):\(entry.item.fileID):\(Int64(entry.item.modifiedDate.timeIntervalSince1970)):\(entry.item.sizeBytes / 512)"
+                "\(entry.item.deviceID):\(entry.item.fileID):\(Int64(entry.item.modifiedDate.timeIntervalSince1970))"
             )
+            arguments.append(String(entry.item.sizeBytes))
             arguments.append(entry.item.category.rawValue)
+            arguments.append(entry.item.kind.rawValue)
         }
         let execution = run(scriptExecutable, arguments: arguments, timeout: 300)
         let trashedIndexes = Set(execution.output.split(whereSeparator: \.isNewline).compactMap { line -> Int? in
@@ -360,6 +373,7 @@ nonisolated enum SystemCleanupService {
     private static func validatedItem(
         path: String,
         category: SystemCleanupCategory,
+        kind: SystemCleanupItemKind,
         expectedDeviceID: UInt64,
         expectedFileID: UInt64,
         expectedModifiedDate: Date,
@@ -373,15 +387,19 @@ nonisolated enum SystemCleanupService {
             return nil
         }
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard categoryAllows(url: url, category: category),
+        guard (category == .rebuildableServiceCaches && kind == .directory)
+                || (category != .rebuildableServiceCaches && kind == .file),
+              categoryAllows(url: url, category: category),
               let metadata = fileMetadata(at: url),
-              metadata.isRegularFile,
+              (kind == .file && metadata.isRegularFile)
+                || (kind == .directory && metadata.isDirectory),
               !metadata.isSymbolicLink,
               metadata.deviceID == expectedDeviceID,
               metadata.fileID == expectedFileID,
               metadata.modifiedDate == expectedModifiedDate,
-              metadata.sizeBytes == expectedSizeBytes,
-              referenceDate.timeIntervalSince(metadata.modifiedDate) >= minimumAge,
+              kind == .directory || metadata.sizeBytes == expectedSizeBytes,
+              kind == .directory
+                || referenceDate.timeIntervalSince(metadata.modifiedDate) >= minimumAge,
               !CleanupPreferences.isWhitelisted(url.path) else {
             return nil
         }
@@ -389,7 +407,8 @@ nonisolated enum SystemCleanupService {
             path: url.path,
             name: url.lastPathComponent,
             category: category,
-            sizeBytes: metadata.sizeBytes,
+            kind: kind,
+            sizeBytes: expectedSizeBytes,
             modifiedDate: metadata.modifiedDate,
             deviceID: metadata.deviceID,
             fileID: metadata.fileID
@@ -441,6 +460,9 @@ nonisolated enum SystemCleanupService {
                 && pathDepth(url.path, root: root) <= 10
                 && url.lastPathComponent.hasPrefix("CFNetworkDownload_")
                 && url.pathExtension.lowercased() == "tmp"
+        case .rebuildableServiceCaches:
+            return pathsEqual(url.path, "/Library/Caches/com.apple.iconservices.store")
+                && canonicalPathIsInside(url, root: "/Library/Caches")
         }
     }
 
@@ -450,6 +472,7 @@ nonisolated enum SystemCleanupService {
         modifiedDate: Date,
         sizeBytes: UInt64,
         isRegularFile: Bool,
+        isDirectory: Bool,
         isSymbolicLink: Bool
     )? {
         var value = stat()
@@ -467,6 +490,7 @@ nonisolated enum SystemCleanupService {
             Date(timeIntervalSince1970: TimeInterval(value.st_mtimespec.tv_sec)),
             sizeBytes,
             kind == S_IFREG,
+            kind == S_IFDIR,
             kind == S_IFLNK
         )
     }
@@ -537,20 +561,24 @@ nonisolated enum SystemCleanupService {
         set commandText to commandText & "; trash_path=" & quoted form of trashPath & "; expected_trash_identity=" & quoted form of expectedTrashIdentity & "; "
         set argumentCount to count of argv
         set candidateIndex to 0
-        repeat with argumentIndex from 4 to argumentCount by 4
+        repeat with argumentIndex from 4 to argumentCount by 6
             set candidateIndex to candidateIndex + 1
             set candidateIndexText to candidateIndex as text
             set sourcePath to item argumentIndex of argv
             set destinationPath to item (argumentIndex + 1) of argv
             set expectedIdentity to item (argumentIndex + 2) of argv
-            set categoryName to item (argumentIndex + 3) of argv
-            set commandText to commandText & "( source_path=" & quoted form of sourcePath & "; destination_path=" & quoted form of destinationPath & "; expected_identity=" & quoted form of expectedIdentity & "; category_name=" & quoted form of categoryName & "; move_system_candidate \"$source_path\" \"$destination_path\" \"$expected_identity\" \"$category_name\" ) && printf 'TRASHED:%s\\n' " & candidateIndexText & " || printf 'FAILED:%s\\n' " & candidateIndexText & "; "
+            set expectedSize to item (argumentIndex + 3) of argv
+            set categoryName to item (argumentIndex + 4) of argv
+            set itemKind to item (argumentIndex + 5) of argv
+            set commandText to commandText & "( source_path=" & quoted form of sourcePath & "; destination_path=" & quoted form of destinationPath & "; expected_identity=" & quoted form of expectedIdentity & "; expected_size=" & quoted form of expectedSize & "; category_name=" & quoted form of categoryName & "; item_kind=" & quoted form of itemKind & "; move_system_candidate \"$source_path\" \"$destination_path\" \"$expected_identity\" \"$expected_size\" \"$category_name\" \"$item_kind\" ) && printf 'TRASHED:%s\\n' " & candidateIndexText & " || printf 'FAILED:%s\\n' " & candidateIndexText & "; "
         end repeat
         do shell script commandText with administrator privileges
     end run
     """#
 
     private static let cleanupShellScript = #"""
+    set -o pipefail
+
     path_depth_ok() {
         depth_path=$1
         depth_root=$2
@@ -591,6 +619,28 @@ nonisolated enum SystemCleanupService {
                 printf '%s\n' "$candidate_path" | /usr/bin/awk -F/ 'NF >= 9 && NF <= 13 && $2 == "private" && $3 == "var" && $4 == "folders" && $7 == "T" && $8 == "com.apple.idleassetsd" { valid=1 } END { exit valid ? 0 : 1 }' || return 1
                 case "$candidate_name" in CFNetworkDownload_*.tmp) return 0 ;; *) return 1 ;; esac
                 ;;
+            rebuildableServiceCaches)
+                [ "$candidate_path" = '/Library/Caches/com.apple.iconservices.store' ]
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+
+    system_candidate_size() {
+        size_path=$1
+        size_kind=$2
+        case "$size_kind" in
+            file)
+                size_blocks=$(/usr/bin/stat -f '%b' "$size_path" 2>/dev/null) || return 1
+                printf '%s\n' "$((size_blocks * 512))"
+                ;;
+            directory)
+                size_kilobytes=$(/usr/bin/du -sk "$size_path" 2>/dev/null | /usr/bin/awk 'NR == 1 { print $1 }') || return 1
+                case "$size_kilobytes" in ''|*[!0-9]*) return 1 ;; esac
+                printf '%s\n' "$((size_kilobytes * 1024))"
+                ;;
             *)
                 return 1
                 ;;
@@ -601,15 +651,26 @@ nonisolated enum SystemCleanupService {
         move_source=$1
         move_destination=$2
         move_expected_identity=$3
-        move_category=$4
+        move_expected_size=$4
+        move_category=$5
+        move_kind=$6
         system_candidate_path "$move_source" "$move_category" || return 1
-        [ -f "$move_source" ] && [ ! -L "$move_source" ] || return 1
-        move_identity=$(/usr/bin/stat -f '%d:%i:%m:%b' "$move_source" 2>/dev/null) || return 1
+        case "$move_kind:$move_category" in
+            directory:rebuildableServiceCaches) [ -d "$move_source" ] || return 1 ;;
+            file:rebuildableServiceCaches) return 1 ;;
+            file:*) [ -f "$move_source" ] || return 1 ;;
+            *) return 1 ;;
+        esac
+        [ ! -L "$move_source" ] || return 1
+        move_identity=$(/usr/bin/stat -f '%d:%i:%m' "$move_source" 2>/dev/null) || return 1
         [ "$move_identity" = "$move_expected_identity" ] || return 1
-        move_identity_without_blocks=${move_identity%:*}
-        move_mtime=${move_identity_without_blocks##*:}
-        move_now=$(/bin/date +%s) || return 1
-        [ "$move_now" -ge "$move_mtime" ] && [ $((move_now - move_mtime)) -ge 604800 ] || return 1
+        move_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
+        [ "$move_size" = "$move_expected_size" ] || return 1
+        if [ "$move_kind" = 'file' ]; then
+            move_mtime=${move_identity##*:}
+            move_now=$(/bin/date +%s) || return 1
+            [ "$move_now" -ge "$move_mtime" ] && [ $((move_now - move_mtime)) -ge 604800 ] || return 1
+        fi
 
         move_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
         [ "$move_trash_identity" = "$expected_trash_identity" ] || return 1
@@ -626,9 +687,11 @@ nonisolated enum SystemCleanupService {
         move_canonical_source="$move_canonical_parent/$move_name"
         system_candidate_path "$move_canonical_source" "$move_category" || return 1
 
-        move_final_identity=$(/usr/bin/stat -f '%d:%i:%m:%b' "$move_source" 2>/dev/null) || return 1
+        move_final_identity=$(/usr/bin/stat -f '%d:%i:%m' "$move_source" 2>/dev/null) || return 1
+        move_final_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
         move_final_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
         [ "$move_final_identity" = "$move_expected_identity" ] || return 1
+        [ "$move_final_size" = "$move_expected_size" ] || return 1
         [ "$move_final_trash_identity" = "$expected_trash_identity" ] || return 1
         /bin/mv "$move_source" "$move_destination"
     }
@@ -691,8 +754,33 @@ nonisolated enum SystemCleanupService {
             }
             output_category=$scan_category
             [ "$output_category" = 'adobeGCLog' ] && output_category='thirdPartyLogs'
-            printf 'ITEM\t%s\t%s\t%s\t%s\t%s\t%s\n' "$output_category" "$scan_device" "$scan_inode" "$scan_mtime" "$scan_size" "$scan_encoded"
+            printf 'ITEM\tfile\t%s\t%s\t%s\t%s\t%s\t%s\n' "$output_category" "$scan_device" "$scan_inode" "$scan_mtime" "$scan_size" "$scan_encoded"
         done < "$scan_file"
+    }
+
+    scan_directory() {
+        scan_category=$1
+        scan_path=$2
+        [ -d "$scan_path" ] && [ ! -L "$scan_path" ] || return 0
+        scan_identity=$(/usr/bin/stat -f '%d:%i:%m' "$scan_path" 2>/dev/null) || {
+            printf 'UNREADABLE\t%s\n' "$scan_category"
+            return 0
+        }
+        scan_device=${scan_identity%%:*}
+        scan_remainder=${scan_identity#*:}
+        scan_inode=${scan_remainder%%:*}
+        scan_mtime=${scan_remainder##*:}
+        scan_kilobytes=$(/usr/bin/du -sk "$scan_path" 2>/dev/null | /usr/bin/awk 'NR == 1 { print $1 }') || {
+            printf 'UNREADABLE\t%s\n' "$scan_category"
+            return 0
+        }
+        case "$scan_kilobytes" in ''|*[!0-9]*) printf 'UNREADABLE\t%s\n' "$scan_category"; return 0 ;; esac
+        scan_size=$((scan_kilobytes * 1024))
+        scan_encoded=$(printf '%s' "$scan_path" | /usr/bin/base64 -b 0) || {
+            printf 'UNREADABLE\t%s\n' "$scan_category"
+            return 0
+        }
+        printf 'ITEM\tdirectory\t%s\t%s\t%s\t%s\t%s\t%s\n' "$scan_category" "$scan_device" "$scan_inode" "$scan_mtime" "$scan_size" "$scan_encoded"
     }
 
     scan_family systemCaches /Library/Caches
@@ -702,5 +790,6 @@ nonisolated enum SystemCleanupService {
     scan_family thirdPartyLogs /Library/Logs/CreativeCloud
     scan_family adobeGCLog /Library/Logs
     scan_family staleWallpaperDownloads /private/var/folders
+    scan_directory rebuildableServiceCaches /Library/Caches/com.apple.iconservices.store
     """#
 }
