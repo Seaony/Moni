@@ -16,6 +16,10 @@ nonisolated struct SystemMaintenanceResult: Sendable {
     let spotlightStatus: SpotlightIndexStatus
 }
 
+nonisolated struct NetworkCacheRefreshResult: Sendable {
+    let refreshed: Bool
+}
+
 nonisolated enum AdministratorMaintenanceService {
     private struct CommandOutput: Sendable {
         let status: Int32
@@ -38,6 +42,15 @@ nonisolated enum AdministratorMaintenanceService {
             return SystemMaintenanceResult(
                 dnsCacheFlushed: dnsCacheFlushed,
                 spotlightStatus: inspectSpotlightIndex()
+            )
+        }.value
+    }
+
+    static func refreshNetworkCache() async -> NetworkCacheRefreshResult {
+        await Task.detached(priority: .userInitiated) {
+            let command = "/usr/bin/dscacheutil -flushcache && /usr/bin/killall -HUP mDNSResponder"
+            return NetworkCacheRefreshResult(
+                refreshed: runPrivileged(command, timeout: 30)
             )
         }.value
     }
