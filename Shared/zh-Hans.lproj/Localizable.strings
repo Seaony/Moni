@@ -782,3 +782,17 @@
 "Periodic maintenance was skipped because the daily log could not be inspected." = "无法检查每日维护日志，本次定期维护已跳过。";
 "Daily, weekly, and monthly maintenance scripts completed." = "每日、每周和每月维护脚本已完成。";
 "Periodic maintenance was not completed. Administrator approval may have been cancelled, or a system script reported an error." = "定期维护未完成；管理员授权可能已取消，或系统脚本返回了错误。";
+"Caches & Logs" = "缓存与日志";
+"Project Artifacts" = "项目产物";
+"Scanning project build artifacts…" = "正在扫描项目构建产物…";
+"No project artifacts" = "没有项目产物";
+"No rebuildable project dependencies or build output were found." = "未发现可重新生成的项目依赖或构建输出。";
+"Review rebuildable dependencies and build output before moving them to Trash." = "在移入废纸篓前检查可重新生成的依赖与构建输出。";
+"Projects" = "项目";
+"Unknown size" = "大小未知";
+"Unavailable roots" = "不可访问的扫描目录";
+"Cloud synced" = "云端同步";
+"Inactive 7+ days" = "已闲置 7 天以上";
+"Recently active" = "近期活跃";
+"Needs review" = "需要检查";
+"%@ + unknown" = "%@ + 未知大小";

@@ -1,41 +1,13 @@
 import SwiftUI
 
-private enum CleanerMode: String, CaseIterable {
-    case caches
-    case projects
-}
-
-struct CleanerView: View {
-    @State private var mode = CleanerMode.caches
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Picker("", selection: $mode) {
-                Text(MoniLocalization.string("Caches & Logs")).tag(CleanerMode.caches)
-                Text(MoniLocalization.string("Project Artifacts")).tag(CleanerMode.projects)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 280)
-
-            switch mode {
-            case .caches:
-                CacheCleanerView()
-            case .projects:
-                ProjectArtifactCleanerView()
-            }
-        }
-    }
-}
-
-private struct CacheCleanerView: View {
+struct ProjectArtifactCleanerView: View {
     @EnvironmentObject private var monitor: SystemMonitor
-    @State private var items: [CacheCleanupItem] = []
+    @State private var items: [ProjectArtifactItem] = []
     @State private var selectedPaths: Set<String> = []
-    @State private var unreadableItemCount = 0
+    @State private var failedRootCount = 0
     @State private var isScanning = false
     @State private var isCleaning = false
-    @State private var pendingPlan: CleanupPlan?
+    @State private var pendingPlan: ProjectArtifactCleanupPlan?
     @State private var cleanupMessage: String?
 
     var body: some View {
@@ -46,37 +18,34 @@ private struct CacheCleanerView: View {
             if isScanning {
                 VStack(spacing: 10) {
                     ProgressView()
-                    Text("Scanning caches and logs…")
+                    Text("Scanning project build artifacts…")
                         .font(.system(size: 12.5))
                         .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if items.isEmpty {
                 ContentUnavailableView(
-                    "No cleanable items",
-                    systemImage: "sparkles",
-                    description: Text("No cleanable cache or log files were found.")
+                    "No project artifacts",
+                    systemImage: "hammer",
+                    description: Text("No rebuildable project dependencies or build output were found.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 10) {
-                        ForEach(CacheCleanupCategory.allCases, id: \.self) { category in
-                            let categoryItems = items.filter { $0.category == category }
-                            if !categoryItems.isEmpty {
-                                categoryPanel(category, items: categoryItems)
-                            }
+                        ForEach(projectGroups, id: \.path) { group in
+                            projectPanel(path: group.path, items: group.items)
                         }
                     }
                 }
             }
         }
         .task {
-            await scan(selectAll: true)
+            await scan(useDefaultSelection: true)
         }
         .sheet(item: $pendingPlan) { plan in
             CleanupConfirmationView(
-                plan: plan,
+                plan: plan.cleanupPlan,
                 onCancel: { pendingPlan = nil },
                 onConfirm: {
                     pendingPlan = nil
@@ -94,9 +63,9 @@ private struct CacheCleanerView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Cleaner")
+                Text("Project Artifacts")
                     .font(.system(size: 20, weight: .bold))
-                Text("Review rebuildable user caches and logs before moving them to Trash.")
+                Text("Review rebuildable dependencies and build output before moving them to Trash.")
                     .font(.system(size: 12.5))
                     .foregroundStyle(MoniPalette.foregroundTertiary)
             }
@@ -104,7 +73,7 @@ private struct CacheCleanerView: View {
             Spacer(minLength: 12)
 
             Button {
-                Task { await scan(selectAll: true) }
+                Task { await scan(useDefaultSelection: true) }
             } label: {
                 Label(MoniLocalization.string("Rescan"), systemImage: "arrow.clockwise")
             }
@@ -135,11 +104,13 @@ private struct CacheCleanerView: View {
 
     private var summary: some View {
         HStack(spacing: 10) {
-            summaryCard("Reclaimable", cleanupBytes(totalSize), color: MoniPalette.green)
-            summaryCard("Selected", cleanupBytes(selectedSize), color: MoniPalette.blue)
-            summaryCard("Categories", activeCategoryCount.formatted(), color: MoniPalette.orange)
-            if unreadableItemCount > 0 {
-                summaryCard("Unreadable", unreadableItemCount.formatted(), color: MoniPalette.red)
+            summaryCard("Reclaimable", artifactBytes(totalKnownSize), color: MoniPalette.green)
+            summaryCard("Selected", artifactBytes(selectedKnownSize), color: MoniPalette.blue)
+            summaryCard("Projects", projectGroups.count.formatted(), color: MoniPalette.orange)
+            if unknownSizeCount > 0 {
+                summaryCard("Unknown size", unknownSizeCount.formatted(), color: MoniPalette.yellow)
+            } else if failedRootCount > 0 {
+                summaryCard("Unavailable roots", failedRootCount.formatted(), color: MoniPalette.red)
             }
         }
     }
@@ -161,25 +132,28 @@ private struct CacheCleanerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private func categoryPanel(_ category: CacheCleanupCategory, items categoryItems: [CacheCleanupItem]) -> some View {
+    private func projectPanel(path: String, items projectItems: [ProjectArtifactItem]) -> some View {
         VStack(spacing: 0) {
             Button {
-                toggle(categoryItems)
+                toggle(projectItems)
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: categorySelectionSymbol(categoryItems))
+                    Image(systemName: selectionSymbol(projectItems))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(MoniPalette.blue)
                         .frame(width: 20)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(MoniLocalization.string(category.titleKey))
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
                             .font(.system(size: 13.5, weight: .bold))
-                        Text(MoniLocalization.format("%@ items", categoryItems.count.formatted()))
+                            .lineLimit(1)
+                        Text(path)
                             .font(.system(size: 10.5))
                             .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                     Spacer(minLength: 10)
-                    Text(cleanupBytes(categoryItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }))
+                    Text(groupSizeLabel(projectItems))
                         .font(.system(size: 13, weight: .bold, design: .rounded))
                         .foregroundStyle(MoniPalette.foregroundSecondary)
                 }
@@ -191,7 +165,7 @@ private struct CacheCleanerView: View {
 
             Divider().padding(.horizontal, 12)
 
-            ForEach(categoryItems) { item in
+            ForEach(projectItems) { item in
                 Button {
                     toggle(item.path)
                 } label: {
@@ -200,18 +174,21 @@ private struct CacheCleanerView: View {
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
                             .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(URL(fileURLWithPath: item.path).lastPathComponent)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.name)
                                 .font(.system(size: 12.5, weight: .medium))
                                 .lineLimit(1)
-                            Text(URL(fileURLWithPath: item.path).deletingLastPathComponent().path)
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(MoniPalette.foregroundTertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            HStack(spacing: 6) {
+                                Text(item.path)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                activityLabel(item)
+                            }
                         }
                         Spacer(minLength: 10)
-                        Text(cleanupBytes(item.sizeBytes))
+                        Text(item.sizeBytes.map(artifactBytes) ?? MoniLocalization.string("Unknown"))
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(MoniPalette.foregroundSecondary)
                     }
@@ -231,18 +208,52 @@ private struct CacheCleanerView: View {
         }
     }
 
-    private var totalSize: UInt64 {
-        items.reduce(0) { $0 + $1.sizeBytes }
-    }
-
-    private var selectedSize: UInt64 {
-        items.reduce(0) { total, item in
-            selectedPaths.contains(item.path) ? total + item.sizeBytes : total
+    private func activityLabel(_ item: ProjectArtifactItem) -> some View {
+        let title: String
+        let color: Color
+        if item.isCloudSynced {
+            title = "Cloud synced"
+            color = MoniPalette.cyan
+        } else {
+            switch item.activity {
+            case .old:
+                title = "Inactive 7+ days"
+                color = MoniPalette.green
+            case .recent:
+                title = "Recently active"
+                color = MoniPalette.orange
+            case .uncertain:
+                title = "Needs review"
+                color = MoniPalette.yellow
+            }
         }
+        return Text(MoniLocalization.string(title))
+            .font(.system(size: 9.5, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
     }
 
-    private var activeCategoryCount: Int {
-        Set(items.map(\.category)).count
+    private var projectGroups: [(path: String, items: [ProjectArtifactItem])] {
+        Dictionary(grouping: items, by: \.projectRootPath)
+            .map { (path: $0.key, items: $0.value) }
+            .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    private var totalKnownSize: UInt64 {
+        items.compactMap(\.sizeBytes).reduce(0, addingWithoutOverflow)
+    }
+
+    private var selectedKnownSize: UInt64 {
+        items.filter { selectedPaths.contains($0.path) }
+            .compactMap(\.sizeBytes)
+            .reduce(0, addingWithoutOverflow)
+    }
+
+    private var unknownSizeCount: Int {
+        items.count { $0.sizeBytes == nil }
     }
 
     private var cleanupMessageBinding: Binding<Bool> {
@@ -252,11 +263,18 @@ private struct CacheCleanerView: View {
         )
     }
 
-    private func categorySelectionSymbol(_ categoryItems: [CacheCleanupItem]) -> String {
-        let selectedCount = categoryItems.count { selectedPaths.contains($0.path) }
-        if selectedCount == categoryItems.count { return "checkmark.square.fill" }
+    private func selectionSymbol(_ projectItems: [ProjectArtifactItem]) -> String {
+        let selectedCount = projectItems.count { selectedPaths.contains($0.path) }
+        if selectedCount == projectItems.count { return "checkmark.square.fill" }
         if selectedCount > 0 { return "minus.square.fill" }
         return "square"
+    }
+
+    private func groupSizeLabel(_ projectItems: [ProjectArtifactItem]) -> String {
+        let knownSize = projectItems.compactMap(\.sizeBytes).reduce(0, addingWithoutOverflow)
+        return projectItems.contains { $0.sizeBytes == nil }
+            ? MoniLocalization.format("%@ + unknown", artifactBytes(knownSize))
+            : artifactBytes(knownSize)
     }
 
     private func toggle(_ path: String) {
@@ -267,8 +285,8 @@ private struct CacheCleanerView: View {
         }
     }
 
-    private func toggle(_ categoryItems: [CacheCleanupItem]) {
-        let paths = Set(categoryItems.map(\.path))
+    private func toggle(_ projectItems: [ProjectArtifactItem]) {
+        let paths = Set(projectItems.map(\.path))
         if paths.isSubset(of: selectedPaths) {
             selectedPaths.subtract(paths)
         } else {
@@ -276,32 +294,35 @@ private struct CacheCleanerView: View {
         }
     }
 
-    private func scan(selectAll: Bool) async {
+    private func scan(useDefaultSelection: Bool) async {
         isScanning = true
-        let snapshot = await CacheCleanupService.scan()
-        guard !Task.isCancelled else { return }
+        let snapshot = await ProjectArtifactService.scan()
+        guard !Task.isCancelled else {
+            isScanning = false
+            return
+        }
         items = snapshot.items
-        unreadableItemCount = snapshot.unreadableItemCount
-        selectedPaths = selectAll ? Set(snapshot.items.map(\.path)) : []
+        failedRootCount = snapshot.failedRootPaths.count
+        selectedPaths = useDefaultSelection
+            ? Set(snapshot.items.filter(\.isSelectedByDefault).map(\.path))
+            : []
         isScanning = false
     }
 
     private func prepareCleanup() async {
-        let plan = await CleanupService.shared.preview(
-            paths: Array(selectedPaths),
-            scope: .cacheAndLogs
-        )
-        if plan.candidates.isEmpty {
+        let selectedItems = items.filter { selectedPaths.contains($0.path) }
+        let plan = await ProjectArtifactService.previewCleanup(items: selectedItems)
+        if plan.cleanupPlan.candidates.isEmpty {
             cleanupMessage = MoniLocalization.string("No selected items can be cleaned.")
         } else {
             pendingPlan = plan
         }
     }
 
-    private func execute(_ plan: CleanupPlan) async {
+    private func execute(_ plan: ProjectArtifactCleanupPlan) async {
         isCleaning = true
-        let result = await CleanupService.shared.execute(plan)
-        await scan(selectAll: false)
+        let result = await ProjectArtifactService.executeCleanup(plan)
+        await scan(useDefaultSelection: false)
         isCleaning = false
         monitor.refresh(forceSlowMetrics: true)
 
@@ -317,8 +338,13 @@ private struct CacheCleanerView: View {
         }
         cleanupMessage = parts.joined(separator: " ")
     }
+
+    private func addingWithoutOverflow(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? UInt64.max : sum
+    }
 }
 
-private func cleanupBytes(_ value: UInt64) -> String {
+private func artifactBytes(_ value: UInt64) -> String {
     ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .file)
 }
