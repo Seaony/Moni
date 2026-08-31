@@ -36,7 +36,25 @@ struct MaintenanceTaskDefinition: Identifiable, Sendable {
     let executionPolicy: MaintenanceExecutionPolicy
 }
 
-enum MaintenanceService {
+nonisolated struct FinderMaintenanceSnapshot: Sendable {
+    let cachePaths: [String]
+    let staleSavedStatePaths: [String]
+    let unreadableItemCount: Int
+}
+
+nonisolated struct FinderRefreshResult: Sendable {
+    let quickLookCacheRefreshed: Bool
+    let iconServicesRefreshed: Bool
+    let unavailable: Bool
+}
+
+nonisolated enum MaintenanceService {
+    private struct FinderMaintenanceScan: Sendable {
+        let cachePaths: [String]
+        let savedStatePaths: [String]
+        let unreadableItemCount: Int
+    }
+
     static let tasks: [MaintenanceTaskDefinition] = [
         task(
             "system_maintenance", "DNS & Spotlight Check",
@@ -145,6 +163,93 @@ enum MaintenanceService {
         )
     ]
 
+    static func scanFinderMaintenance(referenceDate: Date = Date()) async -> FinderMaintenanceSnapshot {
+        let scan = await Task.detached(priority: .utility) {
+            scanFinderPaths(referenceDate: referenceDate)
+        }.value
+        let eligiblePaths = await CleanupService.shared.eligiblePaths(scan.cachePaths + scan.savedStatePaths)
+        return FinderMaintenanceSnapshot(
+            cachePaths: scan.cachePaths.filter(eligiblePaths.contains).sorted(by: localizedPathOrder),
+            staleSavedStatePaths: scan.savedStatePaths.filter(eligiblePaths.contains).sorted(by: localizedPathOrder),
+            unreadableItemCount: scan.unreadableItemCount
+        )
+    }
+
+    private static func scanFinderPaths(referenceDate: Date) -> FinderMaintenanceScan {
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let cachePaths = [
+            home + "/Library/Caches/com.apple.QuickLook.thumbnailcache",
+            home + "/Library/Caches/com.apple.iconservices.store",
+            home + "/Library/Caches/com.apple.iconservices"
+        ].filter { fileManager.fileExists(atPath: $0) }
+
+        let savedStateRoot = URL(
+            fileURLWithPath: home + "/Library/Saved Application State",
+            isDirectory: true
+        )
+        var savedStatePaths: [String] = []
+        var unreadableItemCount = 0
+        if let enumerator = fileManager.enumerator(
+            at: savedStateRoot,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey],
+            options: [],
+            errorHandler: { _, _ in
+                unreadableItemCount += 1
+                return true
+            }
+        ) {
+            let cutoffDate = referenceDate.addingTimeInterval(-30 * 24 * 60 * 60)
+            for case let url as URL in enumerator {
+                guard !Task.isCancelled else { break }
+                guard url.pathExtension == "savedState" else { continue }
+                do {
+                    let values = try url.resourceValues(forKeys: [
+                        .contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey
+                    ])
+                    guard values.isDirectory == true, values.isSymbolicLink != true else {
+                        enumerator.skipDescendants()
+                        continue
+                    }
+                    if let modificationDate = values.contentModificationDate,
+                       modificationDate < cutoffDate {
+                        savedStatePaths.append(url.standardizedFileURL.path)
+                    }
+                    enumerator.skipDescendants()
+                } catch {
+                    unreadableItemCount += 1
+                    enumerator.skipDescendants()
+                }
+            }
+        } else if fileManager.fileExists(atPath: savedStateRoot.path) {
+            unreadableItemCount += 1
+        }
+
+        return FinderMaintenanceScan(
+            cachePaths: cachePaths,
+            savedStatePaths: savedStatePaths,
+            unreadableItemCount: unreadableItemCount
+        )
+    }
+
+    static func refreshFinderServices() async -> FinderRefreshResult {
+        await Task.detached(priority: .utility) {
+            let executable = "/usr/bin/qlmanage"
+            guard FileManager.default.isExecutableFile(atPath: executable) else {
+                return FinderRefreshResult(
+                    quickLookCacheRefreshed: false,
+                    iconServicesRefreshed: false,
+                    unavailable: true
+                )
+            }
+            return FinderRefreshResult(
+                quickLookCacheRefreshed: run(executable, arguments: ["-r", "cache"]),
+                iconServicesRefreshed: run(executable, arguments: ["-r"]),
+                unavailable: false
+            )
+        }.value
+    }
+
     private static func task(
         _ id: String,
         _ titleKey: String,
@@ -163,5 +268,24 @@ enum MaintenanceService {
             authorization: authorization,
             executionPolicy: policy
         )
+    }
+
+    private static func run(_ executable: String, arguments: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    private static func localizedPathOrder(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.localizedStandardCompare(rhs) == .orderedAscending
     }
 }
