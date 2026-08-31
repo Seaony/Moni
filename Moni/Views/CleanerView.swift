@@ -39,7 +39,7 @@ private struct CacheCleanerView: View {
     @State private var unreadableItemCount = 0
     @State private var isScanning = false
     @State private var isCleaning = false
-    @State private var pendingPlan: CleanupPlan?
+    @State private var pendingPlan: CacheCleanupPlan?
     @State private var cleanupMessage: String?
 
     var body: some View {
@@ -80,7 +80,7 @@ private struct CacheCleanerView: View {
         }
         .sheet(item: $pendingPlan) { plan in
             CleanupConfirmationView(
-                plan: plan,
+                plan: plan.cleanupPlan,
                 onCancel: { pendingPlan = nil },
                 onConfirm: {
                     pendingPlan = nil
@@ -291,20 +291,19 @@ private struct CacheCleanerView: View {
     }
 
     private func prepareCleanup() async {
-        let plan = await CleanupService.shared.preview(
-            paths: Array(selectedPaths),
-            scope: .cacheAndLogs
+        let plan = await CacheCleanupService.previewCleanup(
+            items: items.filter { selectedPaths.contains($0.path) }
         )
-        if plan.candidates.isEmpty {
+        if plan.cleanupPlan.candidates.isEmpty {
             cleanupMessage = MoniLocalization.string("No selected items can be cleaned.")
         } else {
             pendingPlan = plan
         }
     }
 
-    private func execute(_ plan: CleanupPlan) async {
+    private func execute(_ plan: CacheCleanupPlan) async {
         isCleaning = true
-        let result = await CleanupService.shared.execute(plan)
+        let result = await CacheCleanupService.executeCleanup(plan)
         await scan(selectAll: false)
         isCleaning = false
         monitor.refresh(forceSlowMetrics: true)

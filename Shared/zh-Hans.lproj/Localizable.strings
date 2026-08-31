@@ -165,6 +165,7 @@
 "User app logs" = "用户应用日志";
 "Diagnostic reports" = "诊断报告";
 "Saved application states" = "已保存的应用状态";
+"Incomplete downloads" = "未完成的下载";
 "No selected items can be cleaned." = "所选项目均无法清理。";
 "%@ installed" = "已安装 %@ 个";
 "Search applications" = "搜索应用";
