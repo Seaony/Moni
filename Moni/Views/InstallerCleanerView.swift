@@ -1,45 +1,13 @@
 import SwiftUI
 
-private enum CleanerMode: String, CaseIterable {
-    case caches
-    case projects
-    case installers
-}
-
-struct CleanerView: View {
-    @State private var mode = CleanerMode.caches
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Picker("", selection: $mode) {
-                Text(MoniLocalization.string("Caches & Logs")).tag(CleanerMode.caches)
-                Text(MoniLocalization.string("Project Artifacts")).tag(CleanerMode.projects)
-                Text(MoniLocalization.string("Installers")).tag(CleanerMode.installers)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 420)
-
-            switch mode {
-            case .caches:
-                CacheCleanerView()
-            case .projects:
-                ProjectArtifactCleanerView()
-            case .installers:
-                InstallerCleanerView()
-            }
-        }
-    }
-}
-
-private struct CacheCleanerView: View {
+struct InstallerCleanerView: View {
     @EnvironmentObject private var monitor: SystemMonitor
-    @State private var items: [CacheCleanupItem] = []
+    @State private var items: [InstallerCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var unreadableItemCount = 0
     @State private var isScanning = false
     @State private var isCleaning = false
-    @State private var pendingPlan: CleanupPlan?
+    @State private var pendingPlan: InstallerCleanupPlan?
     @State private var cleanupMessage: String?
 
     var body: some View {
@@ -50,25 +18,25 @@ private struct CacheCleanerView: View {
             if isScanning {
                 VStack(spacing: 10) {
                     ProgressView()
-                    Text("Scanning caches and logs…")
+                    Text("Scanning for installer files…")
                         .font(.system(size: 12.5))
                         .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if items.isEmpty {
                 ContentUnavailableView(
-                    "No cleanable items",
-                    systemImage: "sparkles",
-                    description: Text("No cleanable cache or log files were found.")
+                    "No installer files",
+                    systemImage: "shippingbox",
+                    description: Text("No disk images, packages, signed archives, or installer ZIP files were found.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 10) {
-                        ForEach(CacheCleanupCategory.allCases, id: \.self) { category in
-                            let categoryItems = items.filter { $0.category == category }
-                            if !categoryItems.isEmpty {
-                                categoryPanel(category, items: categoryItems)
+                        ForEach(InstallerSource.allCases, id: \.self) { source in
+                            let sourceItems = items.filter { $0.source == source }
+                            if !sourceItems.isEmpty {
+                                sourcePanel(source, items: sourceItems)
                             }
                         }
                     }
@@ -76,11 +44,11 @@ private struct CacheCleanerView: View {
             }
         }
         .task {
-            await scan(selectAll: true)
+            await scan()
         }
         .sheet(item: $pendingPlan) { plan in
             CleanupConfirmationView(
-                plan: plan,
+                plan: plan.cleanupPlan,
                 onCancel: { pendingPlan = nil },
                 onConfirm: {
                     pendingPlan = nil
@@ -98,9 +66,9 @@ private struct CacheCleanerView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Cleaner")
+                Text("Installers")
                     .font(.system(size: 20, weight: .bold))
-                Text("Review rebuildable user caches and logs before moving them to Trash.")
+                Text("Select redundant installer files to review before moving them to Trash.")
                     .font(.system(size: 12.5))
                     .foregroundStyle(MoniPalette.foregroundTertiary)
             }
@@ -108,7 +76,7 @@ private struct CacheCleanerView: View {
             Spacer(minLength: 12)
 
             Button {
-                Task { await scan(selectAll: true) }
+                Task { await scan() }
             } label: {
                 Label(MoniLocalization.string("Rescan"), systemImage: "arrow.clockwise")
             }
@@ -139,9 +107,9 @@ private struct CacheCleanerView: View {
 
     private var summary: some View {
         HStack(spacing: 10) {
-            summaryCard("Reclaimable", cleanupBytes(totalSize), color: MoniPalette.green)
-            summaryCard("Selected", cleanupBytes(selectedSize), color: MoniPalette.blue)
-            summaryCard("Categories", activeCategoryCount.formatted(), color: MoniPalette.orange)
+            summaryCard("Found", installerBytes(totalSize), color: MoniPalette.green)
+            summaryCard("Selected", installerBytes(selectedSize), color: MoniPalette.blue)
+            summaryCard("Sources", activeSourceCount.formatted(), color: MoniPalette.orange)
             if unreadableItemCount > 0 {
                 summaryCard("Unreadable", unreadableItemCount.formatted(), color: MoniPalette.red)
             }
@@ -165,25 +133,25 @@ private struct CacheCleanerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private func categoryPanel(_ category: CacheCleanupCategory, items categoryItems: [CacheCleanupItem]) -> some View {
+    private func sourcePanel(_ source: InstallerSource, items sourceItems: [InstallerCleanupItem]) -> some View {
         VStack(spacing: 0) {
             Button {
-                toggle(categoryItems)
+                toggle(sourceItems)
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: categorySelectionSymbol(categoryItems))
+                    Image(systemName: selectionSymbol(sourceItems))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(MoniPalette.blue)
                         .frame(width: 20)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(MoniLocalization.string(category.titleKey))
+                        Text(MoniLocalization.string(source.titleKey))
                             .font(.system(size: 13.5, weight: .bold))
-                        Text(MoniLocalization.format("%@ items", categoryItems.count.formatted()))
+                        Text(MoniLocalization.format("%@ items", sourceItems.count.formatted()))
                             .font(.system(size: 10.5))
                             .foregroundStyle(MoniPalette.foregroundTertiary)
                     }
                     Spacer(minLength: 10)
-                    Text(cleanupBytes(categoryItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }))
+                    Text(installerBytes(sourceItems.reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }))
                         .font(.system(size: 13, weight: .bold, design: .rounded))
                         .foregroundStyle(MoniPalette.foregroundSecondary)
                 }
@@ -195,7 +163,7 @@ private struct CacheCleanerView: View {
 
             Divider().padding(.horizontal, 12)
 
-            ForEach(categoryItems) { item in
+            ForEach(sourceItems) { item in
                 Button {
                     toggle(item.path)
                 } label: {
@@ -204,18 +172,30 @@ private struct CacheCleanerView: View {
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
                             .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(URL(fileURLWithPath: item.path).lastPathComponent)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.name)
                                 .font(.system(size: 12.5, weight: .medium))
                                 .lineLimit(1)
-                            Text(URL(fileURLWithPath: item.path).deletingLastPathComponent().path)
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(MoniPalette.foregroundTertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            HStack(spacing: 6) {
+                                Text(item.path)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(item.kind.rawValue)
+                                    .font(.system(size: 9.5, weight: .bold))
+                                    .foregroundStyle(MoniPalette.purple)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(MoniPalette.purple.opacity(0.12))
+                                    .clipShape(Capsule())
+                                Text(relativeDate(item.modifiedDate))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                            }
                         }
                         Spacer(minLength: 10)
-                        Text(cleanupBytes(item.sizeBytes))
+                        Text(installerBytes(item.sizeBytes))
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(MoniPalette.foregroundSecondary)
                     }
@@ -236,17 +216,16 @@ private struct CacheCleanerView: View {
     }
 
     private var totalSize: UInt64 {
-        items.reduce(0) { $0 + $1.sizeBytes }
+        items.reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }
     }
 
     private var selectedSize: UInt64 {
-        items.reduce(0) { total, item in
-            selectedPaths.contains(item.path) ? total + item.sizeBytes : total
-        }
+        items.filter { selectedPaths.contains($0.path) }
+            .reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }
     }
 
-    private var activeCategoryCount: Int {
-        Set(items.map(\.category)).count
+    private var activeSourceCount: Int {
+        Set(items.map(\.source)).count
     }
 
     private var cleanupMessageBinding: Binding<Bool> {
@@ -256,9 +235,9 @@ private struct CacheCleanerView: View {
         )
     }
 
-    private func categorySelectionSymbol(_ categoryItems: [CacheCleanupItem]) -> String {
-        let selectedCount = categoryItems.count { selectedPaths.contains($0.path) }
-        if selectedCount == categoryItems.count { return "checkmark.square.fill" }
+    private func selectionSymbol(_ sourceItems: [InstallerCleanupItem]) -> String {
+        let selectedCount = sourceItems.count { selectedPaths.contains($0.path) }
+        if selectedCount == sourceItems.count { return "checkmark.square.fill" }
         if selectedCount > 0 { return "minus.square.fill" }
         return "square"
     }
@@ -271,8 +250,8 @@ private struct CacheCleanerView: View {
         }
     }
 
-    private func toggle(_ categoryItems: [CacheCleanupItem]) {
-        let paths = Set(categoryItems.map(\.path))
+    private func toggle(_ sourceItems: [InstallerCleanupItem]) {
+        let paths = Set(sourceItems.map(\.path))
         if paths.isSubset(of: selectedPaths) {
             selectedPaths.subtract(paths)
         } else {
@@ -280,32 +259,33 @@ private struct CacheCleanerView: View {
         }
     }
 
-    private func scan(selectAll: Bool) async {
+    private func scan() async {
         isScanning = true
-        let snapshot = await CacheCleanupService.scan()
-        guard !Task.isCancelled else { return }
+        let snapshot = await InstallerCleanupService.scan()
+        guard !Task.isCancelled else {
+            isScanning = false
+            return
+        }
         items = snapshot.items
         unreadableItemCount = snapshot.unreadableItemCount
-        selectedPaths = selectAll ? Set(snapshot.items.map(\.path)) : []
+        selectedPaths = []
         isScanning = false
     }
 
     private func prepareCleanup() async {
-        let plan = await CleanupService.shared.preview(
-            paths: Array(selectedPaths),
-            scope: .cacheAndLogs
-        )
-        if plan.candidates.isEmpty {
+        let selectedItems = items.filter { selectedPaths.contains($0.path) }
+        let plan = await InstallerCleanupService.previewCleanup(items: selectedItems)
+        if plan.cleanupPlan.candidates.isEmpty {
             cleanupMessage = MoniLocalization.string("No selected items can be cleaned.")
         } else {
             pendingPlan = plan
         }
     }
 
-    private func execute(_ plan: CleanupPlan) async {
+    private func execute(_ plan: InstallerCleanupPlan) async {
         isCleaning = true
-        let result = await CleanupService.shared.execute(plan)
-        await scan(selectAll: false)
+        let result = await InstallerCleanupService.executeCleanup(plan)
+        await scan()
         isCleaning = false
         monitor.refresh(forceSlowMetrics: true)
 
@@ -321,8 +301,20 @@ private struct CacheCleanerView: View {
         }
         cleanupMessage = parts.joined(separator: " ")
     }
+
+    private func relativeDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = MoniLocalization.currentLanguage.locale
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    private func addingWithoutOverflow(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? UInt64.max : sum
+    }
 }
 
-private func cleanupBytes(_ value: UInt64) -> String {
+private func installerBytes(_ value: UInt64) -> String {
     ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .file)
 }
