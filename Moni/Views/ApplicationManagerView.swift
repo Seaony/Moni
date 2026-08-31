@@ -202,7 +202,10 @@ struct ApplicationManagerView: View {
             Button {
                 Task { await prepareRemoval(application) }
             } label: {
-                Label(MoniLocalization.string("Review Removal"), systemImage: "trash")
+                Label(
+                    MoniLocalization.string(removalPreview?.homebrewCask == nil ? "Review Removal" : "Review Homebrew Removal"),
+                    systemImage: removalPreview?.homebrewCask == nil ? "trash" : "shippingbox"
+                )
             }
             .buttonStyle(.borderedProminent)
             .tint(MoniPalette.red)
@@ -245,7 +248,9 @@ struct ApplicationManagerView: View {
                 }
 
                 HStack {
-                    Text(MoniLocalization.format("%@ files selected", selectedRemovalPaths.count.formatted()))
+                    Text(preview.homebrewCask == nil
+                         ? MoniLocalization.format("%@ files selected", selectedRemovalPaths.count.formatted())
+                         : MoniLocalization.string("Homebrew controls the final removal scope."))
                         .font(.system(size: 12, weight: .semibold))
                     Spacer()
                     Text(appBytes(selectedSize(in: preview)))
@@ -257,10 +262,12 @@ struct ApplicationManagerView: View {
                     ForEach(preview.items) { item in
                         let required = item.kind == .applicationBundle
                         Button {
-                            if !required { toggleRemoval(item.path) }
+                            if !required && preview.homebrewCask == nil { toggleRemoval(item.path) }
                         } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: selectedRemovalPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                                Image(systemName: preview.homebrewCask == nil
+                                      ? (selectedRemovalPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                                      : "shippingbox.fill")
                                     .foregroundStyle(required ? MoniPalette.purple : MoniPalette.blue)
                                     .frame(width: 18)
                                 VStack(alignment: .leading, spacing: 2) {
@@ -280,11 +287,16 @@ struct ApplicationManagerView: View {
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 9)
-                            .background(selectedRemovalPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                            .background(
+                                preview.homebrewCask == nil && selectedRemovalPaths.contains(item.path)
+                                    ? MoniPalette.selection.opacity(0.55)
+                                    : Color.clear
+                            )
                             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(preview.homebrewCask != nil)
                     }
                 }
 
