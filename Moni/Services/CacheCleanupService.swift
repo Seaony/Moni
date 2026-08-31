@@ -41,6 +41,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case nodePackageCaches
     case pythonPackageCaches
     case developerToolCaches
+    case clangModuleCache
 
     var titleKey: String {
         switch self {
@@ -83,6 +84,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .nodePackageCaches: "Node package caches"
         case .pythonPackageCaches: "Python package caches"
         case .developerToolCaches: "Developer tool caches"
+        case .clangModuleCache: "Clang module cache"
         }
     }
 }
@@ -385,6 +387,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: developerToolCaches.items)
         unreadableItemCount += developerToolCaches.unreadableItemCount
 
+        let clangModuleCache = await scanClangModuleCache()
+        discoveredItems.append(contentsOf: clangModuleCache.items)
+        unreadableItemCount += clangModuleCache.unreadableItemCount
+
         let developerBackupFiles = scanDeveloperBackupFiles()
         discoveredItems.append(contentsOf: developerBackupFiles.items)
         unreadableItemCount += developerBackupFiles.unreadableItemCount
@@ -538,7 +544,20 @@ nonisolated enum CacheCleanupService {
             || nodePackageToolsAreInactive()
         let pythonPackageToolsAreSafe = !items.contains { $0.category == .pythonPackageCaches }
             || pythonPackageToolsAreInactive()
+        let requiresClangProbe = items.contains { $0.category == .clangModuleCache }
+        let clangRoot = requiresClangProbe ? clangModuleCacheRoot() : nil
+        let clangIsSafe = !requiresClangProbe || clangModuleCacheIsInactive()
         for item in items {
+            if item.category == .clangModuleCache {
+                guard clangIsSafe,
+                      let clangRoot,
+                      clangModuleCacheItemIsAllowed(item.path, root: clangRoot) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .developerToolCaches {
                 guard developerToolCacheItemIsAllowed(item.path)
                         || developerBackupFileSize(at: item.path) == item.sizeBytes else {
@@ -1180,6 +1199,129 @@ nonisolated enum CacheCleanupService {
 
     private static func pythonPackageToolsAreInactive() -> Bool {
         processProbesAreInactive([["-f", "(^|/)uv([[:space:]]|$)"]])
+    }
+
+    private static func scanClangModuleCache() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard clangModuleCacheIsInactive(),
+              let root = clangModuleCacheRoot() else {
+            return ([], 0)
+        }
+        let children: [URL]
+        do {
+            children = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: []
+            )
+        } catch {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for child in children {
+            guard !Task.isCancelled else { return ([], 0) }
+            let path = child.standardizedFileURL.path
+            guard clangModuleCacheItemIsAllowed(path, root: root),
+                  let measurement = await cacheTargetSize(at: path) else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .clangModuleCache,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func clangModuleCacheItemIsAllowed(_ path: String, root: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return isRealDirectory(at: root)
+            && isRealFileOrDirectory(at: url.path)
+            && !isSymbolicLink(at: url.path)
+            && pathsEqual(url.deletingLastPathComponent().path, root)
+    }
+
+    private static func clangModuleCacheRoot() -> String? {
+        guard let userCacheRoot = darwinUserCacheRoot() else { return nil }
+        let root = URL(fileURLWithPath: userCacheRoot, isDirectory: true)
+            .appendingPathComponent("clang", isDirectory: true)
+            .standardizedFileURL.path
+        guard isRealDirectory(at: root), currentUserOwnsDirectory(at: root) else { return nil }
+        return root
+    }
+
+    private static func darwinUserCacheRoot() -> String? {
+        let executable = "/usr/bin/getconf"
+        guard FileManager.default.isExecutableFile(atPath: executable) else { return nil }
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["DARWIN_USER_CACHE_DIR"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+        guard process.terminationReason == .exit,
+              process.terminationStatus == 0 else {
+            return nil
+        }
+        let raw = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard raw.hasPrefix("/"),
+              !raw.isEmpty,
+              !raw.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              !raw.contains("//"),
+              !raw.split(separator: "/", omittingEmptySubsequences: false).contains("."),
+              !raw.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+            return nil
+        }
+        let normalized = URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        guard !pathsEqual(normalized, "/"),
+              !pathsEqual(normalized, home),
+              isRealDirectory(at: normalized),
+              currentUserOwnsDirectory(at: normalized) else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func currentUserOwnsDirectory(at path: String) -> Bool {
+        var value = stat()
+        return path.withCString { lstat($0, &value) } == 0
+            && value.st_mode & S_IFMT == S_IFDIR
+            && value.st_uid == getuid()
+    }
+
+    private static func clangModuleCacheIsInactive() -> Bool {
+        processProbesAreInactive([
+            ["-x", "Xcode"],
+            ["-x", "xcodebuild"],
+            ["-x", "xctest"],
+            ["-x", "XCTRunner"],
+            ["-x", "XCBBuildService"],
+            ["-x", "swift-frontend"],
+            ["-x", "clang"],
+            ["-x", "clangd"],
+            ["-x", "swiftc"],
+            ["-x", "sourcekit-lsp"],
+            ["-x", "SourceKitService"]
+        ])
     }
 
     private static func scanDeveloperToolCaches() async -> (
