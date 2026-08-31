@@ -152,6 +152,32 @@ nonisolated enum ApplicationUninstallService {
             add(home + "/Library/Saved Application State/" + name + ".savedState", .savedState)
         }
 
+        if let bundleIdentifier = application.bundleIdentifier,
+           isValidBundleIdentifier(bundleIdentifier) {
+            for name in bundleLeafNameVariants(
+                bundleIdentifier: bundleIdentifier,
+                applicationName: application.name
+            ) {
+                add(home + "/Library/Application Support/" + name, .applicationSupport)
+                add(home + "/Library/Caches/" + name, .cache)
+                add(home + "/Library/Logs/" + name, .log)
+                add(home + "/Library/Preferences/" + name + ".plist", .preference)
+                add(home + "/Library/Saved Application State/" + name + ".savedState", .savedState)
+            }
+
+            let nested = vendorNestedCandidates(
+                bundleIdentifier: bundleIdentifier,
+                applicationName: application.name,
+                roots: [
+                    (home + "/Library/Application Support", .applicationSupport),
+                    (home + "/Library/Caches", .cache),
+                    (home + "/Library/Logs", .log)
+                ]
+            )
+            candidates.append(contentsOf: nested.candidates)
+            if !nested.isComplete { isComplete = false }
+        }
+
         let pluginPaths: [(String, ApplicationRemovalKind)] = [
             (home + "/Library/Services/" + application.name + ".workflow", .other),
             (home + "/Library/QuickLook/" + application.name + ".qlgenerator", .other),
@@ -516,10 +542,132 @@ nonisolated enum ApplicationUninstallService {
         return Array(Set(names)).sorted()
     }
 
+    private static func bundleLeafNameVariants(
+        bundleIdentifier: String,
+        applicationName: String
+    ) -> [String] {
+        let leaf = bundleIdentifier.split(separator: ".").last.map(String.init) ?? ""
+        let compactName = applicationName.replacingOccurrences(of: " ", with: "")
+        guard leaf.count >= 8,
+              compactName.count >= 3,
+              leaf != applicationName,
+              leaf.range(of: #"[a-z][A-Z]"#, options: .regularExpression) != nil,
+              leaf.lowercased().hasPrefix(compactName.lowercased()) else {
+            return []
+        }
+        let suffix = String(leaf.dropFirst(compactName.count))
+        guard let first = suffix.first,
+              first.isASCII,
+              first.isUppercase || first.isNumber else {
+            return []
+        }
+        let spacedSuffix = suffix
+            .replacingOccurrences(
+                of: #"([A-Z]+)([A-Z][a-z])"#,
+                with: "$1 $2",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"([a-z0-9])([A-Z])"#,
+                with: "$1 $2",
+                options: .regularExpression
+            )
+        return Array(Set([leaf, applicationName + " " + spacedSuffix]))
+            .filter { $0 != applicationName }
+            .sorted()
+    }
+
+    private static func vendorNestedCandidates(
+        bundleIdentifier: String,
+        applicationName: String,
+        roots: [(String, ApplicationRemovalKind)]
+    ) -> (candidates: [Candidate], isComplete: Bool) {
+        guard applicationName.count >= 4,
+              !isCommonName(applicationName) else {
+            return ([], true)
+        }
+        let parts = bundleIdentifier.split(separator: ".").map(String.init)
+        guard parts.count >= 2 else { return ([], true) }
+        let vendor = parts[parts.count - 2]
+        let product = parts[parts.count - 1]
+        guard isSafeBundleToken(vendor), isSafeBundleToken(product) else {
+            return ([], true)
+        }
+
+        let variants = Set([
+            applicationName,
+            applicationName.replacingOccurrences(of: " ", with: ""),
+            applicationName.replacingOccurrences(of: " ", with: "-"),
+            applicationName.replacingOccurrences(of: " ", with: "_"),
+            product
+        ].map { $0.lowercased() })
+        var candidates: [Candidate] = []
+        var isComplete = true
+
+        for (rootPath, kind) in roots where pathExists(rootPath) {
+            let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+            guard let parents = try? FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                isComplete = false
+                continue
+            }
+            for parent in parents where parent.lastPathComponent.caseInsensitiveCompare(vendor) == .orderedSame {
+                guard let parentValues = try? parent.resourceValues(
+                    forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                ), parentValues.isDirectory == true, parentValues.isSymbolicLink != true else {
+                    continue
+                }
+                guard let children = try? FileManager.default.contentsOfDirectory(
+                    at: parent,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                    options: [.skipsHiddenFiles]
+                ) else {
+                    isComplete = false
+                    continue
+                }
+                for child in children {
+                    guard let childValues = try? child.resourceValues(
+                        forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                    ), childValues.isDirectory == true, childValues.isSymbolicLink != true else {
+                        continue
+                    }
+                    let name = child.lastPathComponent.lowercased()
+                    if variants.contains(where: { variant in
+                        name == variant
+                            || name.hasPrefix(variant + " ")
+                            || name.hasPrefix(variant + "-")
+                            || name.hasPrefix(variant + "_")
+                            || name.hasPrefix(variant + ".")
+                    }) {
+                        candidates.append(Candidate(path: child.path, kind: kind))
+                    }
+                }
+            }
+        }
+        return (candidates, isComplete)
+    }
+
+    private static func isSafeBundleToken(_ value: String) -> Bool {
+        guard value.count >= 3, let first = value.unicodeScalars.first,
+              CharacterSet.alphanumerics.contains(first), first.isASCII else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy {
+            $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-")
+        }
+    }
+
     private static func isCommonName(_ name: String) -> Bool {
         let common: Set<String> = [
-            "app", "application", "agent", "client", "daemon", "desktop", "helper",
-            "launcher", "manager", "monitor", "service", "support", "update", "updater"
+            "app", "application", "music", "notes", "photos", "finder", "safari", "preview",
+            "calendar", "contacts", "messages", "reminders", "clock", "weather", "stocks",
+            "books", "news", "podcasts", "voice", "files", "store", "system", "helper",
+            "agent", "daemon", "service", "update", "updater", "sync", "backup", "cloud",
+            "manager", "monitor", "server", "client", "worker", "runner", "launcher", "driver",
+            "plugin", "extension", "widget", "utility", "desktop", "support"
         ]
         return common.contains(name.lowercased())
     }
