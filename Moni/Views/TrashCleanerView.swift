@@ -5,8 +5,7 @@ struct TrashCleanerView: View {
     @State private var items: [TrashCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var unreadableItemCount = 0
-    @State private var rootDevice: UInt64?
-    @State private var rootInode: UInt64?
+    @State private var rootIdentities: [TrashCleanupRootIdentity] = []
     @State private var isScanning = false
     @State private var isCleaning = false
     @State private var pendingPlan: TrashCleanupPlan?
@@ -29,12 +28,19 @@ struct TrashCleanerView: View {
                 ContentUnavailableView(
                     "Trash is empty",
                     systemImage: "trash",
-                    description: Text("No removable items were found in the current user's Trash.")
+                    description: Text("No removable items were found in the current user or mounted external volume Trash folders.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
-                    itemPanel
+                    LazyVStack(spacing: 10) {
+                        ForEach(trashRootPaths, id: \.self) { rootPath in
+                            rootPanel(
+                                rootPath: rootPath,
+                                items: items.filter { $0.trashRootPath == rootPath }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -86,7 +92,7 @@ struct TrashCleanerView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(MoniPalette.red)
-            .disabled(selectedPaths.isEmpty || rootDevice == nil || rootInode == nil || isScanning || isCleaning)
+            .disabled(selectedPaths.isEmpty || isScanning || isCleaning)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -126,20 +132,20 @@ struct TrashCleanerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var itemPanel: some View {
+    private func rootPanel(rootPath: String, items rootItems: [TrashCleanupItem]) -> some View {
         VStack(spacing: 0) {
             Button {
-                toggleAll()
+                toggle(rootItems)
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: selectionSymbol)
+                    Image(systemName: selectionSymbol(for: rootItems))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(MoniPalette.blue)
                         .frame(width: 20)
-                    Text("Current user Trash")
+                    Text(rootItems.first?.locationName ?? rootPath)
                         .font(.system(size: 13.5, weight: .bold))
                     Spacer(minLength: 10)
-                    Text(trashBytes(totalSize))
+                    Text(trashBytes(rootItems.reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }))
                         .font(.system(size: 13, weight: .bold, design: .rounded))
                         .foregroundStyle(MoniPalette.foregroundSecondary)
                 }
@@ -151,7 +157,7 @@ struct TrashCleanerView: View {
 
             Divider().padding(.horizontal, 12)
 
-            ForEach(items) { item in
+            ForEach(rootItems) { item in
                 Button {
                     toggle(item.path)
                 } label: {
@@ -200,9 +206,18 @@ struct TrashCleanerView: View {
             .reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }
     }
 
-    private var selectionSymbol: String {
-        if selectedPaths.count == items.count { return "checkmark.square.fill" }
-        if !selectedPaths.isEmpty { return "minus.square.fill" }
+    private var trashRootPaths: [String] {
+        var seen = Set<String>()
+        return items.compactMap { item in
+            seen.insert(item.trashRootPath).inserted ? item.trashRootPath : nil
+        }
+    }
+
+    private func selectionSymbol(for rootItems: [TrashCleanupItem]) -> String {
+        let paths = Set(rootItems.map(\.path))
+        let selectedCount = paths.intersection(selectedPaths).count
+        if selectedCount == paths.count { return "checkmark.square.fill" }
+        if selectedCount > 0 { return "minus.square.fill" }
         return "square"
     }
 
@@ -221,12 +236,12 @@ struct TrashCleanerView: View {
         }
     }
 
-    private func toggleAll() {
-        let paths = Set(items.map(\.path))
+    private func toggle(_ rootItems: [TrashCleanupItem]) {
+        let paths = Set(rootItems.map(\.path))
         if paths.isSubset(of: selectedPaths) {
-            selectedPaths.removeAll()
+            selectedPaths.subtract(paths)
         } else {
-            selectedPaths = paths
+            selectedPaths.formUnion(paths)
         }
     }
 
@@ -240,21 +255,19 @@ struct TrashCleanerView: View {
         items = snapshot.items
         selectedPaths = []
         unreadableItemCount = snapshot.unreadableItemCount
-        rootDevice = snapshot.rootDevice
-        rootInode = snapshot.rootInode
+        rootIdentities = snapshot.rootIdentities
         isScanning = false
     }
 
     private func prepareCleanup() async {
-        guard let rootDevice, let rootInode else {
+        guard !rootIdentities.isEmpty else {
             cleanupMessage = MoniLocalization.string("Trash could not be verified.")
             return
         }
         let selectedItems = items.filter { selectedPaths.contains($0.path) }
         let plan = await TrashCleanupService.previewCleanup(
             items: selectedItems,
-            rootDevice: rootDevice,
-            rootInode: rootInode
+            rootIdentities: rootIdentities
         )
         if plan.cleanupPlan.candidates.isEmpty {
             cleanupMessage = MoniLocalization.string("No selected items can be cleaned.")

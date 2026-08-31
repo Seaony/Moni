@@ -235,8 +235,7 @@ actor CleanupService {
 
     func permanentlyDeleteTrashItems(
         _ plan: CleanupPlan,
-        trashRootDevice: UInt64,
-        trashRootInode: UInt64,
+        trashRoots: [TrashCleanupRootIdentity],
         whitelist: [String] = CleanupPreferences.whitelist()
     ) -> CleanupRunResult {
         guard plan.scope == .trash else {
@@ -259,20 +258,16 @@ actor CleanupService {
             return CleanupRunResult(trashedPaths: [], rejectedItems: plan.rejectedItems + rejected, failedPaths: [])
         }
 
-        let trashRoot = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(".Trash", isDirectory: true)
-            .standardizedFileURL.path
-        guard let currentRoot = fileIdentity(at: trashRoot),
-              currentRoot.device == trashRootDevice,
-              currentRoot.inode == trashRootInode else {
-            let rejected = plan.candidates.map {
-                CleanupRejectedItem(path: $0.path, reason: .changed)
+        let verifiedRoots: [String: TrashCleanupRootIdentity] = Dictionary(
+            uniqueKeysWithValues: trashRoots.compactMap { root -> (String, TrashCleanupRootIdentity)? in
+                guard let current = fileIdentity(at: root.path),
+                      current.device == root.device,
+                      current.inode == root.inode else {
+                    return nil
+                }
+                return (root.path, root)
             }
-            appendHistory(rejected.map {
-                historyRecord(scope: plan.scope, action: .skipped, path: $0.path, detail: $0.reason.rawValue)
-            })
-            return CleanupRunResult(trashedPaths: [], rejectedItems: plan.rejectedItems + rejected, failedPaths: [])
-        }
+        )
 
         var deletedPaths: [String] = []
         var rejectedItems = plan.rejectedItems
@@ -283,7 +278,7 @@ actor CleanupService {
             let parent = URL(fileURLWithPath: plannedCandidate.path)
                 .deletingLastPathComponent()
                 .standardizedFileURL.path
-            guard pathsEqual(parent, trashRoot) else {
+            guard verifiedRoots.keys.contains(where: { pathsEqual(parent, $0) }) else {
                 let rejected = CleanupRejectedItem(path: plannedCandidate.path, reason: .protected)
                 rejectedItems.append(rejected)
                 records.append(historyRecord(
