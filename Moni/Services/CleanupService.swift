@@ -224,6 +224,18 @@ actor CleanupService {
         loadHistory()
     }
 
+    func eligiblePaths(
+        _ paths: [String],
+        whitelist: [String] = CleanupPreferences.whitelist()
+    ) -> Set<String> {
+        Set(paths.compactMap { path in
+            guard case let .success(candidate) = validate(path: path, whitelist: whitelist) else {
+                return nil
+            }
+            return candidate.path
+        })
+    }
+
     func clearHistory() throws {
         let url = try historyURL()
         if fileManager.fileExists(atPath: url.path) {
@@ -325,7 +337,51 @@ actor CleanupService {
                 return true
             }
         }
+
+        let userCaches = home + "/Library/Caches"
+        let cacheRelativePath = pathIsInside(normalized, root: userCaches)
+            ? String(normalized.dropFirst(userCaches.count + 1))
+            : nil
+        let topCacheName = cacheRelativePath?.split(separator: "/").first.map(String.init)?.lowercased()
+        if topCacheName?.hasPrefix("com.apple.fontregistry") == true
+            || topCacheName?.hasPrefix("com.apple.spotlight") == true
+            || topCacheName?.hasPrefix("cloudkit") == true {
+            return true
+        }
+        let poetryVirtualEnvironments = userCaches + "/pypoetry/virtualenvs"
+        if pathsOverlap(normalized, poetryVirtualEnvironments)
+            || cacheRelativePath?.lowercased().hasPrefix("pypoetry/virtualenvs") == true {
+            return true
+        }
+
+        let denoRoot = ProcessInfo.processInfo.environment["DENO_DIR"]
+            ?? userCaches + "/deno"
+        if isValidOwnerCacheRoot(denoRoot, home: home) {
+            if pathsOverlap(normalized, URL(fileURLWithPath: denoRoot).standardizedFileURL.path) {
+                return true
+            }
+        } else if pathIsInside(normalized, root: userCaches) {
+            return true
+        }
+
+        if normalized.lowercased().hasSuffix("/com.apple.e5rt.e5bundlecache")
+            || fileManager.fileExists(atPath: normalized + "/com.apple.e5rt.e5bundlecache") {
+            return true
+        }
         return false
+    }
+
+    private func isValidOwnerCacheRoot(_ path: String, home: String) -> Bool {
+        guard path.hasPrefix("/"),
+              !path.contains("\0"),
+              !path.contains("//"),
+              !path.split(separator: "/", omittingEmptySubsequences: false).contains("."),
+              !path.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+            return false
+        }
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let invalidRoots = ["/", home, home + "/Library", home + "/Library/Caches", home + "/.cache"]
+        return !invalidRoots.contains { pathsEqual(normalized, $0) }
     }
 
     private func pathIsInside(_ path: String, root: String) -> Bool {
