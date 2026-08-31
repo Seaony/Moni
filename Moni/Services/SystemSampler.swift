@@ -644,11 +644,18 @@ actor SystemSampler {
         var usages: [ProcessUsage] = []
 
         for pid in pids.prefix(Int(bytes)) where pid > 0 {
+            var bsd = proc_bsdinfo()
+            let bsdSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, bsdSize) == bsdSize else {
+                continue
+            }
+            let isZombie = bsd.pbi_status == UInt32(SZOMB)
             var task = proc_taskinfo()
             let taskSize = Int32(MemoryLayout<proc_taskinfo>.size)
-            guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &task, taskSize) == taskSize else { continue }
+            let hasTaskInfo = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &task, taskSize) == taskSize
+            guard hasTaskInfo || isZombie else { continue }
 
-            let totalTime = task.pti_total_user + task.pti_total_system
+            let totalTime = hasTaskInfo ? task.pti_total_user + task.pti_total_system : 0
             currentTimes[pid] = totalTime
             let priorTime = previousProcessTimes[pid]
             let previousTime = priorTime ?? totalTime
@@ -668,8 +675,10 @@ actor SystemSampler {
                 name: metadata.name,
                 path: metadata.path,
                 cpuPercent: max(0, cpu),
-                memoryBytes: task.pti_resident_size,
-                threadCount: Int(task.pti_threadnum)
+                memoryBytes: hasTaskInfo ? task.pti_resident_size : 0,
+                threadCount: hasTaskInfo ? Int(task.pti_threadnum) : 0,
+                parentPID: Int32(bsd.pbi_ppid),
+                isZombie: isZombie
             ))
         }
 

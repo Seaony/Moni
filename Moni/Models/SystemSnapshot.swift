@@ -214,6 +214,8 @@ struct ProcessUsage: Identifiable, Sendable {
     let cpuPercent: Double
     let memoryBytes: UInt64
     let threadCount: Int
+    let parentPID: Int32
+    let isZombie: Bool
 
     var id: Int32 { pid }
 }

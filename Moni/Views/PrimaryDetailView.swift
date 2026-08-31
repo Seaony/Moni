@@ -150,6 +150,7 @@ private struct HostDetailView: View {
             ("Logical CPUs", snapshot.host.processorCount.formatted()),
             ("Boot volume", rootVolume?.name ?? "—"),
             ("Processes", snapshot.processes.count.formatted()),
+            ("Zombies", snapshot.processes.filter(\.isZombie).count.formatted()),
             ("Volumes", snapshot.volumes.count.formatted())
         ]
     }
@@ -433,6 +434,21 @@ private struct ProcessesDetailView: View {
         return isAscending ? descending.reversed() : descending
     }
 
+    private var zombieParentSummary: String? {
+        let zombies = monitor.snapshot.processes.filter(\.isZombie)
+        guard !zombies.isEmpty else { return nil }
+        let processesByPID = Dictionary(
+            uniqueKeysWithValues: monitor.snapshot.processes.map { ($0.pid, $0.name) }
+        )
+        let parents = Dictionary(grouping: zombies, by: \.parentPID).map { parentPID, children in
+            (processesByPID[parentPID] ?? "PID \(parentPID)", children.count)
+        }.sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            return lhs.0.localizedStandardCompare(rhs.0) == .orderedAscending
+        }
+        return parents.prefix(3).map { "\($0.0) ×\($0.1)" }.joined(separator: " · ")
+    }
+
     var body: some View {
         // `processes` filters and sorts the full table; evaluate it once per pass.
         let matches = processes
@@ -452,6 +468,24 @@ private struct ProcessesDetailView: View {
                     .frame(width: 260)
             }
 
+
+            if let zombieParentSummary {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("Zombie processes")
+                        .fontWeight(.semibold)
+                    Text(zombieParentSummary)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(MoniPalette.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(MoniPalette.orange.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+
             HStack(spacing: 10) {
                 sortHeader("Process", value: .name)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -468,8 +502,18 @@ private struct ProcessesDetailView: View {
                     ForEach(matches) { process in
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(process.name).fontWeight(.semibold).lineLimit(1)
-                                Text(process.path).font(.caption2).foregroundStyle(MoniPalette.foregroundTertiary).lineLimit(1)
+                                HStack(spacing: 5) {
+                                    Text(process.name).fontWeight(.semibold).lineLimit(1)
+                                    if process.isZombie {
+                                        Text("Zombie")
+                                            .font(.system(size: 9.5, weight: .bold))
+                                            .foregroundStyle(MoniPalette.orange)
+                                    }
+                                }
+                                Text(process.isZombie ? "Parent PID \(process.parentPID)" : process.path)
+                                    .font(.caption2)
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                                    .lineLimit(1)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             Text(process.pid.formatted()).frame(width: 70, alignment: .trailing)
