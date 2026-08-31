@@ -172,16 +172,18 @@ nonisolated enum CacheCleanupService {
             })
         }
 
-        discoveredItems.removeAll {
-            $0.category == .userCaches
-                && (pathsEqual($0.path, diaGeneralCacheRoot())
-                    || pathsEqual($0.path, googleGeneralCacheRoot())
-                    || pathsEqual($0.path, firefoxGeneralCacheRoot())
-                    || pathsEqual($0.path, braveGeneralCacheRoot())
-                    || pathsEqual($0.path, arcGeneralCacheRoot())
-                    || pathsEqual($0.path, vivaldiGeneralCacheRoot())
-                    || pathsEqual($0.path, qqBrowserGeneralCacheRoot())
-                    || pathsEqual($0.path, heliumGeneralCacheRoot()))
+        let resolvedPythonPackageCacheRoots = pythonPackageCacheRoots()
+        discoveredItems.removeAll { item in
+            item.category == .userCaches
+                && (pathsEqual(item.path, diaGeneralCacheRoot())
+                    || pathsEqual(item.path, googleGeneralCacheRoot())
+                    || pathsEqual(item.path, firefoxGeneralCacheRoot())
+                    || pathsEqual(item.path, braveGeneralCacheRoot())
+                    || pathsEqual(item.path, arcGeneralCacheRoot())
+                    || pathsEqual(item.path, vivaldiGeneralCacheRoot())
+                    || pathsEqual(item.path, qqBrowserGeneralCacheRoot())
+                    || pathsEqual(item.path, heliumGeneralCacheRoot())
+                    || resolvedPythonPackageCacheRoots.contains(where: { pathsEqual(item.path, $0) }))
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -544,6 +546,7 @@ nonisolated enum CacheCleanupService {
             || nodePackageToolsAreInactive()
         let pythonPackageToolsAreSafe = !items.contains { $0.category == .pythonPackageCaches }
             || pythonPackageToolsAreInactive()
+        let pythonPackageRoots = pythonPackageToolsAreSafe ? pythonPackageCacheRoots() : []
         let requiresClangProbe = items.contains { $0.category == .clangModuleCache }
         let clangRoot = requiresClangProbe ? clangModuleCacheRoot() : nil
         let clangIsSafe = !requiresClangProbe || clangModuleCacheIsInactive()
@@ -569,7 +572,7 @@ nonisolated enum CacheCleanupService {
             }
             if item.category == .pythonPackageCaches {
                 guard pythonPackageToolsAreSafe,
-                      pythonPackageCacheItemIsAllowed(item.path) else {
+                      pythonPackageCacheItemIsAllowed(item.path, roots: pythonPackageRoots) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -1094,81 +1097,109 @@ nonisolated enum CacheCleanupService {
         items: [CacheCleanupItem],
         unreadableItemCount: Int
     ) {
-        guard pythonPackageToolsAreInactive(),
-              let root = pythonPackageCacheRoot(),
-              isRealDirectory(at: root) else {
+        guard pythonPackageToolsAreInactive() else {
             return ([], 0)
-        }
-        let children: [URL]
-        do {
-            children = try FileManager.default.contentsOfDirectory(
-                at: URL(fileURLWithPath: root, isDirectory: true),
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )
-        } catch {
-            return ([], 1)
         }
 
         var items: [CacheCleanupItem] = []
         var unreadableItemCount = 0
-        for child in children {
-            guard !Task.isCancelled else { return ([], 0) }
-            let path = child.standardizedFileURL.path
-            guard pythonPackageCacheItemIsAllowed(path),
-                  let measurement = await cacheTargetSize(at: path),
-                  measurement.sizeBytes > 0 else {
+        let roots = pythonPackageCacheRoots()
+        for root in roots where isRealDirectory(at: root) {
+            let children: [URL]
+            do {
+                children = try FileManager.default.contentsOfDirectory(
+                    at: URL(fileURLWithPath: root, isDirectory: true),
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                unreadableItemCount += 1
                 continue
             }
-            unreadableItemCount += measurement.unreadableItemCount
-            items.append(CacheCleanupItem(
-                path: path,
-                category: .pythonPackageCaches,
-                sizeBytes: measurement.sizeBytes
-            ))
+            for child in children {
+                guard !Task.isCancelled else { return ([], 0) }
+                let path = child.standardizedFileURL.path
+                guard pythonPackageCacheItemIsAllowed(path, roots: roots),
+                      let measurement = await cacheTargetSize(at: path),
+                      measurement.sizeBytes > 0 else {
+                    continue
+                }
+                unreadableItemCount += measurement.unreadableItemCount
+                items.append(CacheCleanupItem(
+                    path: path,
+                    category: .pythonPackageCaches,
+                    sizeBytes: measurement.sizeBytes
+                ))
+            }
         }
         return (items, unreadableItemCount)
     }
 
-    private static func pythonPackageCacheItemIsAllowed(_ path: String) -> Bool {
+    private static func pythonPackageCacheItemIsAllowed(_ path: String, roots: [String]) -> Bool {
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard let root = pythonPackageCacheRoot() else { return false }
         return !url.lastPathComponent.hasPrefix(".")
-            && isRealDirectory(at: root)
             && isRealFileOrDirectory(at: url.path)
             && !isSymbolicLink(at: url.path)
-            && pathsEqual(url.deletingLastPathComponent().path, root)
+            && roots.contains(where: {
+                isRealDirectory(at: $0)
+                    && pathsEqual(url.deletingLastPathComponent().path, $0)
+            })
     }
 
-    private static func pythonPackageCacheRoot() -> String? {
+    private static func pythonPackageCacheRoots() -> [String] {
+        [uvCacheRoot(), pipCacheRootFromCommand()]
+            .compactMap { $0 }
+            .reduce(into: []) { roots, root in
+                if !roots.contains(where: { pathsEqual($0, root) }) {
+                    roots.append(root)
+                }
+            }
+    }
+
+    private static func uvCacheRoot() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-        let cacheRoot = home + "/.cache"
         let candidates = [
             ProcessInfo.processInfo.environment["UV_CACHE_DIR"],
-            uvCacheRootFromCommand(),
+            commandOutput(["uv", "cache", "dir"]),
             home + "/.cache/uv"
         ].compactMap { $0 }
         for candidate in candidates {
-            guard candidate.hasPrefix("/"),
-                  !candidate.contains("\0"),
-                  !candidate.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
-                continue
-            }
-            let normalized = URL(fileURLWithPath: candidate).standardizedFileURL.path
-            if pathIsInside(normalized, root: home),
-               !pathsEqual(normalized, home),
-               !pathsEqual(normalized, cacheRoot) {
-                return normalized
-            }
+            if let normalized = validPythonPackageCacheRoot(candidate) { return normalized }
         }
         return nil
     }
 
-    private static func uvCacheRootFromCommand() -> String? {
+    private static func pipCacheRootFromCommand() -> String? {
+        guard commandOutput(["pip3", "--version"]) != nil,
+              let root = commandOutput(["pip3", "cache", "dir"]) else {
+            return nil
+        }
+        return validPythonPackageCacheRoot(root)
+    }
+
+    private static func validPythonPackageCacheRoot(_ path: String) -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        guard path.hasPrefix("/"),
+              !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              !path.contains("//"),
+              !path.split(separator: "/", omittingEmptySubsequences: false).contains("."),
+              !path.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+            return nil
+        }
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let excludedRoots = ["/", home, home + "/Library", home + "/Library/Caches", home + "/.cache"]
+        guard pathIsInside(normalized, root: home),
+              !excludedRoots.contains(where: { pathsEqual(normalized, $0) }) else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func commandOutput(_ arguments: [String]) -> String? {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["uv", "cache", "dir"]
+        process.arguments = arguments
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         do {
@@ -1198,7 +1229,10 @@ nonisolated enum CacheCleanupService {
     }
 
     private static func pythonPackageToolsAreInactive() -> Bool {
-        processProbesAreInactive([["-f", "(^|/)uv([[:space:]]|$)"]])
+        processProbesAreInactive([
+            ["-f", "(^|/)(uv|pip|pip3)([[:space:]]|$)"],
+            ["-f", "(^|/)pip(_?3)?\\.[0-9]+([[:space:]]|$)"]
+        ])
     }
 
     private static func scanClangModuleCache() async -> (
