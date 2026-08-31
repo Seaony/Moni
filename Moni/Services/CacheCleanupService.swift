@@ -1342,7 +1342,17 @@ nonisolated enum CacheCleanupService {
             home + "/.rbenv/cache",
             home + "/.gem/specs",
             home + "/.bundle/cache",
-            home + "/.cpan/build"
+            home + "/.cpan/build",
+            home + "/.android/build-cache",
+            home + "/.android/cache",
+            home + "/.cache/swift-package-manager",
+            home + "/.expo/expo-go",
+            home + "/.expo/android-apk-cache",
+            home + "/.expo/ios-simulator-app-cache",
+            home + "/.expo/native-modules-cache",
+            home + "/.expo/schema-cache",
+            home + "/.expo/template-cache",
+            home + "/.expo/versions-cache"
         ]
         if let githubRoot = githubCLICacheRoot() {
             roots.append(githubRoot)
