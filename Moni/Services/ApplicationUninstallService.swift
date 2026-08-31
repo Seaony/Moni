@@ -89,6 +89,24 @@ nonisolated enum ApplicationUninstallService {
         )
     }
 
+    static func officialUninstallerVendor(for application: InstalledApplication) -> String? {
+        let bundleIdentifier = application.bundleIdentifier?.lowercased() ?? ""
+        let name = application.name.lowercased()
+        let pathName = URL(fileURLWithPath: application.path).deletingPathExtension().lastPathComponent.lowercased()
+        let rules: [(vendor: String, bundlePrefixes: [String], nameFragments: [String])] = [
+            ("ESET", ["com.eset."], ["eset management agent", "eset remote administrator agent", "eset endpoint security", "eset endpoint antivirus"]),
+            ("Jamf", ["com.jamf.", "com.jamfsoftware."], ["jamf connect", "jamf protect", "jamf self service"]),
+            ("CrowdStrike", ["com.crowdstrike."], ["crowdstrike", "falcon"]),
+            ("SentinelOne", ["com.sentinelone.", "com.sentinel-labs."], ["sentinelone", "sentinel agent"]),
+            ("GlobalProtect", ["com.paloaltonetworks."], ["globalprotect"]),
+            ("Cisco", ["com.cisco.anyconnect", "com.cisco.secureclient"], ["cisco secure client", "cisco anyconnect"])
+        ]
+        return rules.first { rule in
+            rule.bundlePrefixes.contains { bundleIdentifier.hasPrefix($0) }
+                || rule.nameFragments.contains { name.contains($0) || pathName.contains($0) }
+        }?.vendor
+    }
+
     private static func residualCandidates(
         for application: InstalledApplication
     ) -> (candidates: [Candidate], isComplete: Bool) {
