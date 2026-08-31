@@ -27,6 +27,11 @@ private struct DiskVerificationReport: Identifiable {
     let result: DiskVerificationResult
 }
 
+private struct DatabaseMaintenanceReview: Identifiable {
+    let id = UUID()
+    let items: [DatabaseMaintenanceItem]
+}
+
 struct MaintenanceView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var snapshot = FinderMaintenanceSnapshot(
@@ -53,6 +58,11 @@ struct MaintenanceView: View {
         entryCount: 0,
         state: .unavailable
     )
+    @State private var databaseSnapshot = DatabaseMaintenanceSnapshot(
+        availability: .unavailable,
+        busyApplications: [],
+        items: []
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -60,6 +70,7 @@ struct MaintenanceView: View {
     @State private var legacyOverrideReview: LegacyOverrideReview?
     @State private var confirmsDiskVerification = false
     @State private var diskVerificationReport: DiskVerificationReport?
+    @State private var databaseReview: DatabaseMaintenanceReview?
     @State private var resultMessage: String?
 
     var body: some View {
@@ -192,6 +203,18 @@ struct MaintenanceView: View {
                         confirmsDiskVerification = true
                     }
 
+                    commandCard(
+                        title: "Database Optimization",
+                        description: "Compact supported Mail, Safari, and Messages databases while their apps are closed.",
+                        symbol: "cylinder.split.1x2",
+                        status: databaseMaintenanceStatus,
+                        buttonTitle: "Review Optimization",
+                        isAvailable: databaseMaintenanceIsAvailable,
+                        isActionEnabled: !databaseSnapshot.items.isEmpty
+                    ) {
+                        databaseReview = DatabaseMaintenanceReview(items: databaseSnapshot.items)
+                    }
+
                     catalogSummary
                 }
             }
@@ -221,6 +244,16 @@ struct MaintenanceView: View {
             DiskVerificationReportView(
                 report: report,
                 onClose: { diskVerificationReport = nil }
+            )
+        }
+        .sheet(item: $databaseReview) { review in
+            DatabaseMaintenanceConfirmationView(
+                items: review.items,
+                onCancel: { databaseReview = nil },
+                onConfirm: {
+                    databaseReview = nil
+                    Task { await optimizeDatabases(review.items) }
+                }
             )
         }
         .alert("Maintenance result", isPresented: resultMessageBinding) {
@@ -440,7 +473,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "10", MoniPalette.green)
+                catalogMetric("Available now", "11", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -539,6 +572,38 @@ struct MaintenanceView: View {
         }
     }
 
+    private var databaseMaintenanceIsAvailable: Bool {
+        guard databaseSnapshot.availability == .ready else { return false }
+        return databaseSnapshot.busyApplications.isEmpty
+    }
+
+    private var databaseMaintenanceStatus: String {
+        switch databaseSnapshot.availability {
+        case .unavailable:
+            return MoniLocalization.string("Unavailable")
+        case .processProbeFailed:
+            return MoniLocalization.string("Application check failed")
+        case .ready where !databaseSnapshot.busyApplications.isEmpty:
+            return MoniLocalization.format(
+                "Close %@ to continue",
+                databaseSnapshot.busyApplications.joined(separator: ", ")
+            )
+        case .ready:
+            let readyItems = databaseSnapshot.items.filter { $0.state == .ready }
+            guard !readyItems.isEmpty else {
+                return databaseSnapshot.items.isEmpty
+                    ? MoniLocalization.string("No supported databases found")
+                    : MoniLocalization.string("No databases need optimization")
+            }
+            let reclaimableBytes = readyItems.reduce(UInt64(0)) { $0 + $1.reclaimableBytes }
+            return MoniLocalization.format(
+                "%@ databases · %@ reclaimable",
+                readyItems.count.formatted(),
+                maintenanceBytes(reclaimableBytes)
+            )
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -546,8 +611,10 @@ struct MaintenanceView: View {
         async let repairResult = MaintenanceService.scanFileRepairs()
         async let settingsResult = MaintenanceSettingsService.scan()
         async let quarantineResult = MaintenanceDiagnosticsService.scanQuarantineHistory()
-        let (finder, preferences, repairs, settings, quarantine) = await (
-            finderResult, preferenceResult, repairResult, settingsResult, quarantineResult
+        async let databaseResult = DatabaseMaintenanceService.scan()
+        let (finder, preferences, repairs, settings, quarantine, databases) = await (
+            finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
+            databaseResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -556,6 +623,7 @@ struct MaintenanceView: View {
         fileRepairSnapshot = repairs
         settingsSnapshot = settings
         quarantineSnapshot = quarantine
+        databaseSnapshot = databases
         isScanning = false
     }
 
@@ -698,6 +766,39 @@ struct MaintenanceView: View {
         isRunning = false
         diskVerificationReport = DiskVerificationReport(result: result)
     }
+
+    private func optimizeDatabases(_ items: [DatabaseMaintenanceItem]) async {
+        let readyItems = items.filter { $0.state == .ready }
+        isRunning = true
+        let result = await DatabaseMaintenanceService.optimize(readyItems)
+        databaseSnapshot = await DatabaseMaintenanceService.scan()
+        isRunning = false
+
+        var parts: [String] = []
+        if result.optimizedCount > 0 {
+            parts.append(MoniLocalization.format(
+                "Optimized %@ databases.",
+                result.optimizedCount.formatted()
+            ))
+        }
+        if result.skippedCount > 0 {
+            parts.append(MoniLocalization.format(
+                "%@ databases were protected, changed, or became busy.",
+                result.skippedCount.formatted()
+            ))
+        }
+        if result.failedCount > 0 {
+            parts.append(MoniLocalization.format(
+                "%@ databases could not be optimized.",
+                result.failedCount.formatted()
+            ))
+        }
+        if parts.isEmpty {
+            parts.append(MoniLocalization.string("No databases needed optimization."))
+        }
+        monitor.refresh(forceSlowMetrics: true)
+        resultMessage = parts.joined(separator: " ")
+    }
 }
 
 private struct MaintenanceConfirmationView: View {
@@ -802,6 +903,100 @@ private struct MaintenanceConfirmationView: View {
     }
 }
 
+private struct DatabaseMaintenanceConfirmationView: View {
+    let items: [DatabaseMaintenanceItem]
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Optimize application databases?")
+                    .font(.system(size: 18, weight: .bold))
+                Text("Only databases marked Ready will be compacted. Moni checks database integrity again immediately before optimization.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(items) { item in
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: 8) {
+                                Text(item.applicationName)
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                Spacer(minLength: 8)
+                                Text(MoniLocalization.string(stateTitle(for: item.state)))
+                                    .font(.system(size: 10.5, weight: .bold))
+                                    .foregroundStyle(stateColor(for: item.state))
+                            }
+                            Text(item.path)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                            HStack(spacing: 12) {
+                                Text(MoniLocalization.format("Size %@", maintenanceBytes(item.sizeBytes)))
+                                if item.reclaimableBytes > 0 {
+                                    Text(MoniLocalization.format(
+                                        "Reclaimable %@",
+                                        maintenanceBytes(item.reclaimableBytes)
+                                    ))
+                                }
+                            }
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MoniPalette.insetSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                }
+                .padding(1)
+            }
+            .frame(maxHeight: 300)
+
+            Label("Mail, Safari, and Messages must remain closed until optimization finishes.", systemImage: "exclamationmark.triangle")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(MoniPalette.orange)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Optimize Databases", role: .destructive, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(readyItems.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 620)
+    }
+
+    private var readyItems: [DatabaseMaintenanceItem] {
+        items.filter { $0.state == .ready }
+    }
+
+    private func stateTitle(for state: DatabaseMaintenanceState) -> String {
+        switch state {
+        case .ready: "Ready"
+        case .optimal: "Already optimized"
+        case .oversized: "Over 100 MB"
+        case .protected: "Protected by whitelist"
+        case .failed: "Inspection failed"
+        }
+    }
+
+    private func stateColor(for state: DatabaseMaintenanceState) -> Color {
+        switch state {
+        case .ready: MoniPalette.green
+        case .optimal: MoniPalette.foregroundSecondary
+        case .oversized, .protected: MoniPalette.orange
+        case .failed: MoniPalette.red
+        }
+    }
+}
+
 private struct LegacyOverrideConfirmationView: View {
     let overrides: [LegacySystemOverride]
     let onCancel: () -> Void
@@ -851,6 +1046,10 @@ private struct LegacyOverrideConfirmationView: View {
         .padding(20)
         .frame(width: 580)
     }
+}
+
+private func maintenanceBytes(_ value: UInt64) -> String {
+    ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .file)
 }
 
 private struct DiskVerificationReportView: View {
