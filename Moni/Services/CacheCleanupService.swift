@@ -41,6 +41,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case nodePackageCaches
     case pythonPackageCaches
     case developerToolCaches
+    case miseCache
     case clangModuleCache
 
     var titleKey: String {
@@ -84,6 +85,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .nodePackageCaches: "Node package caches"
         case .pythonPackageCaches: "Python package caches"
         case .developerToolCaches: "Developer tool caches"
+        case .miseCache: "mise cache"
         case .clangModuleCache: "Clang module cache"
         }
     }
@@ -173,6 +175,7 @@ nonisolated enum CacheCleanupService {
         }
 
         let resolvedPythonPackageCacheRoots = pythonPackageCacheRoots()
+        let resolvedMiseCacheRoot = miseCacheRoot()
         discoveredItems.removeAll { item in
             item.category == .userCaches
                 && (pathsEqual(item.path, diaGeneralCacheRoot())
@@ -183,7 +186,8 @@ nonisolated enum CacheCleanupService {
                     || pathsEqual(item.path, vivaldiGeneralCacheRoot())
                     || pathsEqual(item.path, qqBrowserGeneralCacheRoot())
                     || pathsEqual(item.path, heliumGeneralCacheRoot())
-                    || resolvedPythonPackageCacheRoots.contains(where: { pathsEqual(item.path, $0) }))
+                    || resolvedPythonPackageCacheRoots.contains(where: { pathsEqual(item.path, $0) })
+                    || resolvedMiseCacheRoot.map { pathsEqual(item.path, $0) } == true)
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -389,6 +393,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: developerToolCaches.items)
         unreadableItemCount += developerToolCaches.unreadableItemCount
 
+        let miseCache = await scanMiseCache(root: resolvedMiseCacheRoot)
+        discoveredItems.append(contentsOf: miseCache.items)
+        unreadableItemCount += miseCache.unreadableItemCount
+
         let clangModuleCache = await scanClangModuleCache()
         discoveredItems.append(contentsOf: clangModuleCache.items)
         unreadableItemCount += clangModuleCache.unreadableItemCount
@@ -547,10 +555,23 @@ nonisolated enum CacheCleanupService {
         let pythonPackageToolsAreSafe = !items.contains { $0.category == .pythonPackageCaches }
             || pythonPackageToolsAreInactive()
         let pythonPackageRoots = pythonPackageToolsAreSafe ? pythonPackageCacheRoots() : []
+        let requiresMiseProbe = items.contains { $0.category == .miseCache }
+        let miseRoot = requiresMiseProbe ? miseCacheRoot() : nil
+        let miseIsSafe = !requiresMiseProbe || miseIsInactive()
         let requiresClangProbe = items.contains { $0.category == .clangModuleCache }
         let clangRoot = requiresClangProbe ? clangModuleCacheRoot() : nil
         let clangIsSafe = !requiresClangProbe || clangModuleCacheIsInactive()
         for item in items {
+            if item.category == .miseCache {
+                guard miseIsSafe,
+                      let miseRoot,
+                      miseCacheItemIsAllowed(item.path, root: miseRoot) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .clangModuleCache {
                 guard clangIsSafe,
                       let clangRoot,
@@ -1164,7 +1185,7 @@ nonisolated enum CacheCleanupService {
             home + "/.cache/uv"
         ].compactMap { $0 }
         for candidate in candidates {
-            if let normalized = validPythonPackageCacheRoot(candidate) { return normalized }
+            if let normalized = validUserOwnedCacheRoot(candidate) { return normalized }
         }
         return nil
     }
@@ -1174,10 +1195,10 @@ nonisolated enum CacheCleanupService {
               let root = commandOutput(["pip3", "cache", "dir"]) else {
             return nil
         }
-        return validPythonPackageCacheRoot(root)
+        return validUserOwnedCacheRoot(root)
     }
 
-    private static func validPythonPackageCacheRoot(_ path: String) -> String? {
+    private static func validUserOwnedCacheRoot(_ path: String) -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         guard path.hasPrefix("/"),
               !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
@@ -1189,7 +1210,9 @@ nonisolated enum CacheCleanupService {
         let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
         let excludedRoots = ["/", home, home + "/Library", home + "/Library/Caches", home + "/.cache"]
         guard pathIsInside(normalized, root: home),
-              !excludedRoots.contains(where: { pathsEqual(normalized, $0) }) else {
+              !excludedRoots.contains(where: { pathsEqual(normalized, $0) }),
+              isRealDirectory(at: normalized),
+              currentUserOwnsDirectory(at: normalized) else {
             return nil
         }
         return normalized
@@ -1233,6 +1256,69 @@ nonisolated enum CacheCleanupService {
             ["-f", "(^|/)(uv|pip|pip3)([[:space:]]|$)"],
             ["-f", "(^|/)pip(_?3)?\\.[0-9]+([[:space:]]|$)"]
         ])
+    }
+
+    private static func scanMiseCache(root: String?) async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        guard miseIsInactive(), let root else { return ([], 0) }
+        let children: [URL]
+        do {
+            children = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for child in children {
+            guard !Task.isCancelled else { return ([], 0) }
+            let path = child.standardizedFileURL.path
+            guard miseCacheItemIsAllowed(path, root: root),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .miseCache,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func miseCacheItemIsAllowed(_ path: String, root: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return !url.lastPathComponent.hasPrefix(".")
+            && isRealDirectory(at: root)
+            && currentUserOwnsDirectory(at: root)
+            && isRealFileOrDirectory(at: url.path)
+            && !isSymbolicLink(at: url.path)
+            && pathsEqual(url.deletingLastPathComponent().path, root)
+    }
+
+    private static func miseCacheRoot() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let candidates = [
+            ProcessInfo.processInfo.environment["MISE_CACHE_DIR"],
+            commandOutput(["mise", "cache", "path"]),
+            home + "/Library/Caches/mise"
+        ].compactMap { $0 }
+        for candidate in candidates {
+            if let normalized = validUserOwnedCacheRoot(candidate) { return normalized }
+        }
+        return nil
+    }
+
+    private static func miseIsInactive() -> Bool {
+        processProbesAreInactive([["-x", "mise"]])
     }
 
     private static func scanClangModuleCache() async -> (
