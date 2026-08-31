@@ -70,8 +70,9 @@ nonisolated enum ApplicationUninstallService {
         } else if inventory.isComplete {
             let result = residualCandidates(for: application)
             candidates.append(contentsOf: result.candidates)
-            reviewOnlySystemCandidates = systemReviewCandidates(for: application)
-            if !result.isComplete {
+            let systemResult = systemReviewCandidates(for: application)
+            reviewOnlySystemCandidates = systemResult.candidates
+            if !result.isComplete || !systemResult.isComplete {
                 warnings.append(.incompleteResidualScan)
             }
         }
@@ -395,8 +396,11 @@ nonisolated enum ApplicationUninstallService {
         return (candidates, isComplete)
     }
 
-    private static func systemReviewCandidates(for application: InstalledApplication) -> [Candidate] {
+    private static func systemReviewCandidates(
+        for application: InstalledApplication
+    ) -> (candidates: [Candidate], isComplete: Bool) {
         var candidates: [Candidate] = []
+        var isComplete = true
         func add(_ path: String, _ kind: ApplicationRemovalKind = .other) {
             if pathExists(path) { candidates.append(Candidate(path: path, kind: kind)) }
         }
@@ -424,7 +428,9 @@ nonisolated enum ApplicationUninstallService {
         add("/Library/StartupItems/" + application.name)
 
         guard let bundleIdentifier = application.bundleIdentifier,
-              isValidBundleIdentifier(bundleIdentifier) else { return collapsed(candidates) }
+              isValidBundleIdentifier(bundleIdentifier) else {
+            return (collapsed(candidates), isComplete)
+        }
 
         let exactPaths: [(String, ApplicationRemovalKind)] = [
             ("/Library/Application Support/" + bundleIdentifier, .applicationSupport),
@@ -438,6 +444,25 @@ nonisolated enum ApplicationUninstallService {
         ]
         for (path, kind) in exactPaths { add(path, kind) }
 
+        let nested = vendorNestedCandidates(
+            bundleIdentifier: bundleIdentifier,
+            applicationName: application.name,
+            roots: [
+                ("/Library/Application Support", .applicationSupport),
+                ("/Library/Caches", .cache),
+                ("/Library/Logs", .log)
+            ]
+        )
+        candidates.append(contentsOf: nested.candidates)
+        if !nested.isComplete { isComplete = false }
+
+        let shared = sharedSystemCandidates(
+            bundleIdentifier: bundleIdentifier,
+            applicationName: application.name
+        )
+        candidates.append(contentsOf: shared.candidates)
+        if !shared.isComplete { isComplete = false }
+
         let scannedRoots: [(String, ApplicationRemovalKind)] = [
             ("/Library/LaunchAgents", .launchAgent),
             ("/Library/LaunchDaemons", .launchAgent),
@@ -449,7 +474,10 @@ nonisolated enum ApplicationUninstallService {
                 at: URL(fileURLWithPath: root, isDirectory: true),
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
-            ) else { continue }
+            ) else {
+                isComplete = false
+                continue
+            }
             for child in children where hasBundleIdentifierBoundary(
                 child.deletingPathExtension().lastPathComponent,
                 bundleIdentifier: bundleIdentifier
@@ -459,7 +487,7 @@ nonisolated enum ApplicationUninstallService {
                 }
             }
         }
-        return collapsed(candidates)
+        return (collapsed(candidates), isComplete)
     }
 
     private static func embeddedBundleIdentifiers(
@@ -894,6 +922,46 @@ nonisolated enum ApplicationUninstallService {
             }
         }
         return (candidates, isComplete)
+    }
+
+    private static func sharedSystemCandidates(
+        bundleIdentifier: String,
+        applicationName: String
+    ) -> (candidates: [Candidate], isComplete: Bool) {
+        guard applicationName.count >= 5,
+              !isCommonName(applicationName),
+              let product = bundleIdentifier.split(separator: ".").last.map(String.init),
+              isSafeBundleToken(product) else {
+            return ([], true)
+        }
+        let variants = Set([
+            applicationName,
+            applicationName.replacingOccurrences(of: " ", with: ""),
+            applicationName.replacingOccurrences(of: " ", with: "-"),
+            applicationName.replacingOccurrences(of: " ", with: "_"),
+            product
+        ].map { $0.lowercased() })
+        let root = URL(fileURLWithPath: "/Users/Shared", isDirectory: true)
+        guard pathExists(root.path) else { return ([], true) }
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return ([], false)
+        }
+        let candidates = children.compactMap { child -> Candidate? in
+            let name = child.lastPathComponent.lowercased()
+            guard variants.contains(where: { variant in
+                name == variant
+                    || name.hasPrefix(variant + " ")
+                    || name.hasPrefix(variant + "-")
+                    || name.hasPrefix(variant + "_")
+                    || name.hasPrefix(variant + ".")
+            }) else { return nil }
+            return Candidate(path: child.path, kind: .other)
+        }
+        return (candidates, true)
     }
 
     private static func isSafeBundleToken(_ value: String) -> Bool {
