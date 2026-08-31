@@ -20,6 +20,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case browserCodeSignatureCaches
     case rebuildableGPUCaches
     case systemDiagnostics
+    case powerLogs
 
     var titleKey: String {
         switch self {
@@ -32,6 +33,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .browserCodeSignatureCaches: "Browser code signature caches"
         case .rebuildableGPUCaches: "Rebuildable GPU caches"
         case .systemDiagnostics: "System diagnostic logs"
+        case .powerLogs: "Power logs"
         }
     }
 }
@@ -570,6 +572,19 @@ nonisolated enum SystemCleanupService {
                     && canonicalPathIsInside(url, root: root)
                     && pathDepth(url.path, root: root) <= 5
             }
+        case .powerLogs:
+            let root = "/private/var/db/powerlog"
+            return pathIsInside(url.path, root: root)
+                && canonicalPathIsInside(url, root: root)
+                && pathDepth(url.path, root: root) <= 5
+                && !isActivePowerLogPath(url.path)
+        }
+    }
+
+    private static func isActivePowerLogPath(_ path: String) -> Bool {
+        let database = "/private/var/db/powerlog/Library/PerfPowerTelemetry/BackgroundProcessing/CurrentBackgroundProcessingDB.BGSQL"
+        return [database, database + "-wal", database + "-shm"].contains {
+            pathsEqual(path, $0)
         }
     }
 
@@ -706,6 +721,16 @@ nonisolated enum SystemCleanupService {
         printf '%s\n' "$depth_relative" | /usr/bin/awk -F/ -v limit="$depth_limit" 'NF <= limit { valid=1 } END { exit valid ? 0 : 1 }'
     }
 
+    active_powerlog_path() {
+        powerlog_path=$(printf '%s' "$1" | /usr/bin/tr '[:upper:]' '[:lower:]') || return 0
+        case "$powerlog_path" in
+            /private/var/db/powerlog/library/perfpowertelemetry/backgroundprocessing/currentbackgroundprocessingdb.bgsql|\
+            /private/var/db/powerlog/library/perfpowertelemetry/backgroundprocessing/currentbackgroundprocessingdb.bgsql-wal|\
+            /private/var/db/powerlog/library/perfpowertelemetry/backgroundprocessing/currentbackgroundprocessingdb.bgsql-shm) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+
     system_candidate_path() {
         candidate_path=$1
         candidate_category=$2
@@ -754,6 +779,11 @@ nonisolated enum SystemCleanupService {
                     /private/var/db/DiagnosticPipeline/*) path_depth_ok "$candidate_path" /private/var/db/DiagnosticPipeline 5 ;;
                     *) return 1 ;;
                 esac
+                ;;
+            powerLogs)
+                case "$candidate_path" in /private/var/db/powerlog/*) ;; *) return 1 ;; esac
+                path_depth_ok "$candidate_path" /private/var/db/powerlog 5 || return 1
+                ! active_powerlog_path "$candidate_path"
                 ;;
             *)
                 return 1
@@ -863,6 +893,16 @@ nonisolated enum SystemCleanupService {
     scan_file=$(/usr/bin/mktemp /private/tmp/com.seaony.Moni.system-scan.XXXXXX) || exit 70
     trap '/bin/rm -f "$scan_file"' EXIT HUP INT TERM
 
+    active_powerlog_path() {
+        powerlog_path=$(printf '%s' "$1" | /usr/bin/tr '[:upper:]' '[:lower:]') || return 0
+        case "$powerlog_path" in
+            /private/var/db/powerlog/library/perfpowertelemetry/backgroundprocessing/currentbackgroundprocessingdb.bgsql|\
+            /private/var/db/powerlog/library/perfpowertelemetry/backgroundprocessing/currentbackgroundprocessingdb.bgsql-wal|\
+            /private/var/db/powerlog/library/perfpowertelemetry/backgroundprocessing/currentbackgroundprocessingdb.bgsql-shm) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+
     scan_family() {
         scan_category=$1
         scan_root=$2
@@ -889,6 +929,9 @@ nonisolated enum SystemCleanupService {
             systemDiagnostics)
                 /usr/bin/find "$scan_root" -maxdepth 5 -type f -mtime +7 -print0 > "$scan_file"
                 ;;
+            powerLogs)
+                /usr/bin/find "$scan_root" -maxdepth 5 -type f -mtime +7 -print0 > "$scan_file"
+                ;;
             *)
                 return 1
                 ;;
@@ -901,6 +944,9 @@ nonisolated enum SystemCleanupService {
 
         while IFS= read -r -d '' scan_path; do
             case "$scan_path" in *$'\n'*|*$'\t'*) printf 'UNREADABLE\t%s\n' "$scan_category"; continue ;; esac
+            if [ "$scan_category" = 'powerLogs' ] && active_powerlog_path "$scan_path"; then
+                continue
+            fi
             scan_identity=$(/usr/bin/stat -f '%d:%i:%m:%b' "$scan_path" 2>/dev/null) || {
                 printf 'UNREADABLE\t%s\n' "$scan_category"
                 continue
@@ -996,5 +1042,6 @@ nonisolated enum SystemCleanupService {
     scan_gpu_directories
     scan_family systemDiagnostics /private/var/db/diagnostics
     scan_family systemDiagnostics /private/var/db/DiagnosticPipeline
+    scan_family powerLogs /private/var/db/powerlog
     """#
 }
