@@ -19,6 +19,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case arcProfileCaches
     case vivaldiProfileCaches
     case qqBrowserProfileCaches
+    case browserServiceWorkerCaches
     case browserOldVersions
     case googleUpdaterCaches
     case virtualizationTemporaryData
@@ -48,6 +49,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .arcProfileCaches: "Arc profile caches"
         case .vivaldiProfileCaches: "Vivaldi profile caches"
         case .qqBrowserProfileCaches: "QQ Browser profile caches"
+        case .browserServiceWorkerCaches: "Browser Service Worker caches"
         case .browserOldVersions: "Old browser versions"
         case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
@@ -91,6 +93,11 @@ nonisolated enum CacheCleanupService {
     private struct ChromiumVersionSource: Sendable {
         let appPaths: [String]
         let frameworkName: String
+        let processProbes: [[String]]
+    }
+
+    private struct BrowserServiceWorkerSource: Sendable {
+        let cacheRoots: [String]
         let processProbes: [[String]]
     }
 
@@ -212,6 +219,10 @@ nonisolated enum CacheCleanupService {
             discoveredItems.append(contentsOf: qqBrowserProfileCaches.items)
             unreadableItemCount += qqBrowserProfileCaches.unreadableItemCount
         }
+
+        let browserServiceWorkerCaches = await scanBrowserServiceWorkerCaches()
+        discoveredItems.append(contentsOf: browserServiceWorkerCaches.items)
+        unreadableItemCount += browserServiceWorkerCaches.unreadableItemCount
 
         let browserOldVersions = await scanBrowserOldVersions()
         discoveredItems.append(contentsOf: browserOldVersions.items)
@@ -429,6 +440,14 @@ nonisolated enum CacheCleanupService {
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
+            if item.category == .browserServiceWorkerCaches {
+                guard browserServiceWorkerCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .browserOldVersions {
                 guard browserOldVersionItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -1206,6 +1225,56 @@ nonisolated enum CacheCleanupService {
         return (items, unreadableItemCount)
     }
 
+    private static func scanBrowserServiceWorkerCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for source in browserServiceWorkerSources() {
+            guard processProbesAreInactive(source.processProbes) else { continue }
+            var sourceItems: [CacheCleanupItem] = []
+            var sourceIsSafe = true
+            for root in source.cacheRoots where isRealDirectory(at: root) {
+                for firstLevel in childDirectories(at: root) {
+                    for path in childDirectories(at: firstLevel) {
+                        guard !Task.isCancelled else { return ([], 0) }
+                        guard processProbesAreInactive(source.processProbes) else {
+                            sourceIsSafe = false
+                            break
+                        }
+                        guard !serviceWorkerCacheNameIsProtected(path) else { continue }
+                        var finalUpdate: DiskAnalysisUpdate?
+                        for await update in DiskAnalyzer.updates(for: path) {
+                            guard !Task.isCancelled else { return ([], 0) }
+                            if update.isComplete { finalUpdate = update }
+                        }
+                        guard let finalUpdate else {
+                            unreadableItemCount += 1
+                            continue
+                        }
+                        unreadableItemCount += finalUpdate.unreadableItemCount
+                        guard processProbesAreInactive(source.processProbes) else {
+                            sourceIsSafe = false
+                            break
+                        }
+                        sourceItems.append(CacheCleanupItem(
+                            path: path,
+                            category: .browserServiceWorkerCaches,
+                            sizeBytes: finalUpdate.scannedBytes
+                        ))
+                    }
+                    if !sourceIsSafe { break }
+                }
+                if !sourceIsSafe { break }
+            }
+            if sourceIsSafe {
+                items.append(contentsOf: sourceItems)
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
     private static func scanBrowserOldVersions() async -> (
         items: [CacheCleanupItem],
         unreadableItemCount: Int
@@ -1567,6 +1636,104 @@ nonisolated enum CacheCleanupService {
         var seen: Set<String> = []
         return roots.filter { seen.insert($0).inserted }
     }
+
+    private static func browserServiceWorkerSources() -> [BrowserServiceWorkerSource] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let chrome = home + "/Library/Application Support/Google/Chrome"
+        let arc = home + "/Library/Application Support/Arc"
+        let arcUserData = arc + "/User Data"
+        let dia = home + "/Library/Application Support/Dia/User Data"
+        let brave = home + "/Library/Application Support/BraveSoftware/Brave-Browser"
+        let vivaldi = home + "/Library/Application Support/Vivaldi"
+        return [
+            BrowserServiceWorkerSource(
+                cacheRoots: serviceWorkerCacheRoots(in: childDirectories(at: chrome)),
+                processProbes: [
+                    ["-x", "Google Chrome"],
+                    ["-x", "Google Chrome Helper"],
+                    ["-f", "/Google Chrome.app/"]
+                ]
+            ),
+            BrowserServiceWorkerSource(
+                cacheRoots: serviceWorkerCacheRoots(
+                    in: childDirectories(at: arc) + childDirectories(at: arcUserData)
+                ),
+                processProbes: [["-x", "Arc"]]
+            ),
+            BrowserServiceWorkerSource(
+                cacheRoots: serviceWorkerCacheRoots(in: childDirectories(at: dia)),
+                processProbes: [["-x", "Dia"]]
+            ),
+            BrowserServiceWorkerSource(
+                cacheRoots: serviceWorkerCacheRoots(in: childDirectories(at: brave)),
+                processProbes: [["-x", "Brave Browser"]]
+            ),
+            BrowserServiceWorkerSource(
+                cacheRoots: serviceWorkerCacheRoots(in: childDirectories(at: vivaldi)),
+                processProbes: [["-x", "Vivaldi"]]
+            )
+        ]
+    }
+
+    private static func serviceWorkerCacheRoots(in profiles: [String]) -> [String] {
+        var seen: Set<String> = []
+        return profiles
+            .map { $0 + "/Service Worker/CacheStorage" }
+            .filter { seen.insert($0).inserted }
+    }
+
+    private static func browserServiceWorkerCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let firstLevel = url.deletingLastPathComponent()
+        let cacheRoot = firstLevel.deletingLastPathComponent().standardizedFileURL.path
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              isRealDirectory(at: url.path),
+              !holdsCompiledModelCache(url.path),
+              !serviceWorkerCacheNameIsProtected(url.path),
+              let source = browserServiceWorkerSources().first(where: { source in
+                  source.cacheRoots.contains { pathsEqual($0, cacheRoot) }
+              }),
+              processProbesAreInactive(source.processProbes),
+              childDirectories(at: cacheRoot).contains(where: { pathsEqual($0, firstLevel.path) }),
+              childDirectories(at: firstLevel.path).contains(where: { pathsEqual($0, url.path) }) else {
+            return false
+        }
+        return true
+    }
+
+    private static func serviceWorkerCacheNameIsProtected(_ path: String) -> Bool {
+        let name = URL(fileURLWithPath: path).lastPathComponent.lowercased()
+        guard let range = name.range(
+            of: #"[a-z0-9][-a-z0-9]*\.[a-z]{2,}"#,
+            options: .regularExpression
+        ) else {
+            return false
+        }
+        let domain = String(name[range])
+        return protectedServiceWorkerDomains.contains { domain.contains($0) }
+    }
+
+    private static let protectedServiceWorkerDomains = [
+        "capcut.com",
+        "photopea.com",
+        "pixlr.com",
+        "docs.google.com",
+        "sheets.google.com",
+        "slides.google.com",
+        "drive.google.com",
+        "mail.google.com",
+        "github.com",
+        "gitlab.com",
+        "codepen.io",
+        "codesandbox.io",
+        "replit.com",
+        "stackblitz.com",
+        "notion.so",
+        "figma.com",
+        "linear.app",
+        "excalidraw.com"
+    ]
 
     private static func chromiumVersionSources() -> [ChromiumVersionSource] {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
