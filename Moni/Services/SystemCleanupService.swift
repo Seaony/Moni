@@ -22,6 +22,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
     case systemDiagnostics
     case powerLogs
     case memoryExceptionReports
+    case xcodeDocumentationCaches
 
     var titleKey: String {
         switch self {
@@ -36,6 +37,7 @@ nonisolated enum SystemCleanupCategory: String, CaseIterable, Sendable {
         case .systemDiagnostics: "System diagnostic logs"
         case .powerLogs: "Power logs"
         case .memoryExceptionReports: "Memory exception reports"
+        case .xcodeDocumentationCaches: "Old Xcode documentation indexes"
         }
     }
 }
@@ -523,7 +525,8 @@ nonisolated enum SystemCleanupService {
         }
         let url = URL(fileURLWithPath: path).standardizedFileURL
         let directoryCategories: Set<SystemCleanupCategory> = [
-            .rebuildableServiceCaches, .browserCodeSignatureCaches, .rebuildableGPUCaches
+            .rebuildableServiceCaches, .browserCodeSignatureCaches, .rebuildableGPUCaches,
+            .xcodeDocumentationCaches
         ]
         let minimumItemAge = category == .memoryExceptionReports
             ? 30 * 24 * 60 * 60
@@ -533,6 +536,9 @@ nonisolated enum SystemCleanupService {
               categoryAllows(url: url, category: category),
               kind == .directory
                 || referenceDate.timeIntervalSince(expectedModifiedDate) >= minimumItemAge,
+              category != .xcodeDocumentationCaches
+                || (xcodeBuildToolsAreInactive()
+                    && xcodeDocumentationIndexIsStale(url.path)),
               !isEndpointSecurityPath(url.path),
               !CleanupPreferences.isWhitelisted(url.path) else {
             return nil
@@ -652,7 +658,55 @@ nonisolated enum SystemCleanupService {
             return pathIsInside(url.path, root: root)
                 && canonicalPathIsInside(url, root: root)
                 && pathDepth(url.path, root: root) <= 5
+        case .xcodeDocumentationCaches:
+            let root = "/Library/Developer/Xcode/DocumentationCache"
+            let name = url.lastPathComponent
+            return pathIsInside(url.path, root: root)
+                && canonicalPathIsInside(url, root: root)
+                && pathDepth(url.path, root: root) == 1
+                && name.hasPrefix("DeveloperDocumentation")
+                && name.hasSuffix(".index")
         }
+    }
+
+    private static func xcodeDocumentationIndexIsStale(_ path: String) -> Bool {
+        let root = URL(
+            fileURLWithPath: "/Library/Developer/Xcode/DocumentationCache",
+            isDirectory: true
+        )
+        guard let candidateDate = fileMetadata(at: URL(fileURLWithPath: path))?.modifiedDate,
+              let entries = try? FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return false
+        }
+        return entries.contains { entry in
+            let name = entry.lastPathComponent
+            guard name.hasPrefix("DeveloperDocumentation"),
+                  name.hasSuffix(".index"),
+                  let values = try? entry.resourceValues(
+                    forKeys: [.contentModificationDateKey, .isDirectoryKey]
+                  ), values.isDirectory == true,
+                  let modifiedDate = values.contentModificationDate else {
+                return false
+            }
+            return modifiedDate > candidateDate
+        }
+    }
+
+    private static func xcodeBuildToolsAreInactive() -> Bool {
+        let probes = ["Xcode", "xcodebuild", "xctest", "XCTRunner", "XCBBuildService", "swift-frontend"]
+        for processName in probes {
+            let result = run(
+                "/usr/bin/pgrep",
+                arguments: ["-x", processName],
+                timeout: 5
+            )
+            guard !result.timedOut, result.status == 1 else { return false }
+        }
+        return true
     }
 
     private static func isActivePowerLogPath(_ path: String) -> Bool {
@@ -807,6 +861,31 @@ nonisolated enum SystemCleanupService {
         esac
     }
 
+    xcode_tools_inactive() {
+        for xcode_process in Xcode xcodebuild xctest XCTRunner XCBBuildService swift-frontend; do
+            /usr/bin/pgrep -x "$xcode_process" >/dev/null 2>&1
+            xcode_status=$?
+            [ "$xcode_status" -eq 1 ] || return 1
+        done
+        return 0
+    }
+
+    xcode_documentation_candidate() {
+        documentation_path=$1
+        documentation_root=/Library/Developer/Xcode/DocumentationCache
+        [ -d "$documentation_path" ] && [ ! -L "$documentation_path" ] || return 1
+        [ "$(/usr/bin/dirname "$documentation_path")" = "$documentation_root" ] || return 1
+        documentation_name=$(/usr/bin/basename "$documentation_path") || return 1
+        case "$documentation_name" in DeveloperDocumentation*.index) ;; *) return 1 ;; esac
+        documentation_mtime=$(/usr/bin/stat -f '%m' "$documentation_path" 2>/dev/null) || return 1
+        for documentation_sibling in "$documentation_root"/DeveloperDocumentation*.index; do
+            [ -d "$documentation_sibling" ] && [ ! -L "$documentation_sibling" ] || continue
+            sibling_mtime=$(/usr/bin/stat -f '%m' "$documentation_sibling" 2>/dev/null) || return 1
+            [ "$sibling_mtime" -gt "$documentation_mtime" ] && return 0
+        done
+        return 1
+    }
+
     system_candidate_path() {
         candidate_path=$1
         candidate_category=$2
@@ -865,6 +944,9 @@ nonisolated enum SystemCleanupService {
                 case "$candidate_path" in /private/var/db/reportmemoryexception/MemoryLimitViolations/*) ;; *) return 1 ;; esac
                 path_depth_ok "$candidate_path" /private/var/db/reportmemoryexception/MemoryLimitViolations 5
                 ;;
+            xcodeDocumentationCaches)
+                xcode_documentation_candidate "$candidate_path"
+                ;;
             *)
                 return 1
                 ;;
@@ -917,7 +999,8 @@ nonisolated enum SystemCleanupService {
             directory:rebuildableServiceCaches) [ -d "$move_source" ] || return 1 ;;
             directory:browserCodeSignatureCaches) [ -d "$move_source" ] || return 1 ;;
             directory:rebuildableGPUCaches) [ -d "$move_source" ] || return 1 ;;
-            file:rebuildableServiceCaches|file:browserCodeSignatureCaches|file:rebuildableGPUCaches) return 1 ;;
+            directory:xcodeDocumentationCaches) [ -d "$move_source" ] || return 1 ;;
+            file:rebuildableServiceCaches|file:browserCodeSignatureCaches|file:rebuildableGPUCaches|file:xcodeDocumentationCaches) return 1 ;;
             file:*) [ -f "$move_source" ] || return 1 ;;
             *) return 1 ;;
         esac
@@ -931,6 +1014,10 @@ nonisolated enum SystemCleanupService {
             move_expected_owner=${expected_trash_identity##*:}
             [ "$move_cache_owner" = "$move_expected_owner" ] || return 1
             gpu_cache_stale "$move_source" || return 1
+        fi
+        if [ "$move_category" = 'xcodeDocumentationCaches' ]; then
+            xcode_tools_inactive || return 1
+            xcode_documentation_candidate "$move_source" || return 1
         fi
         move_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
         [ "$move_size" = "$move_expected_size" ] || return 1
@@ -961,6 +1048,10 @@ nonisolated enum SystemCleanupService {
         if [ "$move_category" = 'rebuildableGPUCaches' ]; then
             gpu_cache_stale "$move_source" || return 1
         fi
+        if [ "$move_category" = 'xcodeDocumentationCaches' ]; then
+            xcode_tools_inactive || return 1
+            xcode_documentation_candidate "$move_source" || return 1
+        fi
         move_final_size=$(system_candidate_size "$move_source" "$move_kind") || return 1
         move_final_trash_identity=$(/usr/bin/stat -f '%d:%i:%u' "$trash_path" 2>/dev/null) || return 1
         [ "$move_final_identity" = "$move_expected_identity" ] || return 1
@@ -983,6 +1074,15 @@ nonisolated enum SystemCleanupService {
             /private/var/db/powerlog/library/perfpowertelemetry/backgroundprocessing/currentbackgroundprocessingdb.bgsql-shm) return 0 ;;
             *) return 1 ;;
         esac
+    }
+
+    xcode_tools_inactive() {
+        for xcode_process in Xcode xcodebuild xctest XCTRunner XCBBuildService swift-frontend; do
+            /usr/bin/pgrep -x "$xcode_process" >/dev/null 2>&1
+            xcode_status=$?
+            [ "$xcode_status" -eq 1 ] || return 1
+        done
+        return 0
     }
 
     scan_family() {
@@ -1078,6 +1178,21 @@ nonisolated enum SystemCleanupService {
         printf 'ITEM\tdirectory\t%s\t%s\t%s\t%s\t%s\t%s\n' "$scan_category" "$scan_device" "$scan_inode" "$scan_mtime" "$scan_size" "$scan_encoded"
     }
 
+    scan_xcode_documentation_caches() {
+        documentation_root=/Library/Developer/Xcode/DocumentationCache
+        [ -d "$documentation_root" ] && [ ! -L "$documentation_root" ] || return 0
+        xcode_tools_inactive || return 0
+        /usr/bin/find "$documentation_root" -mindepth 1 -maxdepth 1 -type d -name 'DeveloperDocumentation*.index' -print0 > "$scan_file"
+        scan_result=$?
+        if [ "$scan_result" -ne 0 ]; then
+            printf 'ERROR\txcodeDocumentationCaches\n'
+            return 0
+        fi
+        while IFS= read -r -d '' scan_path; do
+            scan_directory xcodeDocumentationCaches "$scan_path"
+        done < "$scan_file"
+    }
+
     scan_code_signature_directories() {
         scan_root=/private/var/folders
         [ -d "$scan_root" ] && [ ! -L "$scan_root" ] || return 0
@@ -1129,6 +1244,7 @@ nonisolated enum SystemCleanupService {
     scan_family systemDiagnostics /private/var/db/DiagnosticPipeline
     scan_family powerLogs /private/var/db/powerlog
     scan_family memoryExceptionReports /private/var/db/reportmemoryexception/MemoryLimitViolations
+    scan_xcode_documentation_caches
 
     active_powerlog=/private/var/db/powerlog/Library/PerfPowerTelemetry/BackgroundProcessing/CurrentBackgroundProcessingDB.BGSQL
     if [ -f "$active_powerlog" ] && [ ! -L "$active_powerlog" ]; then
