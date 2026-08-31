@@ -47,6 +47,7 @@ nonisolated enum DiskAnalyzer {
         continuation: AsyncStream<DiskAnalysisUpdate>.Continuation
     ) {
         let rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
+        let normalizedRootPath = rootURL.standardizedFileURL.path
         let fileManager = FileManager.default
         var entrySizes: [String: UInt64] = [:]
         var largestFiles: [DiskAnalysisFile] = []
@@ -72,6 +73,15 @@ nonisolated enum DiskAnalyzer {
             ))
         }
 
+        guard let rootMetadata = metadata(at: rootURL),
+              rootMetadata.isDirectory,
+              !rootMetadata.isSymbolicLink else {
+            unreadableItemCount = 1
+            publish(currentPath: nil, isComplete: true)
+            continuation.finish()
+            return
+        }
+
         let children: [URL]
         do {
             children = try fileManager.contentsOfDirectory(
@@ -84,6 +94,17 @@ nonisolated enum DiskAnalyzer {
             publish(currentPath: nil, isComplete: true)
             continuation.finish()
             return
+        }
+        var allowedDevices: Set<UInt64> = [rootMetadata.identity.device]
+        if normalizedRootPath == "/",
+           let dataVolume = metadata(at: URL(fileURLWithPath: "/System/Volumes/Data")) {
+            allowedDevices.insert(dataVolume.identity.device)
+        } else if normalizedRootPath == "/Volumes" {
+            for child in children {
+                if let childMetadata = metadata(at: child), childMetadata.isDirectory {
+                    allowedDevices.insert(childMetadata.identity.device)
+                }
+            }
         }
 
         for child in children {
@@ -98,6 +119,7 @@ nonisolated enum DiskAnalyzer {
             if childMetadata.isSymbolicLink {
                 continue
             }
+            guard allowedDevices.contains(childMetadata.identity.device) else { continue }
 
             if childMetadata.isDirectory {
                 var childSize: UInt64 = 0
@@ -123,6 +145,15 @@ nonisolated enum DiskAnalyzer {
                     }
                     if itemMetadata.isSymbolicLink {
                         if itemMetadata.isDirectory {
+                            enumerator.skipDescendants()
+                        }
+                        continue
+                    }
+                    if itemMetadata.isDirectory {
+                        let isDataVolumeAlias = normalizedRootPath == "/"
+                            && item.standardizedFileURL.path == "/System/Volumes/Data"
+                        if isDataVolumeAlias
+                            || !allowedDevices.contains(itemMetadata.identity.device) {
                             enumerator.skipDescendants()
                         }
                         continue
