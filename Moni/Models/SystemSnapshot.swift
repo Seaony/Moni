@@ -1,5 +1,12 @@
 import Foundation
 
+enum MemoryPressureLevel: String, Sendable {
+    case normal
+    case warning
+    case critical
+    case unavailable
+}
+
 struct CPUUsage: Sendable {
     var total: Double = 0
     var user: Double = 0
@@ -36,6 +43,7 @@ struct MemoryUsage: Sendable {
     var pageIns: UInt64 = 0
     var pageOuts: UInt64 = 0
     var faults: UInt64 = 0
+    var pressure: MemoryPressureLevel = .unavailable
 
     nonisolated init(
         totalBytes: UInt64 = 0,
@@ -47,7 +55,8 @@ struct MemoryUsage: Sendable {
         swapUsedBytes: UInt64 = 0,
         pageIns: UInt64 = 0,
         pageOuts: UInt64 = 0,
-        faults: UInt64 = 0
+        faults: UInt64 = 0,
+        pressure: MemoryPressureLevel = .unavailable
     ) {
         self.totalBytes = totalBytes
         self.usedBytes = usedBytes
@@ -59,6 +68,7 @@ struct MemoryUsage: Sendable {
         self.pageIns = pageIns
         self.pageOuts = pageOuts
         self.faults = faults
+        self.pressure = pressure
     }
 
     var usedPercent: Double {

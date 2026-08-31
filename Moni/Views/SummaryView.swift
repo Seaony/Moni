@@ -28,43 +28,176 @@ struct SummaryView: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            DashboardGridLayout(rowHeight: gridDensity.rowHeight, spacing: gridDensity.spacing) {
-                ForEach(orderedCards) { card in
-                    ResizableDashboardCard(
-                        card: card,
-                        size: cardSize(card),
-                        limits: card.limits,
-                        onResizeChanged: { previewCardResize($0, for: card) },
-                        onResizeEnded: { finishCardResize($0, for: card) },
-                        onMoveStarted: beginCardMove,
-                        onMoveChanged: previewCardMove,
-                        onMoveEnded: finishCardMove,
-                        draggingCard: $draggingCard
-                    ) {
-                        cardView(card)
+            VStack(spacing: gridDensity.spacing) {
+                healthBanner
+
+                DashboardGridLayout(rowHeight: gridDensity.rowHeight, spacing: gridDensity.spacing) {
+                    ForEach(orderedCards) { card in
+                        ResizableDashboardCard(
+                            card: card,
+                            size: cardSize(card),
+                            limits: card.limits,
+                            onResizeChanged: { previewCardResize($0, for: card) },
+                            onResizeEnded: { finishCardResize($0, for: card) },
+                            onMoveStarted: beginCardMove,
+                            onMoveChanged: previewCardMove,
+                            onMoveEnded: finishCardMove,
+                            draggingCard: $draggingCard
+                        ) {
+                            cardView(card)
+                        }
+                        .transition(reduceMotion ? .identity : MoniMotion.itemTransition)
                     }
-                    .transition(reduceMotion ? .identity : MoniMotion.itemTransition)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .coordinateSpace(name: DashboardGridCoordinateSpace.name)
+                .onPreferenceChange(DashboardCardFrameKey.self) { frames in
+                    cardDragContext.frames = frames
+                }
+                .moniAnimation(MoniMotion.dashboardReflow, value: cardLayoutData)
+                .moniAnimation(MoniMotion.dashboardReflow, value: orderedCards.map(\.rawValue))
+                .overlay(alignment: .topLeading) {
+                    if let preview = cardDragPreview {
+                        cardView(preview.card)
+                            .frame(width: preview.size.width, height: preview.size.height)
+                            .offset(
+                                x: preview.location.x - preview.pointerOffset.width,
+                                y: preview.location.y - preview.pointerOffset.height
+                            )
+                            .allowsHitTesting(false)
+                            .zIndex(2)
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .coordinateSpace(name: DashboardGridCoordinateSpace.name)
-            .onPreferenceChange(DashboardCardFrameKey.self) { frames in
-                cardDragContext.frames = frames
+        }
+    }
+
+    private var healthBanner: some View {
+        let health = snapshot.systemHealth
+        let color = healthColor(health.level)
+        return HStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .stroke(MoniPalette.track, lineWidth: 6)
+                Circle()
+                    .trim(from: 0, to: Double(health.score) / 100)
+                    .stroke(color, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text(health.score.formatted())
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .moniNumericTransition(health.score)
             }
-            .moniAnimation(MoniMotion.dashboardReflow, value: cardLayoutData)
-            .moniAnimation(MoniMotion.dashboardReflow, value: orderedCards.map(\.rawValue))
-            .overlay(alignment: .topLeading) {
-                if let preview = cardDragPreview {
-                    cardView(preview.card)
-                        .frame(width: preview.size.width, height: preview.size.height)
-                        .offset(
-                            x: preview.location.x - preview.pointerOffset.width,
-                            y: preview.location.y - preview.pointerOffset.height
-                        )
-                        .allowsHitTesting(false)
-                        .zIndex(2)
+            .frame(width: 54, height: 54)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(MoniLocalization.string("System Health"))
+                        .font(.system(size: 15, weight: .bold))
+                    Text(healthLevelTitle(health.level))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(color)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(color.opacity(0.13))
+                        .clipShape(Capsule())
+                }
+                Text(healthDiagnosis(health.diagnosis))
+                    .font(.system(size: 13))
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 12)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(MoniLocalization.string("Memory Pressure"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(memoryPressureColor)
+                        .frame(width: 7, height: 7)
+                    Text(memoryPressureTitle)
+                        .font(.system(size: 12, weight: .semibold))
                 }
             }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MoniPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(MoniPalette.line, lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func healthColor(_ level: SystemHealthLevel) -> Color {
+        switch level {
+        case .excellent: MoniPalette.green
+        case .good: MoniPalette.blue
+        case .fair: MoniPalette.orange
+        case .needsAttention: MoniPalette.red
+        }
+    }
+
+    private func healthLevelTitle(_ level: SystemHealthLevel) -> String {
+        let key = switch level {
+        case .excellent: "Excellent"
+        case .good: "Good"
+        case .fair: "Fair"
+        case .needsAttention: "Needs Attention"
+        }
+        return MoniLocalization.string(key)
+    }
+
+    private func healthDiagnosis(_ diagnosis: SystemHealthDiagnosis) -> String {
+        switch diagnosis {
+        case .allClear:
+            MoniLocalization.string("All monitored systems are operating normally.")
+        case .smartWarning:
+            MoniLocalization.string("Disk health warning. Back up important files now.")
+        case let .highCPU(processName):
+            processName.map { MoniLocalization.format("%@ is using significant CPU.", $0) }
+                ?? MoniLocalization.string("CPU usage is high.")
+        case let .memoryPressure(processName):
+            processName.map { MoniLocalization.format("%@ is contributing most to memory pressure.", $0) }
+                ?? MoniLocalization.string("Memory pressure is high.")
+        case let .lowDiskSpace(availableBytes):
+            MoniLocalization.format(
+                "Startup disk is low on space with %@ available.",
+                bytes(UInt64(max(0, availableBytes)))
+            )
+        case .batteryHealth:
+            MoniLocalization.string("Battery health needs attention.")
+        case .highTemperature:
+            MoniLocalization.string("CPU temperature is elevated.")
+        case .busyDisk:
+            MoniLocalization.string("Disk activity is unusually high.")
+        case .restartRecommended:
+            MoniLocalization.string("A restart is recommended after the current long uptime.")
+        }
+    }
+
+    private var memoryPressureTitle: String {
+        let key = switch snapshot.memory.pressure {
+        case .normal: "Normal"
+        case .warning: "Warning"
+        case .critical: "Critical"
+        case .unavailable: "Unavailable"
+        }
+        return MoniLocalization.string(key)
+    }
+
+    private var memoryPressureColor: Color {
+        switch snapshot.memory.pressure {
+        case .normal: MoniPalette.green
+        case .warning: MoniPalette.orange
+        case .critical: MoniPalette.red
+        case .unavailable: MoniPalette.foregroundTertiary
         }
     }
 

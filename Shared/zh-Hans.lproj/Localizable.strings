@@ -4,6 +4,24 @@
 "Changes the language across Moni, the menu bar, notifications, and widgets." = "切换 Moni、菜单栏、通知和小组件的显示语言。";
 
 "Summary" = "概览";
+"System Health" = "系统健康";
+"Excellent" = "极佳";
+"Good" = "良好";
+"Fair" = "一般";
+"Needs Attention" = "需要关注";
+"Memory Pressure" = "内存压力";
+"Warning" = "警告";
+"All monitored systems are operating normally." = "所有受监控的系统均运行正常。";
+"Disk health warning. Back up important files now." = "磁盘健康异常，请立即备份重要文件。";
+"%@ is using significant CPU." = "%@ 正在大量占用 CPU。";
+"CPU usage is high." = "CPU 使用率过高。";
+"%@ is contributing most to memory pressure." = "%@ 是当前内存压力的主要来源。";
+"Memory pressure is high." = "内存压力过高。";
+"Startup disk is low on space with %@ available." = "启动磁盘空间不足，剩余 %@。";
+"Battery health needs attention." = "电池健康状况需要关注。";
+"CPU temperature is elevated." = "CPU 温度偏高。";
+"Disk activity is unusually high." = "磁盘活动异常繁忙。";
+"A restart is recommended after the current long uptime." = "本次运行时间较长，建议重新启动。";
 "Host" = "主机";
 "Memory" = "内存";
 "Network" = "网络";

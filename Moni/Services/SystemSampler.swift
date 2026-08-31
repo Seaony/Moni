@@ -266,8 +266,29 @@ actor SystemSampler {
             swapUsedBytes: hasSwap ? swap.xsu_used : 0,
             pageIns: UInt64(statistics.pageins),
             pageOuts: UInt64(statistics.pageouts),
-            faults: UInt64(statistics.faults)
+            faults: UInt64(statistics.faults),
+            pressure: sampleMemoryPressure()
         )
+    }
+
+    private func sampleMemoryPressure() -> MemoryPressureLevel {
+        var rawValue: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname(
+            "kern.memorystatus_vm_pressure_level",
+            &rawValue,
+            &size,
+            nil,
+            0
+        ) == 0 else {
+            return .unavailable
+        }
+        switch rawValue {
+        case 1: return .normal
+        case 2: return .warning
+        case 4: return .critical
+        default: return .unavailable
+        }
     }
 
     private func sampleNetwork(at date: Date) -> NetworkUsage {
