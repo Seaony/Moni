@@ -475,6 +475,11 @@ struct ApplicationManagerView: View {
             cleanupMessage = MoniLocalization.string("The selected application changed. Review it again before removal.")
             return
         }
+        guard ApplicationUninstallService.officialUninstallerVendor(for: currentApplication) == nil else {
+            isPreparing = false
+            cleanupMessage = MoniLocalization.string("This application now requires its official uninstaller.")
+            return
+        }
         guard !isRunning(currentApplication) else {
             isPreparing = false
             cleanupMessage = MoniLocalization.format("Quit %@ before uninstalling it.", currentApplication.name)
@@ -546,6 +551,11 @@ struct ApplicationManagerView: View {
         }) else {
             isPreparing = false
             cleanupMessage = MoniLocalization.string("The selected application changed. Review it again before removal.")
+            return
+        }
+        guard ApplicationUninstallService.officialUninstallerVendor(for: currentApplication) == nil else {
+            isPreparing = false
+            cleanupMessage = MoniLocalization.string("This application now requires its official uninstaller.")
             return
         }
         guard !isRunning(currentApplication) else {
