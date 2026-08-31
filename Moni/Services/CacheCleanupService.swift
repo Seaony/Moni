@@ -1048,7 +1048,8 @@ nonisolated enum CacheCleanupService {
     ) -> Bool {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         guard isRealFileOrDirectory(at: url.path),
-              !holdsCompiledModelCache(url.path) else {
+              !holdsCompiledModelCache(url.path),
+              ContainerCacheSafety.hasNoVisibleOpenHandles(at: url.path) else {
             return false
         }
 

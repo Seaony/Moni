@@ -50,6 +50,31 @@ nonisolated enum ContainerCacheSafety {
         return true
     }
 
+    static func hasNoVisibleOpenHandles(at rawPath: String) -> Bool {
+        let path = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+        guard FileManager.default.isExecutableFile(atPath: "/usr/sbin/lsof"),
+              let targetBefore = fileIdentity(at: path),
+              targetBefore.kind != mode_t(S_IFLNK) else {
+            return false
+        }
+
+        let parent = URL(fileURLWithPath: path).deletingLastPathComponent().standardizedFileURL.path
+        guard let parentBefore = fileIdentity(at: parent) else { return false }
+
+        let arguments = targetBefore.kind == mode_t(S_IFDIR)
+            ? ["-F", "pfn", "+D", path]
+            : ["-F", "pfn", "--", path]
+        let result = run("/usr/sbin/lsof", arguments: arguments, timeout: 5)
+        guard !result.timedOut else { return false }
+        if result.status == 0 || containsFieldRecord(result.output) {
+            return false
+        }
+        return result.status == 1
+            && result.output.isEmpty
+            && fileIdentity(at: path) == targetBefore
+            && fileIdentity(at: parent) == parentBefore
+    }
+
     private static func completeLsofMode() -> LsofMode? {
         let executable = "/usr/sbin/lsof"
         guard FileManager.default.isExecutableFile(atPath: executable) else { return nil }
