@@ -120,6 +120,11 @@ struct MaintenanceView: View {
         stores: [],
         state: .unavailable
     )
+    @State private var npmCacheSnapshot = NpmCacheMaintenanceSnapshot(
+        path: "",
+        sizeBytes: 0,
+        state: .unavailable
+    )
     @State private var homebrewSnapshot = HomebrewMaintenanceSnapshot(
         cachePath: "",
         cacheSizeBytes: 0,
@@ -162,6 +167,7 @@ struct MaintenanceView: View {
     @State private var confirmsCondaCacheCleanup = false
     @State private var confirmsNixGarbageCollection = false
     @State private var confirmsPnpmStorePrune = false
+    @State private var confirmsNpmCacheCleanup = false
     @State private var confirmsHomebrewCleanup = false
     @State private var resultMessage: String?
 
@@ -357,6 +363,19 @@ struct MaintenanceView: View {
                         isActionEnabled: pnpmStoreSnapshot.state == .ready
                     ) {
                         confirmsPnpmStorePrune = true
+                    }
+
+                    commandCard(
+                        title: "npm Cache Cleanup",
+                        description: "Clear npm's configured package cache using npm's own maintenance command.",
+                        symbol: "shippingbox.fill",
+                        status: npmCacheStatus,
+                        buttonTitle: npmCacheButtonTitle,
+                        isAvailable: npmCacheSnapshot.state != .unavailable
+                            && npmCacheSnapshot.state != .failed,
+                        isActionEnabled: npmCacheSnapshot.state == .ready
+                    ) {
+                        confirmsNpmCacheCleanup = true
                     }
 
                     commandCard(
@@ -827,6 +846,22 @@ struct MaintenanceView: View {
             ))
         }
         .confirmationDialog(
+            "Clean the npm cache?",
+            isPresented: $confirmsNpmCacheCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Clean npm Cache", role: .destructive) {
+                Task { await cleanNpmCache() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MoniLocalization.format(
+                "npm will clear its configured package cache at %@ using its own maintenance command. The cache currently uses %@. npx cache, logs, and prebuilds remain available for separate review in Cache Cleanup.",
+                npmCacheSnapshot.path,
+                maintenanceBytes(npmCacheSnapshot.sizeBytes)
+            ))
+        }
+        .confirmationDialog(
             "Clean Homebrew files?",
             isPresented: $confirmsHomebrewCleanup,
             titleVisibility: .visible
@@ -998,7 +1033,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "25", MoniPalette.green)
+                catalogMetric("Available now", "26", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1422,6 +1457,28 @@ struct MaintenanceView: View {
         }
     }
 
+    private var npmCacheStatus: String {
+        switch npmCacheSnapshot.state {
+        case .ready:
+            MoniLocalization.format("%@ available", maintenanceBytes(npmCacheSnapshot.sizeBytes))
+        case .healthy: MoniLocalization.string("No npm cache to clean")
+        case .protected: MoniLocalization.string("Protected by whitelist")
+        case .busy: MoniLocalization.string("npm is running")
+        case .unavailable: MoniLocalization.string("npm command unavailable")
+        case .failed: MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var npmCacheButtonTitle: String {
+        switch npmCacheSnapshot.state {
+        case .ready: MoniLocalization.string("Review Cleanup")
+        case .healthy: MoniLocalization.string("No action needed")
+        case .protected: MoniLocalization.string("Protected")
+        case .busy: MoniLocalization.string("Close npm first")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
     private var homebrewStatus: String {
         switch homebrewSnapshot.state {
         case .ready:
@@ -1720,14 +1777,15 @@ struct MaintenanceView: View {
         async let tartCacheResult = TartCacheMaintenanceService.scan()
         async let condaCacheResult = CondaCacheMaintenanceService.scan()
         async let pnpmStoreResult = PnpmStoreMaintenanceService.scan()
+        async let npmCacheResult = NpmCacheMaintenanceService.scan()
         async let homebrewResult = HomebrewMaintenanceService.scan()
         async let timeMachineSnapshotResult = TimeMachineSnapshotService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, homebrew, timeMachineSnapshots) = await (
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, npmCache, homebrew, timeMachineSnapshots) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
             spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult, condaCacheResult,
-            pnpmStoreResult, homebrewResult,
+            pnpmStoreResult, npmCacheResult, homebrewResult,
             timeMachineSnapshotResult
         )
         guard !Task.isCancelled else { return }
@@ -1751,6 +1809,7 @@ struct MaintenanceView: View {
         condaCacheSnapshot = condaCache
         nixGarbageCollectionState = NixGarbageCollectionService.scan()
         pnpmStoreSnapshot = pnpmStores
+        npmCacheSnapshot = npmCache
         homebrewSnapshot = homebrew
         timeMachineSnapshotReport = timeMachineSnapshots
         isScanning = false
@@ -2250,6 +2309,31 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("Homebrew cleanup is unavailable because the Homebrew command could not be found.")
         case .failed:
             resultMessage = MoniLocalization.string("Homebrew cleanup did not complete successfully.")
+        }
+    }
+
+    private func cleanNpmCache() async {
+        isRunning = true
+        let outcome = await NpmCacheMaintenanceService.clean(npmCacheSnapshot)
+        npmCacheSnapshot = await NpmCacheMaintenanceService.scan()
+        isRunning = false
+
+        switch outcome {
+        case let .cleaned(reclaimedBytes):
+            resultMessage = MoniLocalization.format(
+                "npm cache cleanup completed and reclaimed %@.",
+                maintenanceBytes(reclaimedBytes)
+            )
+        case .noAction:
+            resultMessage = MoniLocalization.string("No npm package cache needed cleaning.")
+        case .protected:
+            resultMessage = MoniLocalization.string("npm cache cleanup was skipped because the configured cache is protected by the whitelist.")
+        case .busy:
+            resultMessage = MoniLocalization.string("npm cache cleanup was skipped because npm or npx is running.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("npm cache cleanup is unavailable because no usable npm command could be found.")
+        case .failed:
+            resultMessage = MoniLocalization.string("npm cache cleanup did not complete successfully.")
         }
     }
 }

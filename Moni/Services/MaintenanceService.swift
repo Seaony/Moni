@@ -159,6 +159,11 @@ nonisolated enum MaintenanceService {
             "shippingbox.circle", .storage, policy: .requiresInactiveApplications
         ),
         task(
+            "npm_cache_cleanup", "npm Cache Cleanup",
+            "Clear npm's configured package cache using npm's own maintenance command.",
+            "shippingbox.fill", .storage, policy: .requiresInactiveApplications
+        ),
+        task(
             "homebrew_cleanup", "Homebrew Cleanup",
             "Remove Homebrew downloads and stale versions older than 30 days without running autoremove.",
             "mug", .storage
