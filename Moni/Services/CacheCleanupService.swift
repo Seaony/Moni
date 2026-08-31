@@ -30,6 +30,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case googleUpdaterCaches
     case virtualizationTemporaryData
     case savedApplicationState
+    case finderMetadata
     case recentItems
     case incompleteDownloads
     case oldMailAttachments
@@ -66,6 +67,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
+        case .finderMetadata: "Finder metadata"
         case .recentItems: "Recent items"
         case .incompleteDownloads: "Incomplete downloads"
         case .oldMailAttachments: "Old Mail attachments"
@@ -312,6 +314,12 @@ nonisolated enum CacheCleanupService {
         }.value
         discoveredItems.append(contentsOf: recentItems.items)
         unreadableItemCount += recentItems.unreadableItemCount
+
+        let finderMetadata = await Task.detached(priority: .utility) {
+            scanFinderMetadata()
+        }.value
+        discoveredItems.append(contentsOf: finderMetadata.items)
+        unreadableItemCount += finderMetadata.unreadableItemCount
 
         let oldCrashReports = await Task.detached(priority: .utility) {
             scanOldCrashReports(referenceDate: Date())
@@ -723,6 +731,14 @@ nonisolated enum CacheCleanupService {
             }
             if item.category == .recentItems {
                 guard recentItemSize(at: item.path) == item.sizeBytes else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .finderMetadata {
+                guard finderMetadataSize(at: item.path) == item.sizeBytes else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -3130,6 +3146,123 @@ nonisolated enum CacheCleanupService {
         return path.withCString { lstat($0, &value) } == 0
             && value.st_mode & S_IFMT == S_IFLNK
     }
+
+    private static func scanFinderMetadata() -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        guard isRealDirectory(at: home.path) else { return ([], 1) }
+
+        var unreadableItemCount = 0
+        guard let enumerator = FileManager.default.enumerator(
+            at: home,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+            options: [],
+            errorHandler: { _, _ in
+                unreadableItemCount += 1
+                return true
+            }
+        ) else {
+            return ([], 1)
+        }
+
+        var items: [CacheCleanupItem] = []
+        let deadline = ProcessInfo.processInfo.systemUptime + finderMetadataScanTimeout
+        for case let url as URL in enumerator {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                return ([], unreadableItemCount + 1)
+            }
+            let standardized = url.standardizedFileURL
+            let depth = finderMetadataDepth(standardized.path, home: home.path)
+            guard depth > 0 else {
+                enumerator.skipDescendants()
+                continue
+            }
+
+            do {
+                let values = try standardized.resourceValues(forKeys: [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey
+                ])
+                if values.isDirectory == true {
+                    if values.isSymbolicLink == true
+                        || depth >= finderMetadataMaximumDepth
+                        || finderMetadataDirectoryIsExcluded(standardized.path, home: home.path) {
+                        enumerator.skipDescendants()
+                    }
+                    continue
+                }
+                guard standardized.lastPathComponent == ".DS_Store",
+                      values.isRegularFile == true,
+                      values.isSymbolicLink != true,
+                      let size = finderMetadataSize(at: standardized.path) else {
+                    continue
+                }
+                items.append(CacheCleanupItem(
+                    path: standardized.path,
+                    category: .finderMetadata,
+                    sizeBytes: size
+                ))
+                if items.count >= finderMetadataMaximumFiles { break }
+            } catch {
+                unreadableItemCount += 1
+                enumerator.skipDescendants()
+            }
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func finderMetadataSize(at path: String) -> UInt64? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let canonical = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard url.lastPathComponent == ".DS_Store",
+              finderMetadataDepth(url.path, home: home) <= finderMetadataMaximumDepth,
+              !finderMetadataPathIsExcluded(url.path, home: home),
+              pathIsInside(url.path, root: home),
+              pathIsInside(canonical, root: home) else {
+            return nil
+        }
+        var value = stat()
+        guard url.path.withCString({ lstat($0, &value) }) == 0,
+              value.st_mode & S_IFMT == S_IFREG,
+              value.st_blocks >= 0 else {
+            return nil
+        }
+        return UInt64(value.st_blocks) * 512
+    }
+
+    private static func finderMetadataDirectoryIsExcluded(_ path: String, home: String) -> Bool {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        if name == "node_modules" || name == ".git" { return true }
+        let excludedSuffixes = [
+            "/Library/Application Support/MobileSync",
+            "/Library/Developer",
+            "/.Trash",
+            "/Library/Caches"
+        ]
+        return pathsEqual(path, home + "/.Trash")
+            || excludedSuffixes.contains(where: path.hasSuffix)
+    }
+
+    private static func finderMetadataPathIsExcluded(_ path: String, home: String) -> Bool {
+        var current = URL(fileURLWithPath: path).deletingLastPathComponent()
+        while pathIsInside(current.path, root: home), !pathsEqual(current.path, home) {
+            if finderMetadataDirectoryIsExcluded(current.path, home: home) { return true }
+            current.deleteLastPathComponent()
+        }
+        return false
+    }
+
+    private static func finderMetadataDepth(_ path: String, home: String) -> Int {
+        guard pathIsInside(path, root: home), !pathsEqual(path, home) else { return 0 }
+        return String(path.dropFirst(home.count + 1)).split(separator: "/").count
+    }
+
+    private static let finderMetadataMaximumDepth = 5
+    private static let finderMetadataMaximumFiles = 500
+    private static let finderMetadataScanTimeout: TimeInterval = 15
 
     private static func scanRecentItems() -> (
         items: [CacheCleanupItem],
