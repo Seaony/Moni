@@ -164,6 +164,12 @@ nonisolated enum MaintenanceService {
             "shippingbox.fill", .storage, policy: .requiresInactiveApplications
         ),
         task(
+            "python_package_cache_cleanup", "Python Package Caches",
+            "Purge pip downloads and prune unused uv cache entries using their own commands.",
+            "chevron.left.forwardslash.chevron.right", .storage,
+            policy: .requiresInactiveApplications
+        ),
+        task(
             "homebrew_cleanup", "Homebrew Cleanup",
             "Remove Homebrew downloads and stale versions older than 30 days without running autoremove.",
             "mug", .storage

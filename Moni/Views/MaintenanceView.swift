@@ -125,6 +125,10 @@ struct MaintenanceView: View {
         sizeBytes: 0,
         state: .unavailable
     )
+    @State private var pythonPackageCacheSnapshot = PythonPackageCacheMaintenanceSnapshot(
+        items: [],
+        state: .unavailable
+    )
     @State private var homebrewSnapshot = HomebrewMaintenanceSnapshot(
         cachePath: "",
         cacheSizeBytes: 0,
@@ -168,6 +172,7 @@ struct MaintenanceView: View {
     @State private var confirmsNixGarbageCollection = false
     @State private var confirmsPnpmStorePrune = false
     @State private var confirmsNpmCacheCleanup = false
+    @State private var confirmsPythonPackageCacheCleanup = false
     @State private var confirmsHomebrewCleanup = false
     @State private var resultMessage: String?
 
@@ -376,6 +381,19 @@ struct MaintenanceView: View {
                         isActionEnabled: npmCacheSnapshot.state == .ready
                     ) {
                         confirmsNpmCacheCleanup = true
+                    }
+
+                    commandCard(
+                        title: "Python Package Caches",
+                        description: "Purge pip downloads and prune unused uv cache entries using their own commands.",
+                        symbol: "chevron.left.forwardslash.chevron.right",
+                        status: pythonPackageCacheStatus,
+                        buttonTitle: pythonPackageCacheButtonTitle,
+                        isAvailable: pythonPackageCacheSnapshot.state != .unavailable
+                            && pythonPackageCacheSnapshot.state != .failed,
+                        isActionEnabled: pythonPackageCacheSnapshot.state == .ready
+                    ) {
+                        confirmsPythonPackageCacheCleanup = true
                     }
 
                     commandCard(
@@ -862,6 +880,23 @@ struct MaintenanceView: View {
             ))
         }
         .confirmationDialog(
+            "Clean Python package caches?",
+            isPresented: $confirmsPythonPackageCacheCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Clean Python Package Caches", role: .destructive) {
+                Task { await cleanPythonPackageCaches() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MoniLocalization.format(
+                "%@ will clean %@ package caches using each tool's own maintenance command. Current combined size: %@. pip removes all cached downloads; uv prunes entries that are no longer needed.",
+                pythonPackageCacheToolNames,
+                pythonPackageCacheSnapshot.items.filter { !$0.isProtected }.count.formatted(),
+                maintenanceBytes(pythonPackageCacheSize)
+            ))
+        }
+        .confirmationDialog(
             "Clean Homebrew files?",
             isPresented: $confirmsHomebrewCleanup,
             titleVisibility: .visible
@@ -1033,7 +1068,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "26", MoniPalette.green)
+                catalogMetric("Available now", "27", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1479,6 +1514,44 @@ struct MaintenanceView: View {
         }
     }
 
+    private var pythonPackageCacheSize: UInt64 {
+        pythonPackageCacheSnapshot.items.reduce(UInt64(0)) { total, item in
+            let (sum, overflow) = total.addingReportingOverflow(item.sizeBytes)
+            return overflow ? UInt64.max : sum
+        }
+    }
+
+    private var pythonPackageCacheToolNames: String {
+        let names = Set(pythonPackageCacheSnapshot.items.map(\.kind.displayName)).sorted()
+        return names.isEmpty ? MoniLocalization.string("Python package tools") : names.joined(separator: " & ")
+    }
+
+    private var pythonPackageCacheStatus: String {
+        switch pythonPackageCacheSnapshot.state {
+        case .ready:
+            MoniLocalization.format(
+                "%@ caches · %@",
+                pythonPackageCacheSnapshot.items.filter { !$0.isProtected }.count.formatted(),
+                maintenanceBytes(pythonPackageCacheSize)
+            )
+        case .healthy: MoniLocalization.string("No pip or uv cache to clean")
+        case .protected: MoniLocalization.string("Protected by whitelist")
+        case .busy: MoniLocalization.string("Python package tool is running")
+        case .unavailable: MoniLocalization.string("pip and uv commands unavailable")
+        case .failed: MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var pythonPackageCacheButtonTitle: String {
+        switch pythonPackageCacheSnapshot.state {
+        case .ready: MoniLocalization.string("Review Cleanup")
+        case .healthy: MoniLocalization.string("No action needed")
+        case .protected: MoniLocalization.string("Protected")
+        case .busy: MoniLocalization.string("Close package tools first")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
     private var homebrewStatus: String {
         switch homebrewSnapshot.state {
         case .ready:
@@ -1778,14 +1851,15 @@ struct MaintenanceView: View {
         async let condaCacheResult = CondaCacheMaintenanceService.scan()
         async let pnpmStoreResult = PnpmStoreMaintenanceService.scan()
         async let npmCacheResult = NpmCacheMaintenanceService.scan()
+        async let pythonPackageCacheResult = PythonPackageCacheMaintenanceService.scan()
         async let homebrewResult = HomebrewMaintenanceService.scan()
         async let timeMachineSnapshotResult = TimeMachineSnapshotService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, npmCache, homebrew, timeMachineSnapshots) = await (
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, npmCache, pythonPackageCaches, homebrew, timeMachineSnapshots) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
             spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult, condaCacheResult,
-            pnpmStoreResult, npmCacheResult, homebrewResult,
+            pnpmStoreResult, npmCacheResult, pythonPackageCacheResult, homebrewResult,
             timeMachineSnapshotResult
         )
         guard !Task.isCancelled else { return }
@@ -1810,6 +1884,7 @@ struct MaintenanceView: View {
         nixGarbageCollectionState = NixGarbageCollectionService.scan()
         pnpmStoreSnapshot = pnpmStores
         npmCacheSnapshot = npmCache
+        pythonPackageCacheSnapshot = pythonPackageCaches
         homebrewSnapshot = homebrew
         timeMachineSnapshotReport = timeMachineSnapshots
         isScanning = false
@@ -2334,6 +2409,39 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("npm cache cleanup is unavailable because no usable npm command could be found.")
         case .failed:
             resultMessage = MoniLocalization.string("npm cache cleanup did not complete successfully.")
+        }
+    }
+
+    private func cleanPythonPackageCaches() async {
+        isRunning = true
+        let outcome = await PythonPackageCacheMaintenanceService.clean(pythonPackageCacheSnapshot)
+        pythonPackageCacheSnapshot = await PythonPackageCacheMaintenanceService.scan()
+        isRunning = false
+
+        switch outcome {
+        case let .cleaned(cacheCount, reclaimedBytes, failedCount):
+            var message = MoniLocalization.format(
+                "Cleaned %@ Python package caches and reclaimed %@.",
+                cacheCount.formatted(),
+                maintenanceBytes(reclaimedBytes)
+            )
+            if failedCount > 0 {
+                message += " " + MoniLocalization.format(
+                    "%@ caches could not be cleaned.",
+                    failedCount.formatted()
+                )
+            }
+            resultMessage = message
+        case .noAction:
+            resultMessage = MoniLocalization.string("No pip or uv cache needed cleaning.")
+        case .protected:
+            resultMessage = MoniLocalization.string("Python package cache cleanup was skipped because every cache is protected by the whitelist.")
+        case .busy:
+            resultMessage = MoniLocalization.string("Python package cache cleanup was skipped because pip or uv is running.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Python package cache cleanup is unavailable because no usable pip or uv command could be found.")
+        case .failed:
+            resultMessage = MoniLocalization.string("Python package cache cleanup did not complete successfully.")
         }
     }
 }
