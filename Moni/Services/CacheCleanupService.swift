@@ -1274,7 +1274,30 @@ nonisolated enum CacheCleanupService {
         if let githubRoot = githubCLICacheRoot() {
             roots.append(githubRoot)
         }
+        roots.append(contentsOf: jenkinsWorkspaceTargetRoots())
         return roots
+    }
+
+    private static func jenkinsWorkspaceTargetRoots() -> [String] {
+        let workspaceRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".jenkins/workspace", isDirectory: true)
+            .standardizedFileURL
+        guard isRealDirectory(at: workspaceRoot.path),
+              let workspaces = try? FileManager.default.contentsOfDirectory(
+                  at: workspaceRoot,
+                  includingPropertiesForKeys: nil,
+                  options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+        return workspaces.compactMap { workspace in
+            guard isRealDirectory(at: workspace.path),
+                  pathsEqual(workspace.deletingLastPathComponent().path, workspaceRoot.path) else {
+                return nil
+            }
+            let target = workspace.appendingPathComponent("target", isDirectory: true).standardizedFileURL
+            return isRealDirectory(at: target.path) ? target.path : nil
+        }
     }
 
     private static func githubCLICacheRoot() -> String? {
