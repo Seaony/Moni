@@ -89,6 +89,16 @@ nonisolated enum CleanupPreferences {
         )
     }
 
+    static func isWhitelisted(_ path: String) -> Bool {
+        let normalized = normalizedPath(path)
+        return whitelist().contains { protectedPath in
+            let protected = normalizedPath(protectedPath)
+            return normalized == protected
+                || normalized.hasPrefix(protected + "/")
+                || protected.hasPrefix(normalized + "/")
+        }
+    }
+
     private static func normalizedPath(_ path: String) -> String {
         URL(fileURLWithPath: path).standardizedFileURL.path
     }
