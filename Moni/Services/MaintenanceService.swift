@@ -139,6 +139,11 @@ nonisolated enum MaintenanceService {
             "calendar.badge.clock", .system, authorization: .administrator
         ),
         task(
+            "tart_cache_prune", "Tart Cache Pruning",
+            "Prune Tart cache entries older than 30 days using Tart's own maintenance command.",
+            "shippingbox", .storage, policy: .requiresInactiveApplications
+        ),
+        task(
             "shared_file_list_repair", "Shared File Lists",
             "Repair malformed Finder favorites and recent-item lists.", "list.bullet.rectangle",
             .finder

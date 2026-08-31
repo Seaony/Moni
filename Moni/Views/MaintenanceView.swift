@@ -105,6 +105,11 @@ struct MaintenanceView: View {
         state: .unavailable,
         ageDays: nil
     )
+    @State private var tartCacheSnapshot = TartCacheMaintenanceSnapshot(
+        path: "",
+        sizeBytes: 0,
+        state: .unavailable
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -123,6 +128,7 @@ struct MaintenanceView: View {
     @State private var confirmsPermissionRepair = false
     @State private var confirmsSpotlightOptimization = false
     @State private var confirmsPeriodicMaintenance = false
+    @State private var confirmsTartCachePrune = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -265,6 +271,19 @@ struct MaintenanceView: View {
                             || periodicMaintenanceSnapshot.state == .missingLog
                     ) {
                         confirmsPeriodicMaintenance = true
+                    }
+
+                    commandCard(
+                        title: "Tart Cache Pruning",
+                        description: "Prune Tart cache entries older than 30 days using Tart's own maintenance command.",
+                        symbol: "shippingbox",
+                        status: tartCacheStatus,
+                        buttonTitle: tartCacheButtonTitle,
+                        isAvailable: tartCacheSnapshot.state != .unavailable
+                            && tartCacheSnapshot.state != .failed,
+                        isActionEnabled: tartCacheSnapshot.state == .ready
+                    ) {
+                        confirmsTartCachePrune = true
                     }
 
                     commandCard(
@@ -610,6 +629,22 @@ struct MaintenanceView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("macOS will request administrator approval to run the daily, weekly, and monthly maintenance scripts. Existing maintenance logs are retained.")
+        }
+        .confirmationDialog(
+            "Prune old Tart caches?",
+            isPresented: $confirmsTartCachePrune,
+            titleVisibility: .visible
+        ) {
+            Button("Prune Tart Caches", role: .destructive) {
+                Task { await pruneTartCaches() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MoniLocalization.format(
+                "Tart will remove cache entries older than 30 days from %@. The cache currently uses %@.",
+                tartCacheSnapshot.path,
+                maintenanceBytes(tartCacheSnapshot.sizeBytes)
+            ))
         }
     }
 
@@ -1095,6 +1130,33 @@ struct MaintenanceView: View {
         }
     }
 
+    private var tartCacheStatus: String {
+        switch tartCacheSnapshot.state {
+        case .ready:
+            MoniLocalization.format("%@ available", maintenanceBytes(tartCacheSnapshot.sizeBytes))
+        case .healthy:
+            MoniLocalization.string("No cache to prune")
+        case .protected:
+            MoniLocalization.string("Protected by whitelist")
+        case .busy:
+            MoniLocalization.string("Tart is running")
+        case .unavailable:
+            MoniLocalization.string("Tart command unavailable")
+        case .failed:
+            MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var tartCacheButtonTitle: String {
+        switch tartCacheSnapshot.state {
+        case .ready: MoniLocalization.string("Review Prune")
+        case .healthy: MoniLocalization.string("No action needed")
+        case .protected: MoniLocalization.string("Protected")
+        case .busy: MoniLocalization.string("Close Tart first")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -1112,11 +1174,12 @@ struct MaintenanceView: View {
         async let permissionRepairResult = AdministratorMaintenanceService.scanPermissionRepair()
         async let spotlightOptimizationResult = AdministratorMaintenanceService.scanSpotlightOptimization()
         async let periodicMaintenanceResult = AdministratorMaintenanceService.scanPeriodicMaintenance()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance) = await (
+        async let tartCacheResult = TartCacheMaintenanceService.scan()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
-            spotlightOptimizationResult, periodicMaintenanceResult
+            spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -1135,6 +1198,7 @@ struct MaintenanceView: View {
         permissionRepairState = permissionRepair
         spotlightOptimizationState = spotlightOptimization
         periodicMaintenanceSnapshot = periodicMaintenance
+        tartCacheSnapshot = tartCache
         isScanning = false
     }
 
@@ -1502,6 +1566,31 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("Daily, weekly, and monthly maintenance scripts completed.")
         case .notCompleted:
             resultMessage = MoniLocalization.string("Periodic maintenance was not completed. Administrator approval may have been cancelled, or a system script reported an error.")
+        }
+    }
+
+    private func pruneTartCaches() async {
+        isRunning = true
+        let outcome = await TartCacheMaintenanceService.prune()
+        tartCacheSnapshot = await TartCacheMaintenanceService.scan()
+        isRunning = false
+
+        switch outcome {
+        case let .pruned(reclaimedBytes):
+            resultMessage = MoniLocalization.format(
+                "Tart cache pruning completed and reclaimed %@.",
+                maintenanceBytes(reclaimedBytes)
+            )
+        case .noAction:
+            resultMessage = MoniLocalization.string("No Tart cache entries needed pruning.")
+        case .protected:
+            resultMessage = MoniLocalization.string("Tart cache pruning was skipped because the cache is protected by the whitelist.")
+        case .busy:
+            resultMessage = MoniLocalization.string("Tart cache pruning was skipped because Tart is running.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Tart cache pruning is unavailable because the Tart command could not be found.")
+        case .failed:
+            resultMessage = MoniLocalization.string("Tart cache pruning did not complete successfully.")
         }
     }
 }
