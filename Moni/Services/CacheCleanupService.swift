@@ -17,6 +17,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case firefoxProfileCaches
     case braveProfileCaches
     case arcProfileCaches
+    case vivaldiProfileCaches
     case googleUpdaterCaches
     case virtualizationTemporaryData
     case savedApplicationState
@@ -43,6 +44,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .firefoxProfileCaches: "Firefox profile caches"
         case .braveProfileCaches: "Brave profile caches"
         case .arcProfileCaches: "Arc profile caches"
+        case .vivaldiProfileCaches: "Vivaldi profile caches"
         case .googleUpdaterCaches: "Google updater caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
@@ -133,7 +135,8 @@ nonisolated enum CacheCleanupService {
                     || pathsEqual($0.path, googleGeneralCacheRoot())
                     || pathsEqual($0.path, firefoxGeneralCacheRoot())
                     || pathsEqual($0.path, braveGeneralCacheRoot())
-                    || pathsEqual($0.path, arcGeneralCacheRoot()))
+                    || pathsEqual($0.path, arcGeneralCacheRoot())
+                    || pathsEqual($0.path, vivaldiGeneralCacheRoot()))
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -179,6 +182,15 @@ nonisolated enum CacheCleanupService {
             let arcProfileCaches = await scanArcProfileCaches()
             discoveredItems.append(contentsOf: arcProfileCaches.items)
             unreadableItemCount += arcProfileCaches.unreadableItemCount
+        }
+
+        let vivaldiIsSafe = await Task.detached(priority: .utility) {
+            vivaldiIsInactive()
+        }.value
+        if vivaldiIsSafe {
+            let vivaldiProfileCaches = await scanVivaldiProfileCaches()
+            discoveredItems.append(contentsOf: vivaldiProfileCaches.items)
+            unreadableItemCount += vivaldiProfileCaches.unreadableItemCount
         }
 
         let googleUpdaterCaches = await scanGoogleUpdaterCaches()
@@ -385,12 +397,23 @@ nonisolated enum CacheCleanupService {
         let braveIsSafe = !requiresBraveProbe || braveIsInactive()
         let requiresArcProbe = items.contains { $0.category == .arcProfileCaches }
         let arcIsSafe = !requiresArcProbe || arcIsInactive()
+        let requiresVivaldiProbe = items.contains { $0.category == .vivaldiProfileCaches }
+        let vivaldiIsSafe = !requiresVivaldiProbe || vivaldiIsInactive()
         let userCacheProcessGuard = items.contains { $0.category == .userCaches }
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
             if item.category == .googleUpdaterCaches {
                 guard googleUpdaterCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .vivaldiProfileCaches {
+                guard vivaldiIsSafe,
+                      vivaldiProfileCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -947,6 +970,12 @@ nonisolated enum CacheCleanupService {
             .standardizedFileURL.path
     }
 
+    private static func vivaldiGeneralCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/com.vivaldi.Vivaldi", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
     private static func diaIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Dia"]])
     }
@@ -1063,6 +1092,35 @@ nonisolated enum CacheCleanupService {
                 return CacheCleanupItem(
                     path: path,
                     category: .arcProfileCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func scanVivaldiProfileCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in vivaldiProfileCacheRoots() where isRealDirectory(at: root) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: root) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                guard vivaldiProfileCacheItemIsAllowed(path) else { return nil }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .vivaldiProfileCaches,
                     sizeBytes: size
                 )
             })
@@ -1312,6 +1370,42 @@ nonisolated enum CacheCleanupService {
         ]
     }
 
+    private static func vivaldiProfileCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              !holdsCompiledModelCache(url.path) else {
+            return false
+        }
+        return vivaldiProfileCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func vivaldiProfileCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let supportRoot = home + "/Library/Application Support/Vivaldi"
+        var roots = [
+            vivaldiGeneralCacheRoot(),
+            supportRoot + "/ShaderCache",
+            supportRoot + "/GrShaderCache",
+            supportRoot + "/GraphiteDawnCache",
+            supportRoot + "/Crashpad/completed"
+        ]
+        roots.append(contentsOf: childDirectories(at: supportRoot).flatMap { profile in
+            [
+                profile + "/Code Cache",
+                profile + "/GPUCache",
+                profile + "/DawnCache",
+                profile + "/GrShaderCache",
+                profile + "/GraphiteDawnCache"
+            ]
+        })
+        var seen: Set<String> = []
+        return roots.filter { seen.insert($0).inserted }
+    }
+
     private static func chromeIsInactive() -> Bool {
         processProbesAreInactive([
             ["-x", "Google Chrome"],
@@ -1330,6 +1424,10 @@ nonisolated enum CacheCleanupService {
 
     private static func arcIsInactive() -> Bool {
         processProbesAreInactive([["-x", "Arc"]])
+    }
+
+    private static func vivaldiIsInactive() -> Bool {
+        processProbesAreInactive([["-x", "Vivaldi"]])
     }
 
     private static func processProbesAreInactive(_ probes: [[String]]) -> Bool {
