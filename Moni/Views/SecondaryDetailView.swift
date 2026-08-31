@@ -770,6 +770,7 @@ private struct DockerDetailView: View {
                 Text("Status").frame(width: 220, alignment: .trailing)
                 Text("State").frame(width: 84, alignment: .trailing)
             }
+            .padding(.horizontal, 12)
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(MoniPalette.foregroundSecondary)
 
@@ -795,6 +796,7 @@ private struct DockerDetailView: View {
                             .frame(width: 84, alignment: .trailing)
                     }
                     .font(.system(size: 12.5))
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(MoniPalette.inset)
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
