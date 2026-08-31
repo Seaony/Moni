@@ -144,6 +144,11 @@ nonisolated enum MaintenanceService {
             "shippingbox", .storage, policy: .requiresInactiveApplications
         ),
         task(
+            "time_machine_snapshots", "Time Machine Snapshots",
+            "Report local Time Machine snapshots without deleting them.",
+            "clock.arrow.trianglehead.counterclockwise.rotate.90", .storage
+        ),
+        task(
             "shared_file_list_repair", "Shared File Lists",
             "Repair malformed Finder favorites and recent-item lists.", "list.bullet.rectangle",
             .finder

@@ -110,6 +110,10 @@ struct MaintenanceView: View {
         sizeBytes: 0,
         state: .unavailable
     )
+    @State private var timeMachineSnapshotReport = TimeMachineSnapshotReport(
+        state: .unavailable,
+        snapshotCount: 0
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -285,6 +289,17 @@ struct MaintenanceView: View {
                     ) {
                         confirmsTartCachePrune = true
                     }
+
+                    commandCard(
+                        title: "Time Machine Snapshots",
+                        description: "Report local Time Machine snapshots without deleting them.",
+                        symbol: "clock.arrow.trianglehead.counterclockwise.rotate.90",
+                        status: timeMachineSnapshotStatus,
+                        buttonTitle: "Report only",
+                        isAvailable: timeMachineSnapshotReport.state != .unavailable
+                            && timeMachineSnapshotReport.state != .failed,
+                        isActionEnabled: false
+                    ) {}
 
                     commandCard(
                         title: "LaunchServices Repair",
@@ -1157,6 +1172,26 @@ struct MaintenanceView: View {
         }
     }
 
+    private var timeMachineSnapshotStatus: String {
+        switch timeMachineSnapshotReport.state {
+        case .ready:
+            MoniLocalization.format(
+                "%@ local snapshots",
+                timeMachineSnapshotReport.snapshotCount.formatted()
+            )
+        case .none:
+            MoniLocalization.string("No local snapshots")
+        case .busy:
+            MoniLocalization.string("Backup in progress")
+        case .notConfigured:
+            MoniLocalization.string("Time Machine not configured")
+        case .unavailable:
+            MoniLocalization.string("Time Machine unavailable")
+        case .failed:
+            MoniLocalization.string("Inspection failed")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -1175,11 +1210,13 @@ struct MaintenanceView: View {
         async let spotlightOptimizationResult = AdministratorMaintenanceService.scanSpotlightOptimization()
         async let periodicMaintenanceResult = AdministratorMaintenanceService.scanPeriodicMaintenance()
         async let tartCacheResult = TartCacheMaintenanceService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache) = await (
+        async let timeMachineSnapshotResult = TimeMachineSnapshotService.scan()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, timeMachineSnapshots) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
-            spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult
+            spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult,
+            timeMachineSnapshotResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -1199,6 +1236,7 @@ struct MaintenanceView: View {
         spotlightOptimizationState = spotlightOptimization
         periodicMaintenanceSnapshot = periodicMaintenance
         tartCacheSnapshot = tartCache
+        timeMachineSnapshotReport = timeMachineSnapshots
         isScanning = false
     }
 
