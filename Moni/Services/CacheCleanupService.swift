@@ -1287,6 +1287,9 @@ nonisolated enum CacheCleanupService {
               }) else {
             return false
         }
+        if rubyGemCacheRoots().contains(where: { pathsEqual(root, $0) }) {
+            return url.pathExtension == "gem"
+        }
         if githubCLICacheRoot().map({ pathsEqual(root, $0) }) == true {
             return githubCLIIsAvailable() && githubCLIIsInactive()
         }
@@ -1360,7 +1363,30 @@ nonisolated enum CacheCleanupService {
             roots.append(githubRoot)
         }
         roots.append(contentsOf: jenkinsWorkspaceTargetRoots())
+        roots.append(contentsOf: rubyGemCacheRoots())
         return roots
+    }
+
+    private static func rubyGemCacheRoots() -> [String] {
+        let rubyRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".gem/ruby", isDirectory: true)
+            .standardizedFileURL
+        guard isRealDirectory(at: rubyRoot.path),
+              let versions = try? FileManager.default.contentsOfDirectory(
+                  at: rubyRoot,
+                  includingPropertiesForKeys: nil,
+                  options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+        return versions.compactMap { version in
+            guard isRealDirectory(at: version.path),
+                  pathsEqual(version.deletingLastPathComponent().path, rubyRoot.path) else {
+                return nil
+            }
+            let cache = version.appendingPathComponent("cache", isDirectory: true).standardizedFileURL
+            return isRealDirectory(at: cache.path) ? cache.path : nil
+        }
     }
 
     private static func jenkinsWorkspaceTargetRoots() -> [String] {
