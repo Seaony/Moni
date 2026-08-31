@@ -159,6 +159,11 @@ nonisolated enum MaintenanceService {
             "shippingbox.circle", .storage, policy: .requiresInactiveApplications
         ),
         task(
+            "homebrew_cleanup", "Homebrew Cleanup",
+            "Remove Homebrew downloads and stale versions older than 30 days without running autoremove.",
+            "mug", .storage
+        ),
+        task(
             "time_machine_snapshots", "Time Machine",
             "Report local snapshots and review incomplete backups for removal with tmutil.",
             "clock.arrow.trianglehead.counterclockwise.rotate.90", .storage

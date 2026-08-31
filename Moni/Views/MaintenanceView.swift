@@ -120,6 +120,12 @@ struct MaintenanceView: View {
         stores: [],
         state: .unavailable
     )
+    @State private var homebrewSnapshot = HomebrewMaintenanceSnapshot(
+        cachePath: "",
+        cacheSizeBytes: 0,
+        autoremoveFormulae: [],
+        state: .unavailable
+    )
     @State private var timeMachineSnapshotReport = TimeMachineSnapshotReport(
         state: .unavailable,
         snapshotCount: 0,
@@ -156,6 +162,7 @@ struct MaintenanceView: View {
     @State private var confirmsCondaCacheCleanup = false
     @State private var confirmsNixGarbageCollection = false
     @State private var confirmsPnpmStorePrune = false
+    @State private var confirmsHomebrewCleanup = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -350,6 +357,19 @@ struct MaintenanceView: View {
                         isActionEnabled: pnpmStoreSnapshot.state == .ready
                     ) {
                         confirmsPnpmStorePrune = true
+                    }
+
+                    commandCard(
+                        title: "Homebrew Cleanup",
+                        description: "Remove Homebrew downloads and stale versions older than 30 days without running autoremove.",
+                        symbol: "mug",
+                        status: homebrewStatus,
+                        buttonTitle: homebrewButtonTitle,
+                        isAvailable: homebrewSnapshot.state != .unavailable
+                            && homebrewSnapshot.state != .failed,
+                        isActionEnabled: homebrewSnapshot.state == .ready
+                    ) {
+                        confirmsHomebrewCleanup = true
                     }
 
                     commandCard(
@@ -806,6 +826,18 @@ struct MaintenanceView: View {
                 maintenanceBytes(pnpmStoreSize)
             ))
         }
+        .confirmationDialog(
+            "Clean Homebrew files?",
+            isPresented: $confirmsHomebrewCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Clean Homebrew Files", role: .destructive) {
+                Task { await cleanHomebrewFiles() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(homebrewCleanupConfirmationMessage)
+        }
     }
 
     private var header: some View {
@@ -966,7 +998,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "24", MoniPalette.green)
+                catalogMetric("Available now", "25", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1390,6 +1422,57 @@ struct MaintenanceView: View {
         }
     }
 
+    private var homebrewStatus: String {
+        switch homebrewSnapshot.state {
+        case .ready:
+            if homebrewSnapshot.autoremoveFormulae.isEmpty {
+                return MoniLocalization.format(
+                    "%@ available",
+                    maintenanceBytes(homebrewSnapshot.cacheSizeBytes)
+                )
+            }
+            return MoniLocalization.format(
+                "%@ · %@ autoremove suggestions",
+                maintenanceBytes(homebrewSnapshot.cacheSizeBytes),
+                homebrewSnapshot.autoremoveFormulae.count.formatted()
+            )
+        case .healthy:
+            if homebrewSnapshot.autoremoveFormulae.isEmpty {
+                return MoniLocalization.string("Cache below 50 MB")
+            }
+            return MoniLocalization.format(
+                "Cache below 50 MB · %@ autoremove suggestions",
+                homebrewSnapshot.autoremoveFormulae.count.formatted()
+            )
+        case .protected: return MoniLocalization.string("Protected by whitelist")
+        case .unavailable: return MoniLocalization.string("Homebrew command unavailable")
+        case .failed: return MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var homebrewButtonTitle: String {
+        switch homebrewSnapshot.state {
+        case .ready: MoniLocalization.string("Review Cleanup")
+        case .healthy: MoniLocalization.string("No action needed")
+        case .protected: MoniLocalization.string("Protected")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
+    private var homebrewCleanupConfirmationMessage: String {
+        var message = MoniLocalization.format(
+            "Homebrew will remove downloaded files and stale versions older than 30 days. The cache currently uses %@. Moni will not run autoremove.",
+            maintenanceBytes(homebrewSnapshot.cacheSizeBytes)
+        )
+        if !homebrewSnapshot.autoremoveFormulae.isEmpty {
+            message += " " + MoniLocalization.format(
+                "Homebrew suggests %@ unused formulae for manual review; they will be retained.",
+                homebrewSnapshot.autoremoveFormulae.count.formatted()
+            )
+        }
+        return message
+    }
+
     private var timeMachineSnapshotStatus: String {
         switch timeMachineSnapshotReport.state {
         case .ready:
@@ -1637,13 +1720,14 @@ struct MaintenanceView: View {
         async let tartCacheResult = TartCacheMaintenanceService.scan()
         async let condaCacheResult = CondaCacheMaintenanceService.scan()
         async let pnpmStoreResult = PnpmStoreMaintenanceService.scan()
+        async let homebrewResult = HomebrewMaintenanceService.scan()
         async let timeMachineSnapshotResult = TimeMachineSnapshotService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, timeMachineSnapshots) = await (
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, homebrew, timeMachineSnapshots) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
             spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult, condaCacheResult,
-            pnpmStoreResult,
+            pnpmStoreResult, homebrewResult,
             timeMachineSnapshotResult
         )
         guard !Task.isCancelled else { return }
@@ -1667,6 +1751,7 @@ struct MaintenanceView: View {
         condaCacheSnapshot = condaCache
         nixGarbageCollectionState = NixGarbageCollectionService.scan()
         pnpmStoreSnapshot = pnpmStores
+        homebrewSnapshot = homebrew
         timeMachineSnapshotReport = timeMachineSnapshots
         isScanning = false
     }
@@ -2129,6 +2214,42 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("pnpm store pruning is unavailable because no installed pnpm command could be found.")
         case .failed:
             resultMessage = MoniLocalization.string("pnpm store pruning did not complete successfully.")
+        }
+    }
+
+    private func cleanHomebrewFiles() async {
+        isRunning = true
+        let outcome = await HomebrewMaintenanceService.clean()
+        homebrewSnapshot = await HomebrewMaintenanceService.scan()
+        isRunning = false
+
+        switch outcome {
+        case let .cleaned(reclaimedBytes, restoredLinkCount, autoremoveFormulae):
+            var parts = [MoniLocalization.format(
+                "Homebrew cleanup completed and reclaimed %@.",
+                maintenanceBytes(reclaimedBytes)
+            )]
+            if restoredLinkCount > 0 {
+                parts.append(MoniLocalization.format(
+                    "Restored %@ active command links removed by cleanup.",
+                    restoredLinkCount.formatted()
+                ))
+            }
+            if !autoremoveFormulae.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "Homebrew still suggests %@ unused formulae for manual review; Moni retained them.",
+                    autoremoveFormulae.count.formatted()
+                ))
+            }
+            resultMessage = parts.joined(separator: " ")
+        case .noAction:
+            resultMessage = MoniLocalization.string("Homebrew cache is below the 50 MB cleanup threshold.")
+        case .protected:
+            resultMessage = MoniLocalization.string("Homebrew cleanup was skipped because its cache is protected by the whitelist.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Homebrew cleanup is unavailable because the Homebrew command could not be found.")
+        case .failed:
+            resultMessage = MoniLocalization.string("Homebrew cleanup did not complete successfully.")
         }
     }
 }
