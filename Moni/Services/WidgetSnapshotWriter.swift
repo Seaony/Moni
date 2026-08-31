@@ -16,14 +16,6 @@ actor WidgetSnapshotWriter {
         reloadTimelinesIfDue(at: snapshot.date)
     }
 
-    func persistAI(_ snapshot: WidgetAISnapshot) {
-        try? MoniWidgetStorage.saveAI(snapshot)
-        reloadTimelinesIfDue(at: Date())
-    }
-
-    /// WidgetKit budgets timeline reloads per day; a scan publishes twice and the
-    /// AI screen rescans on every range change, so reloading on each write burns
-    /// through the budget and leaves the widgets frozen.
     private func reloadTimelinesIfDue(at date: Date) {
         guard date.timeIntervalSince(lastTimelineReload) >= Self.reloadInterval else { return }
         lastTimelineReload = date
@@ -138,30 +130,5 @@ extension WidgetSystemSnapshot {
     private static func threshold(_ key: String, fallback: Double) -> Double {
         let value = UserDefaults.standard.double(forKey: key)
         return value == 0 ? fallback : value
-    }
-}
-
-extension WidgetAISnapshot {
-    init(summary: AIUsageSummary) {
-        self.init(
-            date: summary.scannedAt ?? .now,
-            totalTokens: summary.totalTokens,
-            estimatedCostUSD: summary.estimatedCostUSD,
-            providers: summary.providers.map { provider in
-                WidgetAIProvider(
-                    name: provider.provider,
-                    plan: provider.planName,
-                    totalTokens: provider.totalTokens,
-                    estimatedCostUSD: provider.estimatedCostUSD,
-                    cacheHitPercent: provider.cacheHitPercent,
-                    quotas: provider.quotaWindows
-                        .filter { !$0.label.localizedCaseInsensitiveContains("code review") }
-                        .map { quota in
-                            .init(label: quota.label, remainingPercent: quota.remainingPercent, resetsAt: quota.resetsAt)
-                        }
-                )
-            },
-            daily: summary.daily.map { .init(date: $0.date, tokens: $0.tokens, costUSD: $0.costUSD) }
-        )
     }
 }

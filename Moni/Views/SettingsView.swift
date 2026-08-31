@@ -5,7 +5,7 @@ import UserNotifications
 import WidgetKit
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, menuBar, alerts, aiUsage, modules, about
+    case general, menuBar, alerts, modules, about
 
     var id: String { rawValue }
 
@@ -14,7 +14,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "General"
         case .menuBar: "Menu Bar"
         case .alerts: "Alerts"
-        case .aiUsage: "AI Providers"
         case .modules: "Modules"
         case .about: "About"
         }
@@ -26,7 +25,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "gearshape"
         case .menuBar: "menubar.rectangle"
         case .alerts: "bell"
-        case .aiUsage: "sparkles"
         case .modules: "square.grid.2x2"
         case .about: "info.circle"
         }
@@ -79,7 +77,6 @@ struct SettingsView: View {
                 case .general: GeneralSettings()
                 case .menuBar: MenuBarSettings()
                 case .alerts: AlertSettings()
-                case .aiUsage: AIUsageSettings()
                 case .modules: ModuleSettings()
                 case .about: AboutSettings()
                 }
@@ -181,227 +178,6 @@ private struct SettingsSwitch: View {
                 .fill(.white)
                 .frame(width: 20, height: 20)
                 .padding(2)
-        }
-    }
-}
-
-private struct AIUsageSettings: View {
-    @EnvironmentObject private var store: AIUsageStore
-    @AppStorage(PreferenceKey.aiUsageRange) private var rangeValue = AIUsageRange.last30Days.rawValue
-    @AppStorage(PreferenceKey.disabledAIProviders) private var disabledProviderValue = ""
-
-    private static let knownProviders = [
-        "Claude", "Codex", "Gemini CLI", "Qwen Code", "Kimi Code",
-        "DeepSeek Harness", "OpenCode", "GitHub Copilot", "Grok",
-    ]
-
-    private var range: AIUsageRange {
-        AIUsageRange(rawValue: rangeValue) ?? .last30Days
-    }
-
-    private var detectedProviders: [AIProviderUsage] {
-        store.summary.providers.filter {
-            $0.totalTokens > 0 || $0.sessionCount > 0 || !$0.quotaWindows.isEmpty
-        }
-    }
-
-    private var providerNames: [String] {
-        let known = Set(Self.knownProviders)
-        return Self.knownProviders + detectedProviders.map(\.provider).filter { !known.contains($0) }
-    }
-
-    var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 12) {
-                DetailPanel("Providers") {
-                    VStack(spacing: 2) {
-                        ForEach(providerNames, id: \.self) { providerName in
-                            providerRow(
-                                providerName,
-                                usage: detectedProviders.first { $0.provider == providerName }
-                            )
-                        }
-                    }
-
-                    HStack(spacing: 8) {
-                        Button {
-                            store.refresh(
-                                range: range,
-                                includeQuotas: true,
-                                allowKeychainPrompt: true
-                            )
-                        } label: {
-                            HStack(spacing: 7) {
-                                Text("Rescan now")
-                                if store.isLoading {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                }
-                            }
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(MoniPalette.foreground)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(MoniPalette.control)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(store.isLoading)
-                        .moniPointingHand()
-                    }
-                }
-
-                DetailPanel("Default range") {
-                    HStack(spacing: 6) {
-                        ForEach(AIUsageRange.allCases) { item in
-                            Button {
-                                rangeValue = item.rawValue
-                            } label: {
-                                Text(item.title)
-                                    .font(.system(size: 12.5, weight: .semibold))
-                                    .foregroundStyle(range == item ? Color.white : MoniPalette.foregroundSecondary)
-                                    .padding(.horizontal, 13)
-                                    .padding(.vertical, 7)
-                                    .background(range == item ? MoniPalette.blue : MoniPalette.control)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .moniPointingHand()
-                        }
-                    }
-
-                    Text("Costs are estimated from local logs at API list prices — they are not your subscription invoice.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                        .padding(.top, 4)
-                }
-            }
-        }
-        .onChange(of: rangeValue) { _, value in
-            store.refresh(range: AIUsageRange(rawValue: value) ?? .last30Days, includeQuotas: true)
-        }
-        .task {
-            store.loadIfNeeded(range: range, includeQuotas: true)
-        }
-        .moniAnimation(value: store.isLoading)
-    }
-
-    private func providerRow(_ providerName: String, usage: AIProviderUsage?) -> some View {
-        let isDetected = usage != nil
-
-        return Button {
-            toggleProvider(providerName)
-        } label: {
-            HStack(spacing: 12) {
-                Image(providerIconName(providerName))
-                    .renderingMode(.template)
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(isDetected ? providerColor(providerName) : MoniPalette.foregroundSecondary.opacity(0.4))
-                    .frame(width: 18, height: 18)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(displayName(providerName))
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(isDetected ? MoniPalette.foreground : Color.secondary.opacity(0.55))
-                    Text(MoniLocalization.string(usage.map(providerSource) ?? (isProviderEnabled(providerName) ? "Not detected" : "Turned off")))
-                        .font(.system(size: 12))
-                        .foregroundStyle(isDetected ? Color.secondary.opacity(0.65) : Color.secondary.opacity(0.4))
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 12)
-
-                Text(usage.map { MoniLocalization.compactNumber($0.totalTokens) } ?? "—")
-                    .font(.system(size: 12))
-                    .foregroundStyle(isDetected ? Color.secondary.opacity(0.65) : Color.secondary.opacity(0.4))
-                    .monospacedDigit()
-
-                SettingsSwitch(isOn: isDetected && isProviderEnabled(providerName))
-                    .opacity(isDetected ? 1 : 0.6)
-            }
-            .padding(10)
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        // A provider that was switched off may stop being detected (its quota is
-        // no longer fetched); the row has to stay tappable or it can never be
-        // switched back on.
-        .disabled(!isDetected && isProviderEnabled(providerName))
-        .moniPointingHand()
-        .moniAnimation(value: disabledProviderValue)
-    }
-
-    private var disabledProviders: Set<String> {
-        Set(disabledProviderValue.split(separator: ",").map(String.init))
-    }
-
-    private func isProviderEnabled(_ provider: String) -> Bool {
-        !disabledProviders.contains(provider)
-    }
-
-    private func toggleProvider(_ provider: String) {
-        var disabled = disabledProviders
-        if !disabled.insert(provider).inserted {
-            disabled.remove(provider)
-        }
-        disabledProviderValue = disabled.sorted().joined(separator: ",")
-    }
-
-    private func displayName(_ provider: String) -> String {
-        provider == "Claude" ? "Claude Code" : provider
-    }
-
-    private func providerSource(_ provider: AIProviderUsage) -> String {
-        let source: String = switch provider.provider {
-        case "Claude": "~/.claude/projects"
-        case "Codex": "~/.codex/sessions"
-        case "Gemini CLI": "~/.gemini"
-        case "Qwen Code": "~/.qwen"
-        case "Kimi Code": "~/.kimi-code"
-        case "DeepSeek Harness": "~/.dsh/sessions"
-        case "OpenCode": "~/.local/share/opencode"
-        default: "Local logs"
-        }
-        guard let lastUpdated = provider.lastUpdated else { return source }
-        return "\(source) · updated \(relativeAge(lastUpdated)) ago"
-    }
-
-    private func relativeAge(_ date: Date) -> String {
-        let seconds = max(0, Int(Date().timeIntervalSince(date)))
-        if seconds < 60 { return "\(seconds)s" }
-        if seconds < 3_600 { return "\(seconds / 60)m" }
-        if seconds < 86_400 { return "\(seconds / 3_600)h" }
-        return "\(seconds / 86_400)d"
-    }
-
-    private func providerColor(_ provider: String) -> Color {
-        switch provider {
-        case "Claude": Color(red: 204 / 255, green: 124 / 255, blue: 94 / 255)
-        case "Codex": Color(red: 73 / 255, green: 163 / 255, blue: 176 / 255)
-        case "Gemini CLI": Color(red: 171 / 255, green: 135 / 255, blue: 234 / 255)
-        case "Qwen Code": Color(red: 1, green: 106 / 255, blue: 0)
-        case "Kimi Code": Color(red: 254 / 255, green: 96 / 255, blue: 60 / 255)
-        case "DeepSeek Harness": Color(red: 0.32, green: 0.49, blue: 0.94)
-        case "OpenCode": Color(red: 59 / 255, green: 130 / 255, blue: 246 / 255)
-        case "GitHub Copilot": Color(red: 168 / 255, green: 85 / 255, blue: 247 / 255)
-        case "Grok": Color(red: 16 / 255, green: 163 / 255, blue: 127 / 255)
-        default: MoniPalette.foregroundSecondary
-        }
-    }
-
-    private func providerIconName(_ provider: String) -> String {
-        switch provider {
-        case "Claude": "ProviderIcon-claude"
-        case "Codex": "ProviderIcon-codex"
-        case "Gemini CLI": "ProviderIcon-gemini"
-        case "Qwen Code": "ProviderIcon-alibaba"
-        case "Kimi Code": "ProviderIcon-kimi"
-        case "DeepSeek Harness": "ProviderIcon-deepseek"
-        case "OpenCode": "ProviderIcon-opencode"
-        case "GitHub Copilot": "ProviderIcon-copilot"
-        case "Grok": "ProviderIcon-grok"
-        default: "ProviderIcon-codex"
         }
     }
 }
@@ -782,7 +558,6 @@ private struct GeneralSettings: View {
 
 private struct MenuBarSettings: View {
     @EnvironmentObject private var monitor: SystemMonitor
-    @EnvironmentObject private var aiUsage: AIUsageStore
     @AppStorage(PreferenceKey.compactMenuBar) private var compactMenuBar = false
     @AppStorage(PreferenceKey.menuBarMetric) private var metric = MenuBarMetric.cpu.rawValue
     @AppStorage(PreferenceKey.menuBarItems) private var itemValue = "cpu,memory"
@@ -909,7 +684,6 @@ private struct MenuBarSettings: View {
     private func previewTag(_ item: MenuBarMetric) -> String {
         switch item {
         case .temperature: "TMP"
-        case .aiUsage: "AI"
         default: String(item.title.prefix(3)).uppercased()
         }
     }
@@ -927,8 +701,6 @@ private struct MenuBarSettings: View {
         case .battery: monitor.snapshot.power.batteryPercent.map { "\(Int($0.rounded()))%" } ?? "—"
         case .temperature:
             monitor.snapshot.power.cpuTemperatureCelsius.map { "\(Int($0.rounded()))°" } ?? "—"
-        case .aiUsage:
-            MoniLocalization.compactNumber(todayAITokens)
         }
     }
 
@@ -940,12 +712,7 @@ private struct MenuBarSettings: View {
         case .disk: monitor.diskReadHistory
         case .battery: monitor.batteryHistory
         case .temperature: monitor.cpuTemperatureHistory
-        case .aiUsage: aiUsage.dashboardSummary.daily.map { Double($0.tokens) }
         }
-    }
-
-    private var todayAITokens: UInt64 {
-        aiUsage.dashboardSummary.daily.first { Calendar.current.isDateInToday($0.date) }?.tokens ?? 0
     }
 
     private func metricColor(_ item: MenuBarMetric) -> Color {
@@ -955,14 +722,12 @@ private struct MenuBarSettings: View {
         case .network: MoniPalette.cyan
         case .disk, .temperature: MoniPalette.orange
         case .battery: MoniPalette.green
-        case .aiUsage: MoniPalette.indigo
         }
     }
 }
 
 private struct ModuleSettings: View {
     @EnvironmentObject private var monitor: SystemMonitor
-    @EnvironmentObject private var aiUsage: AIUsageStore
     @AppStorage(PreferenceKey.showHost) private var showHost = true
     @AppStorage(PreferenceKey.showCPU) private var showCPU = true
     @AppStorage(PreferenceKey.showMemory) private var showMemory = true
@@ -971,7 +736,6 @@ private struct ModuleSettings: View {
     @AppStorage(PreferenceKey.showStorage) private var showStorage = true
     @AppStorage(PreferenceKey.showProcesses) private var showProcesses = true
     @AppStorage(PreferenceKey.showPower) private var showPower = true
-    @AppStorage(PreferenceKey.showAI) private var showAI = true
     @AppStorage(PreferenceKey.showDocker) private var showDocker = true
     @AppStorage(PreferenceKey.summaryGridDensity) private var gridDensityValue = SummaryGridDensity.comfortable.rawValue
 
@@ -1028,12 +792,6 @@ private struct ModuleSettings: View {
                             color: MoniPalette.yellow,
                             note: count(snapshot.power.temperatureSensors.count, singular: "probe"),
                             isOn: $showPower
-                        )
-                        moduleRow(
-                            "AI Usage",
-                            color: MoniPalette.indigo,
-                            note: count(aiUsage.summary.providers.count, singular: "account"),
-                            isOn: $showAI
                         )
                         moduleRow(
                             "Docker",

@@ -11,7 +11,6 @@ import SwiftUI
 @main
 struct MoniApp: App {
     @StateObject private var monitor = SystemMonitor()
-    @StateObject private var aiUsage = AIUsageStore()
     @StateObject private var updates = UpdateController()
     @AppStorage(PreferenceKey.appLanguage) private var appLanguage = AppLanguage.english.rawValue
 
@@ -19,7 +18,6 @@ struct MoniApp: App {
         MenuBarExtra {
             ContentView()
                 .environmentObject(monitor)
-                .environmentObject(aiUsage)
                 .environmentObject(updates)
                 .background(
                     MenuBarWindowPositioner { isVisible in
@@ -27,7 +25,7 @@ struct MoniApp: App {
                     }
                 )
         } label: {
-            MenuBarStatusLabel(monitor: monitor, aiUsage: aiUsage)
+            MenuBarStatusLabel(monitor: monitor)
         }
         .menuBarExtraStyle(.window)
         .commands {
@@ -38,10 +36,6 @@ struct MoniApp: App {
                 Button(MoniLocalization.string("Refresh", language: selectedLanguage)) {
                     monitor.refresh(forceSlowMetrics: true)
                     monitor.loadNetworkExternalDetailsIfNeeded(force: true)
-                    aiUsage.refreshCurrent(
-                        includeQuotas: true,
-                        allowKeychainPrompt: true
-                    )
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }
@@ -55,7 +49,6 @@ struct MoniApp: App {
 
 private struct MenuBarStatusLabel: View {
     @ObservedObject var monitor: SystemMonitor
-    @ObservedObject var aiUsage: AIUsageStore
     @AppStorage(PreferenceKey.compactMenuBar) private var compactMenuBar = false
     @AppStorage(PreferenceKey.menuBarMetric) private var menuBarMetric = MenuBarMetric.cpu.rawValue
     @AppStorage(PreferenceKey.menuBarItems) private var menuBarItems = "cpu,memory"
@@ -70,12 +63,6 @@ private struct MenuBarStatusLabel: View {
             .accessibilityLabel(accessibilityLabel)
             .moniAnimation(value: menuBarItems)
             .moniAnimation(value: menuBarDisplayStyle)
-            .onAppear {
-                loadMenuBarAIIfNeeded()
-            }
-            .onChange(of: menuBarItems) {
-                loadMenuBarAIIfNeeded()
-            }
     }
 
     private var selectedMetric: MenuBarMetric {
@@ -138,7 +125,6 @@ private struct MenuBarStatusLabel: View {
     private func menuBarTag(_ metric: MenuBarMetric) -> String {
         switch metric {
         case .temperature: "TMP"
-        case .aiUsage: "AI"
         default: String(metric.title.prefix(3)).uppercased()
         }
     }
@@ -157,8 +143,6 @@ private struct MenuBarStatusLabel: View {
             return monitor.snapshot.power.batteryPercent.map { "\(Int($0.rounded()))%" } ?? "—"
         case .temperature:
             return monitor.snapshot.power.cpuTemperatureCelsius.map { "\(Int($0.rounded()))°" } ?? "—"
-        case .aiUsage:
-            return MoniLocalization.compactNumber(todayAITokens, language: selectedLanguage)
         }
     }
 
@@ -170,17 +154,7 @@ private struct MenuBarStatusLabel: View {
         case .disk: monitor.diskReadHistory
         case .battery: monitor.batteryHistory
         case .temperature: monitor.cpuTemperatureHistory
-        case .aiUsage: aiUsage.dashboardSummary.daily.map { Double($0.tokens) }
         }
-    }
-
-    private var todayAITokens: UInt64 {
-        aiUsage.dashboardSummary.daily.first { Calendar.current.isDateInToday($0.date) }?.tokens ?? 0
-    }
-
-    private func loadMenuBarAIIfNeeded() {
-        guard selectedMetrics.contains(.aiUsage) else { return }
-        aiUsage.loadDashboardIfNeeded()
     }
 
     private func rate(_ value: Double) -> String {

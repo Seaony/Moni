@@ -16,7 +16,7 @@ private enum StatusBarAction {
 }
 
 enum MonitorSection: String, CaseIterable, Identifiable {
-    case summary, host, cpu, memory, gpu, network, storage, processes, sensors, ai, docker, disks, settings
+    case summary, host, cpu, memory, gpu, network, storage, processes, sensors, docker, disks, settings
 
     var id: String { rawValue }
 
@@ -31,7 +31,6 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .storage: "Storage"
         case .processes: "Processes"
         case .sensors: "Power & Sensors"
-        case .ai: "AI Usage"
         case .docker: "Docker"
         case .disks: "Disk Browser"
         case .settings: "Settings"
@@ -50,7 +49,6 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .storage: "internaldrive"
         case .processes: "list.bullet.rectangle"
         case .sensors: "bolt.batteryblock"
-        case .ai: "sparkles"
         case .docker: "cube"
         case .disks: "folder"
         case .settings: "gearshape"
@@ -67,7 +65,6 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .storage: MoniPalette.orange
         case .processes: MoniPalette.purple
         case .sensors: MoniPalette.yellow
-        case .ai: MoniPalette.indigo
         case .disks, .settings: MoniPalette.foregroundTertiary
         }
     }
@@ -75,7 +72,6 @@ enum MonitorSection: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var monitor: SystemMonitor
-    @EnvironmentObject private var aiUsage: AIUsageStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: MonitorSection = .summary
     @State private var hoveredSection: MonitorSection?
@@ -114,11 +110,6 @@ struct ContentView: View {
                             )
                         } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
                             SecondaryDetailView(section: selection, selection: animatedSelection)
-                        } else if selection == .ai {
-                            AIUsageView {
-                                settingsSection = .aiUsage
-                                select(.settings)
-                            }
                         } else if selection == .settings {
                             SettingsView(section: $settingsSection)
                         } else {
@@ -309,10 +300,6 @@ struct ContentView: View {
                 statusBarButton("Refresh", shortcut: "⌘R", action: .refresh) {
                     monitor.refresh(forceSlowMetrics: true)
                     monitor.loadNetworkExternalDetailsIfNeeded(force: true)
-                    aiUsage.refreshCurrent(
-                        includeQuotas: true,
-                        allowKeychainPrompt: true
-                    )
                 }
                 statusBarButton("Settings", shortcut: "⌘,", action: .settings) {
                     settingsSection = .general
@@ -415,5 +402,4 @@ private struct ModulePlaceholder: View {
 #Preview {
     ContentView()
         .environmentObject(SystemMonitor())
-        .environmentObject(AIUsageStore())
 }

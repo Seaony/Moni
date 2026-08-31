@@ -181,91 +181,16 @@ nonisolated struct WidgetSystemSnapshot: Codable, Sendable {
     )
 }
 
-nonisolated struct WidgetAIProvider: Codable, Sendable {
-    struct Quota: Codable, Sendable {
-        let label: String
-        let remainingPercent: Double
-        let resetsAt: Date?
-    }
-
-    let name: String
-    let plan: String?
-    let totalTokens: UInt64
-    let estimatedCostUSD: Double?
-    let cacheHitPercent: Double?
-    let quotas: [Quota]
-}
-
-nonisolated struct WidgetAISnapshot: Codable, Sendable {
-    struct Day: Codable, Sendable {
-        let date: Date
-        let tokens: UInt64
-        let costUSD: Double
-    }
-
-    let date: Date
-    let totalTokens: UInt64
-    let estimatedCostUSD: Double?
-    let providers: [WidgetAIProvider]
-    let daily: [Day]
-
-    static let placeholder: WidgetAISnapshot = {
-        let now = Date.now
-        let providers = [
-            WidgetAIProvider(
-                name: "Claude",
-                plan: "Max",
-                totalTokens: 820_000_000,
-                estimatedCostUSD: 1_530,
-                cacheHitPercent: 98,
-                quotas: [.init(label: "Weekly", remainingPercent: 84, resetsAt: now.addingTimeInterval(2 * 86_400))]
-            ),
-            WidgetAIProvider(
-                name: "Codex",
-                plan: "Plus",
-                totalTokens: 82_900_000,
-                estimatedCostUSD: 321,
-                cacheHitPercent: 96,
-                quotas: [.init(label: "Weekly", remainingPercent: 97, resetsAt: now.addingTimeInterval(5 * 86_400))]
-            )
-        ]
-        let daily: [Day] = (0..<14).map { index in
-            let amount = index * index + 4
-            return Day(
-                date: now.addingTimeInterval(Double(index - 13) * 86_400),
-                tokens: UInt64(amount) * 1_000_000,
-                costUSD: Double(amount) * 0.42
-            )
-        }
-        return WidgetAISnapshot(
-            date: now,
-            totalTokens: 2_640_000_000,
-            estimatedCostUSD: 2_489,
-            providers: providers,
-            daily: daily
-        )
-    }()
-}
-
 nonisolated enum MoniWidgetStorage {
     static let appGroupIdentifier = "group.com.seaony.Moni"
     private static let systemFileName = "widget-system.json"
-    private static let aiFileName = "widget-ai.json"
 
     static func loadSystem() -> WidgetSystemSnapshot? {
         load(WidgetSystemSnapshot.self, fileName: systemFileName)
     }
 
-    static func loadAI() -> WidgetAISnapshot? {
-        load(WidgetAISnapshot.self, fileName: aiFileName)
-    }
-
     static func saveSystem(_ snapshot: WidgetSystemSnapshot) throws {
         try save(snapshot, fileName: systemFileName)
-    }
-
-    static func saveAI(_ snapshot: WidgetAISnapshot) throws {
-        try save(snapshot, fileName: aiFileName)
     }
 
     private static func load<Value: Decodable>(_ type: Value.Type, fileName: String) -> Value? {

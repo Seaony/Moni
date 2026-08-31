@@ -18,8 +18,6 @@ enum PreferenceKey {
     static let notificationAlerts = "notificationAlerts"
     static let alertSounds = "alertSounds"
     static let repeatAlerts = "repeatAlerts"
-    static let aiUsageRange = "aiUsageRange"
-    static let disabledAIProviders = "disabledAIProviders"
     static let summaryCardLayout = "summaryCardLayout"
     static let summaryGridDensity = "summaryGridDensity"
     static let storageFolderCache = "storageFolderCache"
@@ -33,7 +31,6 @@ enum PreferenceKey {
     static let showStorage = "showStorage"
     static let showProcesses = "showProcesses"
     static let showPower = "showPower"
-    static let showAI = "showAI"
     static let showDocker = "showDocker"
 }
 
@@ -68,7 +65,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 }
 
 enum MenuBarMetric: String, CaseIterable, Identifiable {
-    case cpu, memory, network, disk, battery, temperature, aiUsage
+    case cpu, memory, network, disk, battery, temperature
 
     var id: String { rawValue }
 
@@ -80,7 +77,6 @@ enum MenuBarMetric: String, CaseIterable, Identifiable {
         case .disk: "Disk"
         case .battery: "Battery"
         case .temperature: "Temp"
-        case .aiUsage: "AI Usage"
         }
         return MoniLocalization.string(key)
     }
@@ -93,7 +89,6 @@ enum MenuBarMetric: String, CaseIterable, Identifiable {
         case .disk: "internaldrive"
         case .battery: "battery.75percent"
         case .temperature: "thermometer.medium"
-        case .aiUsage: "sparkles"
         }
     }
 }

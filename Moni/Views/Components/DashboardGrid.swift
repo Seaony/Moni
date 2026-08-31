@@ -1,12 +1,12 @@
 import SwiftUI
 
 enum DashboardCardID: String, CaseIterable, Codable, Hashable, Identifiable {
-    case host, cpu, memory, gpu, network, storage, processes, docker, power, aiUsage
+    case host, cpu, memory, gpu, network, storage, processes, docker, power
 
     var id: String { rawValue }
 
     var defaultSize: DashboardCardSize {
-        self == .aiUsage ? DashboardCardSize(columns: 3, rows: 1) : .compact
+        .compact
     }
 
     var limits: DashboardCardLimits {
@@ -47,12 +47,9 @@ struct DashboardCardLayout: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let storedVersion = try container.decodeIfPresent(Int.self, forKey: .version) ?? 0
-        sizes = try container.decodeIfPresent([String: DashboardCardSize].self, forKey: .sizes) ?? [:]
+        sizes = (try container.decodeIfPresent([String: DashboardCardSize].self, forKey: .sizes) ?? [:])
+            .filter { DashboardCardID(rawValue: $0.key) != nil }
         order = try container.decodeIfPresent([String].self, forKey: .order) ?? []
-        if storedVersion < Self.currentVersion {
-            sizes.removeValue(forKey: DashboardCardID.aiUsage.rawValue)
-        }
         version = Self.currentVersion
     }
 

@@ -163,44 +163,17 @@
 
 官方依据：[Docker contexts](https://docs.docker.com/engine/manage-resources/contexts/)、[Engine API](https://docs.docker.com/reference/api/engine/)、[Engine API v1.40](https://docs.docker.com/reference/api/engine/version/v1.40/)。
 
-## 10. 模型用量、费用与额度
-
-| 数据 | 当前来源 | 评级 | 核对结论 |
-| --- | --- | --- | --- |
-| Codex tokens/input/output/cache/reasoning/requests/sessions/model | `~/.codex/sessions` 与 archived JSONL 增量解析 | E | 本地产品日志，不是公开 API；已有文件签名缓存、增量读取、分支前缀去重。 |
-| Claude Code 同类字段 | `~/.claude` JSONL 增量解析 | E | 本地产品日志；已有事件 reconciliation 与持久缓存。 |
-| Qwen Code 同类字段 | `~/.qwen/usage` 与 `usage_record.jsonl` | E | 以 request ID/session ID 去重；日志格式可能变化。 |
-| Gemini CLI 同类字段 | Gemini/Antigravity 本地 session 文件 | E | 本地格式，允许无法解析的记录成为 unpriced。 |
-| DeepSeek Harness 同类字段 | 本地 usage 日志 | E | 本地格式，按稳定 ID 去重。 |
-| OpenCode/Kimi 同类字段 | 本地数据库、消息或 wire 日志 | E | 本地格式，不假定每条记录都包含完整 token。 |
-| 今日/30 天/90 天/全部总 token | 对选定本地日期区间汇总 | D | 30 天含今天共 30 个自然日；柱状图会补齐没有记录的日期为 0。 |
-| 每日 provider breakdown | 同一天按 provider 聚合 | D | tooltip 使用真实来源集合，不写死 Claude/Codex。 |
-| Cache hit % | cache-read / (input + cache-read + cache-write) | D | 是 Moni 统一口径，不等同各厂商账单页面可能采用的口径。 |
-| Priced entries | 有价格映射的请求数 / 总请求数 | D | 未知模型不会用相近模型价格猜测。 |
-| 费用估算 | 本地 token × 官方 API list price | D | 不是订阅发票；长上下文、缓存读写按公开规则计算。 |
-| OpenAI 模型价格 | OpenAI 官方 model/pricing 文档 | 提供商官方 | GPT-5.6 Sol/Terra/Luna 与公开长上下文倍率已核对。 |
-| Claude 模型价格 | Anthropic 官方 pricing 文档 | 提供商官方 | 输入、输出及 5m/1h cache 写入倍率已核对。 |
-| Gemini 模型价格 | Google Gemini API 官方 pricing | 提供商官方 | standard 非 batch 价格已核对。 |
-| DeepSeek 模型价格 | DeepSeek 官方 pricing | 提供商官方 | 当前正式价格仍是现有基础价；官方只预告未来 peak/off-peak，因此没有提前套用尚未生效的价格。 |
-| Qwen 模型价格 | Alibaba Cloud Singapore / International list price | 提供商官方 | 本次改为按单次输入规模分档；缓存命中按官方 implicit cache 的 20% 输入价。没有套用临时折扣。 |
-| Codex plan、5-hour/weekly 使用率和重置时间 | `chatgpt.com/backend-api/wham/usage` | F | ChatGPT/Codex 订阅没有公开等价开发者 API；失败时保留近期缓存，不显示虚构 100%。 |
-| Claude plan、5-hour/weekly/scoped 使用率和重置时间 | `api.anthropic.com/api/oauth/usage` | F | Claude Code OAuth 内部接口，不属于公开 API；允许字段缺失。 |
-| 预估 weekly 美元额度 | 当前 quota window 内本地 API 等价成本 / 已用比例 | D | 是“按本地日志与 list price 推导的等价额度”，不是厂商公布的美元上限。 |
-
-官方依据：[OpenAI models](https://developers.openai.com/api/docs/models)、[GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)、[Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing)、[Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)、[Alibaba Cloud model pricing](https://www.alibabacloud.com/help/en/model-studio/model-pricing)、[Alibaba Cloud context cache](https://www.alibabacloud.com/help/en/model-studio/context-cache)、[DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing/)。
-
-## 11. 菜单栏、小组件、告警与图表
+## 10. 菜单栏、小组件、告警与图表
 
 | 数据 | 当前来源 | 评级 | 核对结论 |
 | --- | --- | --- | --- |
 | 菜单栏 CPU/Memory/Network/Disk/Battery/Temp | 当前 `SystemSnapshot` 与对应历史 | D | 不另起采样器；多选只改变渲染。 |
-| 菜单栏模型用量 | 30 天 dashboard cache | D/E | 不在每个系统 tick 扫描日志。 |
 | 首页及详情图表 | recent/minute history | D | 1m 使用快速历史，1h/24h 使用分钟历史；tooltip 是同一个样本值。 |
 | 小组件全部系统数值 | 每 15 秒落盘一次的 snapshot | D | 避免每 0.3–0.7 秒写共享容器。 |
 | 小组件 timeline | 最快 5 分钟请求一次 reload | WidgetKit 策略 | 避免耗尽 WidgetKit 刷新预算。 |
 | CPU/Memory/Disk/Temperature 告警 | snapshot 与用户阈值比较 | D | 小组件和通知复用相同阈值。 |
 
-## 12. 采样与性能核对
+## 11. 采样与性能核对
 
 | 工作 | 面板打开 | 面板隐藏 | 结论 |
 | --- | --- | --- | --- |
@@ -211,23 +184,20 @@
 | Docker | 15 秒 | 60 秒 | curl 超时 1 秒；请求只读。 |
 | 最大目录 | 首次需要时，缓存 6 小时 | 同左 | `taskpolicy -b` + `nice 20`，避免抢占前台。 |
 | 公网 IP/IP lookup | 按需，成功后缓存 10 分钟 | 同左 | 超时 5 秒，不进入主采样循环。 |
-| 模型 quota | 需要时，缓存 5 分钟 | 同左 | 无重置时间的有效旧额度最多保留 30 分钟。 |
 | 小组件快照 | 15 秒落盘 | 15 秒落盘 | timeline reload 最快 5 分钟。 |
 
 没有发现主采样重入：`SystemMonitor.refreshTask` 在上一轮完成前会拒绝新一轮，因此慢采样不会并发堆积。
 
-## 13. 本次已处理与仍需明确授权的项目
+## 12. 本次已处理与仍需明确授权的项目
 
 已处理：
 
 1. 屏幕像素分辨率与刷新率改用 Core Graphics 公开 API。
 2. Docker 容器列表改用带版本的 `/v1.40/containers/json`。
 3. 小组件内存阈值由错误的 `Pressure` 改为 `Usage/Status`。
-4. Qwen International 价格改为官方分档价格，并依据每次请求输入规模选档。
 
 保留但明确标注限制：
 
 1. GPU 全系统利用率/分配内存、温度、风扇、功耗和 NVMe 健康数据没有语义相同的公开 API，不能为了“公开”而换成错误含义的数据。
-2. Codex 与 Claude 订阅额度没有公开开发者 API；现有内部接口只能作为可失败的增强数据源。
-3. 网络总流量是所有非 loopback 接口合计。若要改成“主接口/WAN 口径”，会改变现有数据定义，需要单独确定产品口径。
-4. Docker 自定义 context 尚未覆盖。完整支持需要引入 context 解析或 Docker SDK，属于新增能力，不在本次最小准确性修复中。
+2. 网络总流量是所有非 loopback 接口合计。若要改成“主接口/WAN 口径”，会改变现有数据定义，需要单独确定产品口径。
+3. Docker 自定义 context 尚未覆盖。完整支持需要引入 context 解析或 Docker SDK，属于新增能力，不在本次最小准确性修复中。
