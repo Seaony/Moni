@@ -181,6 +181,11 @@ nonisolated enum MaintenanceService {
             "terminal", .storage, policy: .requiresInactiveApplications
         ),
         task(
+            "xcode_unavailable_simulators", "Unavailable Simulators",
+            "Remove simulator devices unsupported by the selected Xcode using simctl.",
+            "rectangle.stack.badge.minus", .storage
+        ),
+        task(
             "homebrew_cleanup", "Homebrew Cleanup",
             "Remove Homebrew downloads and stale versions older than 30 days without running autoremove.",
             "mug", .storage

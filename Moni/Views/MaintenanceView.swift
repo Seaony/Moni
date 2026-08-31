@@ -138,6 +138,10 @@ struct MaintenanceView: View {
         sizeBytes: 0,
         state: .unavailable
     )
+    @State private var xcodeSimulatorSnapshot = XcodeSimulatorMaintenanceSnapshot(
+        items: [],
+        state: .unavailable
+    )
     @State private var homebrewSnapshot = HomebrewMaintenanceSnapshot(
         cachePath: "",
         cacheSizeBytes: 0,
@@ -184,6 +188,7 @@ struct MaintenanceView: View {
     @State private var confirmsNodeToolCacheCleanup = false
     @State private var confirmsPythonPackageCacheCleanup = false
     @State private var confirmsGitHubCLICacheCleanup = false
+    @State private var confirmsXcodeSimulatorCleanup = false
     @State private var confirmsHomebrewCleanup = false
     @State private var resultMessage: String?
 
@@ -431,6 +436,19 @@ struct MaintenanceView: View {
                         isActionEnabled: githubCLICacheSnapshot.state == .ready
                     ) {
                         confirmsGitHubCLICacheCleanup = true
+                    }
+
+                    commandCard(
+                        title: "Unavailable Simulators",
+                        description: "Remove simulator devices unsupported by the selected Xcode using simctl.",
+                        symbol: "rectangle.stack.badge.minus",
+                        status: xcodeSimulatorStatus,
+                        buttonTitle: xcodeSimulatorButtonTitle,
+                        isAvailable: xcodeSimulatorSnapshot.state != .unavailable
+                            && xcodeSimulatorSnapshot.state != .failed,
+                        isActionEnabled: xcodeSimulatorSnapshot.state == .ready
+                    ) {
+                        confirmsXcodeSimulatorCleanup = true
                     }
 
                     commandCard(
@@ -967,6 +985,18 @@ struct MaintenanceView: View {
             ))
         }
         .confirmationDialog(
+            "Delete unavailable simulators?",
+            isPresented: $confirmsXcodeSimulatorCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Unavailable Simulators", role: .destructive) {
+                Task { await cleanUnavailableSimulators() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(xcodeSimulatorConfirmationMessage)
+        }
+        .confirmationDialog(
             "Clean Homebrew files?",
             isPresented: $confirmsHomebrewCleanup,
             titleVisibility: .visible
@@ -1138,7 +1168,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "29", MoniPalette.green)
+                catalogMetric("Available now", "30", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1685,6 +1715,54 @@ struct MaintenanceView: View {
         }
     }
 
+    private var xcodeSimulatorSize: UInt64 {
+        xcodeSimulatorSnapshot.items.reduce(UInt64(0)) { total, item in
+            let (sum, overflow) = total.addingReportingOverflow(item.sizeBytes)
+            return overflow ? UInt64.max : sum
+        }
+    }
+
+    private var xcodeSimulatorStatus: String {
+        switch xcodeSimulatorSnapshot.state {
+        case .ready:
+            MoniLocalization.format(
+                "%@ devices · %@",
+                xcodeSimulatorSnapshot.items.count.formatted(),
+                maintenanceBytes(xcodeSimulatorSize)
+            )
+        case .healthy: MoniLocalization.string("No unavailable simulators")
+        case .protected: MoniLocalization.string("Protected by whitelist")
+        case .unavailable: MoniLocalization.string("simctl unavailable")
+        case .failed: MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var xcodeSimulatorButtonTitle: String {
+        switch xcodeSimulatorSnapshot.state {
+        case .ready: MoniLocalization.string("Review Cleanup")
+        case .healthy: MoniLocalization.string("No action needed")
+        case .protected: MoniLocalization.string("Protected")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
+    private var xcodeSimulatorConfirmationMessage: String {
+        let names = xcodeSimulatorSnapshot.items.prefix(5).map(\.name).joined(separator: ", ")
+        var message = MoniLocalization.format(
+            "simctl will delete %@ unavailable simulator devices using %@. Data currently uses %@.",
+            xcodeSimulatorSnapshot.items.count.formatted(),
+            names,
+            maintenanceBytes(xcodeSimulatorSize)
+        )
+        if xcodeSimulatorSnapshot.items.count > 5 {
+            message += " " + MoniLocalization.format(
+                "And %@ more devices.",
+                (xcodeSimulatorSnapshot.items.count - 5).formatted()
+            )
+        }
+        return message
+    }
+
     private var homebrewStatus: String {
         switch homebrewSnapshot.state {
         case .ready:
@@ -1987,15 +2065,16 @@ struct MaintenanceView: View {
         async let nodeToolCacheResult = NodeToolCacheMaintenanceService.scan()
         async let pythonPackageCacheResult = PythonPackageCacheMaintenanceService.scan()
         async let githubCLICacheResult = GitHubCLICacheMaintenanceService.scan()
+        async let xcodeSimulatorResult = XcodeSimulatorMaintenanceService.scan()
         async let homebrewResult = HomebrewMaintenanceService.scan()
         async let timeMachineSnapshotResult = TimeMachineSnapshotService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, npmCache, nodeToolCaches, pythonPackageCaches, githubCLICache, homebrew, timeMachineSnapshots) = await (
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance, tartCache, condaCache, pnpmStores, npmCache, nodeToolCaches, pythonPackageCaches, githubCLICache, xcodeSimulator, homebrew, timeMachineSnapshots) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
             spotlightOptimizationResult, periodicMaintenanceResult, tartCacheResult, condaCacheResult,
             pnpmStoreResult, npmCacheResult, nodeToolCacheResult, pythonPackageCacheResult,
-            githubCLICacheResult, homebrewResult,
+            githubCLICacheResult, xcodeSimulatorResult, homebrewResult,
             timeMachineSnapshotResult
         )
         guard !Task.isCancelled else { return }
@@ -2023,6 +2102,7 @@ struct MaintenanceView: View {
         nodeToolCacheSnapshot = nodeToolCaches
         pythonPackageCacheSnapshot = pythonPackageCaches
         githubCLICacheSnapshot = githubCLICache
+        xcodeSimulatorSnapshot = xcodeSimulator
         homebrewSnapshot = homebrew
         timeMachineSnapshotReport = timeMachineSnapshots
         isScanning = false
@@ -2638,6 +2718,34 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("GitHub CLI cache cleanup is unavailable because gh config clear-cache is not supported.")
         case .failed:
             resultMessage = MoniLocalization.string("GitHub CLI cache cleanup did not complete successfully.")
+        }
+    }
+
+    private func cleanUnavailableSimulators() async {
+        isRunning = true
+        let outcome = await XcodeSimulatorMaintenanceService.deleteUnavailable(
+            xcodeSimulatorSnapshot
+        )
+        xcodeSimulatorSnapshot = await XcodeSimulatorMaintenanceService.scan()
+        isRunning = false
+
+        switch outcome {
+        case let .cleaned(deviceCount, reclaimedBytes):
+            resultMessage = MoniLocalization.format(
+                "Deleted %@ unavailable simulators and reclaimed %@.",
+                deviceCount.formatted(),
+                maintenanceBytes(reclaimedBytes)
+            )
+        case .noAction:
+            resultMessage = MoniLocalization.string("No unavailable simulators needed cleanup.")
+        case .protected:
+            resultMessage = MoniLocalization.string("Unavailable simulator cleanup was skipped because a device data directory is protected by the whitelist.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Unavailable simulator cleanup is unavailable because simctl could not be resolved for the selected Xcode.")
+        case .changed:
+            resultMessage = MoniLocalization.string("Unavailable simulator cleanup was cancelled because the device list changed. Review the updated list and try again.")
+        case .failed:
+            resultMessage = MoniLocalization.string("Unavailable simulator cleanup did not complete successfully.")
         }
     }
 }
