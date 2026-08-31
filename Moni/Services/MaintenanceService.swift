@@ -144,8 +144,8 @@ nonisolated enum MaintenanceService {
             "shippingbox", .storage, policy: .requiresInactiveApplications
         ),
         task(
-            "time_machine_snapshots", "Time Machine Snapshots",
-            "Report local Time Machine snapshots and incomplete backups without deleting them.",
+            "time_machine_snapshots", "Time Machine",
+            "Report local snapshots and review incomplete backups for removal with tmutil.",
             "clock.arrow.trianglehead.counterclockwise.rotate.90", .storage
         ),
         task(

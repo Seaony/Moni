@@ -28,6 +28,19 @@ nonisolated struct TimeMachineIncompleteBackupItem: Identifiable, Sendable {
     var id: String { path }
 }
 
+nonisolated struct TimeMachineBackupCleanupPlan: Identifiable, Sendable {
+    let cleanupPlan: CleanupPlan
+    let items: [TimeMachineIncompleteBackupItem]
+
+    var id: UUID { cleanupPlan.id }
+}
+
+nonisolated struct TimeMachineBackupCleanupResult: Sendable {
+    let removedPaths: [String]
+    let rejectedItems: [CleanupRejectedItem]
+    let failedPaths: [String]
+}
+
 nonisolated enum TimeMachineSnapshotService {
     private struct CommandOutput: Sendable {
         let status: Int32
@@ -41,11 +54,40 @@ nonisolated enum TimeMachineSnapshotService {
     private static let minimumIncompleteBackupAge: TimeInterval = 48 * 60 * 60
     private static let incompleteBackupScanTimeout: TimeInterval = 60
     private static let incompleteBackupSizeTimeout: TimeInterval = 30
+    private static let cleanupPlanLifetime: TimeInterval = 5 * 60
 
     static func scan() async -> TimeMachineSnapshotReport {
         await Task.detached(priority: .utility) {
             scanSynchronously()
         }.value
+    }
+
+    static func previewCleanup(
+        items: [TimeMachineIncompleteBackupItem]
+    ) async -> TimeMachineBackupCleanupPlan {
+        let plan = await CleanupService.shared.preview(
+            paths: items.map(\.path),
+            scope: .maintenance
+        )
+        return TimeMachineBackupCleanupPlan(cleanupPlan: plan, items: items)
+    }
+
+    static func executeCleanup(
+        _ plan: TimeMachineBackupCleanupPlan
+    ) async -> TimeMachineBackupCleanupResult {
+        let result = await Task.detached(priority: .userInitiated) {
+            executeCleanupSynchronously(plan)
+        }.value
+        let previewRejectedPaths = Set(plan.cleanupPlan.rejectedItems.map(\.path))
+        await CleanupService.shared.recordDeletionResult(
+            removedPaths: result.removedPaths,
+            rejectedItems: result.rejectedItems.filter {
+                !previewRejectedPaths.contains($0.path)
+            },
+            failedPaths: result.failedPaths,
+            scope: .maintenance
+        )
+        return result
     }
 
     private static func scanSynchronously() -> TimeMachineSnapshotReport {
@@ -120,6 +162,116 @@ nonisolated enum TimeMachineSnapshotService {
             unreadableItemCount: 0
         )
     }
+
+    private static func executeCleanupSynchronously(
+        _ plan: TimeMachineBackupCleanupPlan
+    ) -> TimeMachineBackupCleanupResult {
+        guard plan.cleanupPlan.scope == .maintenance else {
+            return TimeMachineBackupCleanupResult(
+                removedPaths: [],
+                rejectedItems: plan.cleanupPlan.rejectedItems + plan.cleanupPlan.candidates.map {
+                    CleanupRejectedItem(path: $0.path, reason: .protected)
+                },
+                failedPaths: []
+            )
+        }
+        guard Date().timeIntervalSince(plan.cleanupPlan.createdAt) <= cleanupPlanLifetime else {
+            return TimeMachineBackupCleanupResult(
+                removedPaths: [],
+                rejectedItems: plan.cleanupPlan.rejectedItems + plan.cleanupPlan.candidates.map {
+                    CleanupRejectedItem(path: $0.path, reason: .expired)
+                },
+                failedPaths: []
+            )
+        }
+
+        let itemsByPath = Dictionary(uniqueKeysWithValues: plan.items.map { ($0.path, $0) })
+        let referenceDate = Date()
+        var eligible: [(candidate: CleanupCandidate, item: TimeMachineIncompleteBackupItem)] = []
+        var rejectedItems = plan.cleanupPlan.rejectedItems
+        for candidate in plan.cleanupPlan.candidates {
+            guard let item = itemsByPath[candidate.path],
+                  candidate.device == item.deviceID,
+                  candidate.inode == item.fileID,
+                  candidateIsStillEligible(
+                      at: URL(fileURLWithPath: candidate.path),
+                      expected: (
+                          deviceID: item.deviceID,
+                          fileID: item.fileID,
+                          modifiedDate: item.modifiedDate
+                      ),
+                      referenceDate: referenceDate
+                  ) else {
+                rejectedItems.append(CleanupRejectedItem(path: candidate.path, reason: .changed))
+                continue
+            }
+            eligible.append((candidate, item))
+        }
+        guard !eligible.isEmpty else {
+            return TimeMachineBackupCleanupResult(
+                removedPaths: [],
+                rejectedItems: rejectedItems,
+                failedPaths: []
+            )
+        }
+
+        var arguments = ["-e", privilegedDeleteScript]
+        for entry in eligible {
+            arguments.append(entry.candidate.path)
+            arguments.append(
+                "\(entry.item.deviceID):\(entry.item.fileID):\(Int64(entry.item.modifiedDate.timeIntervalSince1970))"
+            )
+        }
+        let execution = run("/usr/bin/osascript", arguments: arguments, timeout: 300)
+        let removedIndexes = Set(execution.output.split(whereSeparator: \.isNewline).compactMap { line -> Int? in
+            guard line.hasPrefix("REMOVED:"),
+                  let index = Int(line.dropFirst("REMOVED:".count)) else {
+                return nil
+            }
+            return index
+        })
+        var removedPaths: [String] = []
+        var failedPaths: [String] = []
+        for (offset, entry) in eligible.enumerated() {
+            if removedIndexes.contains(offset + 1), !pathExists(at: entry.candidate.path) {
+                removedPaths.append(entry.candidate.path)
+            } else {
+                failedPaths.append(entry.candidate.path)
+            }
+        }
+        return TimeMachineBackupCleanupResult(
+            removedPaths: removedPaths,
+            rejectedItems: rejectedItems,
+            failedPaths: failedPaths
+        )
+    }
+
+    private static func pathExists(at path: String) -> Bool {
+        var value = stat()
+        return path.withCString { lstat($0, &value) } == 0
+    }
+
+    private static let privilegedDeleteScript = #"""
+    on run argv
+        set commandText to "tm_idle() { status=$(/usr/bin/tmutil status 2>/dev/null) || return 1; printf '%s\\n' \"$status\" | /usr/bin/grep -Eq '(^|[[:space:]])(\"Running\"|Running)[[:space:]]*=' || return 1; printf '%s\\n' \"$status\" | /usr/bin/grep -Eq '(^|[[:space:]])(\"Running\"|Running)[[:space:]]*=[[:space:]]*1([[:space:]]*;|$)' && return 1; return 0; }; "
+        set commandText to commandText & "tm_candidate_path() { case \"$1\" in /Volumes/*/Backups.backupdb/*) return 0 ;; *) return 1 ;; esac; }; "
+        set argumentCount to count of argv
+        set candidateIndex to 0
+        repeat with argumentIndex from 1 to argumentCount by 2
+            set candidateIndex to candidateIndex + 1
+            set sourcePath to item argumentIndex of argv
+            set expectedIdentity to item (argumentIndex + 1) of argv
+            set commandText to commandText & "( source_path=" & quoted form of sourcePath & "; expected_identity=" & quoted form of expectedIdentity & "; "
+            set commandText to commandText & "tm_candidate_path \"$source_path\" && [ -d \"$source_path\" ] && [ ! -L \"$source_path\" ] && "
+            set commandText to commandText & "case \"${source_path##*/}\" in *.inProgress|*.inprogress) true ;; *) false ;; esac && "
+            set commandText to commandText & "tm_idle && current_identity=$(/usr/bin/stat -f '%d:%i:%m' \"$source_path\") && [ \"$current_identity\" = \"$expected_identity\" ] && "
+            set commandText to commandText & "mtime=${current_identity##*:} && now=$(/bin/date +%s) && [ \"$now\" -ge \"$mtime\" ] && [ $((now - mtime)) -ge 172800 ] && "
+            set commandText to commandText & "tm_idle && final_identity=$(/usr/bin/stat -f '%d:%i:%m' \"$source_path\") && [ \"$final_identity\" = \"$expected_identity\" ] && "
+            set commandText to commandText & "/usr/bin/tmutil delete \"$source_path\" ) && printf 'REMOVED:%s\\n' " & candidateIndex & " || printf 'FAILED:%s\\n' " & candidateIndex & "; "
+        end repeat
+        do shell script commandText with administrator privileges
+    end run
+    """#
 
     private static func scanIncompleteBackups(referenceDate: Date) -> (
         items: [TimeMachineIncompleteBackupItem],

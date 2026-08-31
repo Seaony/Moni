@@ -116,6 +116,7 @@ struct MaintenanceView: View {
         incompleteBackups: [],
         unreadableItemCount: 0
     )
+    @State private var pendingTimeMachineCleanup: TimeMachineBackupCleanupPlan?
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -293,15 +294,17 @@ struct MaintenanceView: View {
                     }
 
                     commandCard(
-                        title: "Time Machine Snapshots",
-                        description: "Report local Time Machine snapshots and incomplete backups without deleting them.",
+                        title: "Time Machine",
+                        description: "Report local snapshots and review incomplete backups for removal with tmutil.",
                         symbol: "clock.arrow.trianglehead.counterclockwise.rotate.90",
                         status: timeMachineSnapshotStatus,
-                        buttonTitle: "Report only",
+                        buttonTitle: timeMachineCleanupButtonTitle,
                         isAvailable: timeMachineSnapshotReport.state != .unavailable
                             && timeMachineSnapshotReport.state != .failed,
-                        isActionEnabled: false
-                    ) {}
+                        isActionEnabled: !timeMachineSnapshotReport.incompleteBackups.isEmpty
+                    ) {
+                        Task { await prepareTimeMachineCleanup() }
+                    }
 
                     commandCard(
                         title: "LaunchServices Repair",
@@ -484,6 +487,16 @@ struct MaintenanceView: View {
             LoginItemsAuditView(
                 items: review.items,
                 onClose: { loginItemsReview = nil }
+            )
+        }
+        .sheet(item: $pendingTimeMachineCleanup) { plan in
+            TimeMachineBackupCleanupConfirmationView(
+                plan: plan,
+                onCancel: { pendingTimeMachineCleanup = nil },
+                onConfirm: {
+                    pendingTimeMachineCleanup = nil
+                    Task { await executeTimeMachineCleanup(plan) }
+                }
             )
         }
         .alert("Maintenance result", isPresented: resultMessageBinding) {
@@ -1205,6 +1218,67 @@ struct MaintenanceView: View {
         case .failed:
             return MoniLocalization.string("Inspection failed")
         }
+    }
+
+    private var timeMachineCleanupButtonTitle: String {
+        if !timeMachineSnapshotReport.incompleteBackups.isEmpty {
+            return MoniLocalization.string("Review Cleanup")
+        }
+        switch timeMachineSnapshotReport.state {
+        case .ready:
+            return MoniLocalization.string("Report only")
+        case .none:
+            return MoniLocalization.string("No action needed")
+        case .busy:
+            return MoniLocalization.string("Backup in progress")
+        case .notConfigured:
+            return MoniLocalization.string("Not configured")
+        case .unavailable, .failed:
+            return MoniLocalization.string("Unavailable")
+        }
+    }
+
+    private func prepareTimeMachineCleanup() async {
+        let plan = await TimeMachineSnapshotService.previewCleanup(
+            items: timeMachineSnapshotReport.incompleteBackups
+        )
+        if plan.cleanupPlan.candidates.isEmpty {
+            resultMessage = MoniLocalization.string("No incomplete backups can be removed.")
+        } else {
+            pendingTimeMachineCleanup = plan
+        }
+    }
+
+    private func executeTimeMachineCleanup(_ plan: TimeMachineBackupCleanupPlan) async {
+        isRunning = true
+        let result = await TimeMachineSnapshotService.executeCleanup(plan)
+        await scan()
+        isRunning = false
+        monitor.refresh(forceSlowMetrics: true)
+
+        var parts: [String] = []
+        if !result.removedPaths.isEmpty {
+            parts.append(MoniLocalization.format(
+                "Removed %@ incomplete backups.",
+                result.removedPaths.count.formatted()
+            ))
+        }
+        if !result.rejectedItems.isEmpty {
+            parts.append(MoniLocalization.format(
+                "%@ backups were protected or changed.",
+                result.rejectedItems.count.formatted()
+            ))
+        }
+        if !result.failedPaths.isEmpty {
+            parts.append(MoniLocalization.format(
+                "%@ backups could not be removed.",
+                result.failedPaths.count.formatted()
+            ))
+        }
+        if parts.isEmpty {
+            parts.append(MoniLocalization.string("No incomplete backups needed removal."))
+        }
+        resultMessage = parts.joined(separator: " ")
     }
 
     private func scan() async {
@@ -2000,6 +2074,101 @@ private struct LegacyOverrideConfirmationView: View {
         }
         .padding(20)
         .frame(width: 580)
+    }
+}
+
+private struct TimeMachineBackupCleanupConfirmationView: View {
+    let plan: TimeMachineBackupCleanupPlan
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Remove incomplete backups?")
+                    .font(.system(size: 18, weight: .bold))
+                Text("Time Machine will permanently remove only the verified incomplete backups below. Local snapshots are report-only.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(readyItems) { item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(item.name)
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                Text(maintenanceBytes(item.sizeBytes))
+                                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(MoniPalette.orange)
+                            }
+                            Text(item.path)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                            Text(relativeDate(item.modifiedDate))
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MoniPalette.insetSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                }
+                .padding(1)
+            }
+            .frame(maxHeight: 300)
+
+            Label(
+                "macOS may request administrator approval. Every backup is rechecked immediately before tmutil receives its path.",
+                systemImage: "checkmark.shield"
+            )
+            .font(.system(size: 11.5))
+            .foregroundStyle(MoniPalette.foregroundSecondary)
+
+            HStack {
+                Text(MoniLocalization.format(
+                    "%@ backups · %@",
+                    readyItems.count.formatted(),
+                    maintenanceBytes(totalSize)
+                ))
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(MoniPalette.foregroundSecondary)
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Remove Backups", role: .destructive, action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(readyItems.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 640)
+    }
+
+    private var readyItems: [TimeMachineIncompleteBackupItem] {
+        let paths = Set(plan.cleanupPlan.candidates.map(\.path))
+        return plan.items.filter { paths.contains($0.path) }
+    }
+
+    private var totalSize: UInt64 {
+        readyItems.reduce(0) { partial, item in
+            let (sum, overflow) = partial.addingReportingOverflow(item.sizeBytes)
+            return overflow ? UInt64.max : sum
+        }
+    }
+
+    private func relativeDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = MoniLocalization.currentLanguage.locale
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
 
