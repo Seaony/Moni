@@ -1160,6 +1160,14 @@ private struct DiskBrowserView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+            .contextMenu {
+                Button(MoniLocalization.string("Open")) {
+                    NSWorkspace.shared.open(item.url)
+                }
+                Button(MoniLocalization.string("Show in Finder")) {
+                    NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                }
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -1207,6 +1215,14 @@ private struct DiskBrowserView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+            .contextMenu {
+                Button(MoniLocalization.string("Open")) {
+                    NSWorkspace.shared.open(url)
+                }
+                Button(MoniLocalization.string("Show in Finder")) {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
