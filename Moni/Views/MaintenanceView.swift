@@ -101,6 +101,10 @@ struct MaintenanceView: View {
     @State private var networkStackState: NetworkStackState = .unavailable
     @State private var permissionRepairState: PermissionRepairState = .unavailable
     @State private var spotlightOptimizationState: SpotlightOptimizationState = .unavailable
+    @State private var periodicMaintenanceSnapshot = PeriodicMaintenanceSnapshot(
+        state: .unavailable,
+        ageDays: nil
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -118,6 +122,7 @@ struct MaintenanceView: View {
     @State private var confirmsNetworkStackRefresh = false
     @State private var confirmsPermissionRepair = false
     @State private var confirmsSpotlightOptimization = false
+    @State private var confirmsPeriodicMaintenance = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -246,6 +251,20 @@ struct MaintenanceView: View {
                         isActionEnabled: spotlightOptimizationState == .slow
                     ) {
                         confirmsSpotlightOptimization = true
+                    }
+
+                    commandCard(
+                        title: "Periodic Maintenance",
+                        description: "Run macOS daily, weekly, and monthly maintenance scripts when stale.",
+                        symbol: "calendar.badge.clock",
+                        status: periodicMaintenanceStatus,
+                        buttonTitle: periodicMaintenanceButtonTitle,
+                        isAvailable: periodicMaintenanceSnapshot.state != .unavailable
+                            && periodicMaintenanceSnapshot.state != .failed,
+                        isActionEnabled: periodicMaintenanceSnapshot.state == .stale
+                            || periodicMaintenanceSnapshot.state == .missingLog
+                    ) {
+                        confirmsPeriodicMaintenance = true
                     }
 
                     commandCard(
@@ -580,6 +599,18 @@ struct MaintenanceView: View {
         } message: {
             Text("Two consecutive searches exceeded the speed threshold. macOS will request administrator approval to rebuild the startup volume index; indexing continues in the background and may take 1–2 hours.")
         }
+        .confirmationDialog(
+            "Run periodic maintenance?",
+            isPresented: $confirmsPeriodicMaintenance,
+            titleVisibility: .visible
+        ) {
+            Button("Run Periodic Maintenance") {
+                Task { await runPeriodicMaintenance() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("macOS will request administrator approval to run the daily, weekly, and monthly maintenance scripts. Existing maintenance logs are retained.")
+        }
     }
 
     private var header: some View {
@@ -740,7 +771,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "20", MoniPalette.green)
+                catalogMetric("Available now", "21", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -1035,6 +1066,35 @@ struct MaintenanceView: View {
         spotlightOptimizationState != .unavailable && spotlightOptimizationState != .failed
     }
 
+    private var periodicMaintenanceStatus: String {
+        switch periodicMaintenanceSnapshot.state {
+        case .current:
+            if let ageDays = periodicMaintenanceSnapshot.ageDays {
+                return MoniLocalization.format("Current · %@d ago", ageDays.formatted())
+            }
+            return MoniLocalization.string("Current")
+        case .stale:
+            if let ageDays = periodicMaintenanceSnapshot.ageDays {
+                return MoniLocalization.format("Stale · %@d ago", ageDays.formatted())
+            }
+            return MoniLocalization.string("Maintenance is stale")
+        case .missingLog:
+            return MoniLocalization.string("Maintenance log missing")
+        case .unavailable:
+            return MoniLocalization.string("Unavailable on this macOS version")
+        case .failed:
+            return MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var periodicMaintenanceButtonTitle: String {
+        switch periodicMaintenanceSnapshot.state {
+        case .stale, .missingLog: MoniLocalization.string("Review Maintenance")
+        case .current: MoniLocalization.string("No action needed")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -1051,11 +1111,12 @@ struct MaintenanceView: View {
         async let networkStackResult = AdministratorMaintenanceService.scanNetworkStack()
         async let permissionRepairResult = AdministratorMaintenanceService.scanPermissionRepair()
         async let spotlightOptimizationResult = AdministratorMaintenanceService.scanSpotlightOptimization()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization) = await (
+        async let periodicMaintenanceResult = AdministratorMaintenanceService.scanPeriodicMaintenance()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack, permissionRepair, spotlightOptimization, periodicMaintenance) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
             systemMaintenanceResult, networkStackResult, permissionRepairResult,
-            spotlightOptimizationResult
+            spotlightOptimizationResult, periodicMaintenanceResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -1073,6 +1134,7 @@ struct MaintenanceView: View {
         networkStackState = networkStack
         permissionRepairState = permissionRepair
         spotlightOptimizationState = spotlightOptimization
+        periodicMaintenanceSnapshot = periodicMaintenance
         isScanning = false
     }
 
@@ -1420,6 +1482,26 @@ struct MaintenanceView: View {
             resultMessage = MoniLocalization.string("The Spotlight index rebuild started and will continue in the background.")
         case .notCompleted:
             resultMessage = MoniLocalization.string("Spotlight index rebuild was not started. Administrator approval may have been cancelled, or mdutil reported an error.")
+        }
+    }
+
+    private func runPeriodicMaintenance() async {
+        isRunning = true
+        let outcome = await AdministratorMaintenanceService.runPeriodicMaintenance()
+        periodicMaintenanceSnapshot = await AdministratorMaintenanceService.scanPeriodicMaintenance()
+        isRunning = false
+
+        switch outcome {
+        case .alreadyCurrent:
+            resultMessage = MoniLocalization.string("Periodic maintenance is already current.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Periodic maintenance is unavailable on this macOS version.")
+        case .inspectionFailed:
+            resultMessage = MoniLocalization.string("Periodic maintenance was skipped because the daily log could not be inspected.")
+        case .triggered:
+            resultMessage = MoniLocalization.string("Daily, weekly, and monthly maintenance scripts completed.")
+        case .notCompleted:
+            resultMessage = MoniLocalization.string("Periodic maintenance was not completed. Administrator approval may have been cancelled, or a system script reported an error.")
         }
     }
 }
