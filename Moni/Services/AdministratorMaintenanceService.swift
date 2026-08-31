@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 nonisolated enum SpotlightIndexStatus: Sendable {
     case enabled
@@ -37,6 +38,19 @@ nonisolated enum NetworkStackRefreshOutcome: Sendable {
     case applied(routeFlushed: Bool, arpFlushed: Bool)
 }
 
+nonisolated enum PermissionRepairState: Sendable {
+    case optimal
+    case needsRepair
+    case unavailable
+}
+
+nonisolated enum PermissionRepairOutcome: Sendable {
+    case alreadyOptimal
+    case unavailable
+    case repaired
+    case notCompleted
+}
+
 nonisolated enum AdministratorMaintenanceService {
     private struct CommandOutput: Sendable {
         let status: Int32
@@ -49,6 +63,7 @@ nonisolated enum AdministratorMaintenanceService {
     private static let routeExecutable = "/sbin/route"
     private static let dnsCacheExecutable = "/usr/bin/dscacheutil"
     private static let arpExecutable = "/usr/sbin/arp"
+    private static let diskUtilityExecutable = "/usr/sbin/diskutil"
 
     static func scanSystemMaintenance() async -> SystemMaintenanceSnapshot {
         await Task.detached(priority: .utility) {
@@ -115,6 +130,56 @@ nonisolated enum AdministratorMaintenanceService {
             }
             return .applied(routeFlushed: routeStatus == 0, arpFlushed: arpStatus == 0)
         }.value
+    }
+
+    static func scanPermissionRepair() async -> PermissionRepairState {
+        await Task.detached(priority: .utility) {
+            inspectPermissionRepair()
+        }.value
+    }
+
+    static func repairUserPermissions() async -> PermissionRepairOutcome {
+        await Task.detached(priority: .userInitiated) {
+            switch inspectPermissionRepair() {
+            case .optimal:
+                return .alreadyOptimal
+            case .unavailable:
+                return .unavailable
+            case .needsRepair:
+                let command = "/usr/sbin/diskutil resetUserPermissions / \(getuid())"
+                return runPrivileged(command, timeout: 180) ? .repaired : .notCompleted
+            }
+        }.value
+    }
+
+    private static func inspectPermissionRepair() -> PermissionRepairState {
+        guard FileManager.default.isExecutableFile(atPath: diskUtilityExecutable),
+              FileManager.default.isExecutableFile(atPath: scriptExecutable)
+        else {
+            return .unavailable
+        }
+
+        let fileManager = FileManager.default
+        let homePath = fileManager.homeDirectoryForCurrentUser.path
+        if let attributes = try? fileManager.attributesOfItem(atPath: homePath),
+           let ownerID = attributes[.ownerAccountID] as? NSNumber,
+           ownerID.uint32Value != getuid() {
+            return .needsRepair
+        }
+
+        let paths = [
+            homePath,
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library").path,
+            fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Preferences")
+                .path
+        ]
+        for path in paths where fileManager.fileExists(atPath: path) {
+            if !fileManager.isWritableFile(atPath: path) {
+                return .needsRepair
+            }
+        }
+        return .optimal
     }
 
     private static func inspectNetworkStack() -> NetworkStackState {
