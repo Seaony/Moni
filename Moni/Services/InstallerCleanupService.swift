@@ -79,6 +79,7 @@ nonisolated enum InstallerCleanupService {
 
     private static let maximumScanDepth = 2
     private static let maximumZipEntries = 50
+    private static let maximumZipListingBytes = 256 * 1_024
     private static let macOSInstallerMinimumAge: TimeInterval = 14 * 24 * 60 * 60
     private static let macOSInstallerSizeTimeout: TimeInterval = 30
     private static let cleanupPlanLifetime: TimeInterval = 5 * 60
@@ -739,10 +740,41 @@ nonisolated enum InstallerCleanupService {
             if process.isRunning { process.terminate() }
         }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5, execute: timeout)
-        let data = output.fileHandleForReading.readDataToEndOfFile()
+        var data = Data()
+        var newlineCount = 0
+        var stoppedAtEntryLimit = false
+        var exceededByteLimit = false
+        while let chunk = try? output.fileHandleForReading.read(upToCount: 4_096),
+              !chunk.isEmpty {
+            data.append(chunk)
+            newlineCount += chunk.reduce(into: 0) { count, byte in
+                if byte == 0x0A { count += 1 }
+            }
+            if data.count > maximumZipListingBytes {
+                exceededByteLimit = true
+                if process.isRunning { process.terminate() }
+                break
+            }
+            if newlineCount >= maximumZipEntries {
+                var seen = 0
+                if let boundary = data.indices.first(where: { index in
+                    guard data[index] == 0x0A else { return false }
+                    seen += 1
+                    return seen == maximumZipEntries
+                }) {
+                    data = Data(data[...boundary])
+                }
+                stoppedAtEntryLimit = true
+                if process.isRunning { process.terminate() }
+                break
+            }
+        }
         process.waitUntilExit()
         timeout.cancel()
-        guard process.terminationStatus == 0 else { return false }
+        guard !exceededByteLimit,
+              stoppedAtEntryLimit || process.terminationStatus == 0 else {
+            return false
+        }
 
         return String(decoding: data, as: UTF8.self)
             .split(whereSeparator: \.isNewline)
