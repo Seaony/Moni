@@ -89,6 +89,12 @@ struct MaintenanceView: View {
         device: 0,
         inode: 0
     )
+    @State private var coreDuetSnapshot = CoreDuetMaintenanceSnapshot(
+        databasePath: "",
+        totalSizeBytes: 0,
+        state: .unavailable,
+        files: []
+    )
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -100,6 +106,7 @@ struct MaintenanceView: View {
     @State private var spotlightRulesReview: SpotlightRulesReview?
     @State private var loginItemsReview: LoginItemsReview?
     @State private var confirmsNotificationCleanup = false
+    @State private var confirmsCoreDuetCleanup = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -285,6 +292,19 @@ struct MaintenanceView: View {
                         confirmsNotificationCleanup = true
                     }
 
+                    commandCard(
+                        title: "Usage Data",
+                        description: "Remove old local usage-tracking records from supported system databases.",
+                        symbol: "chart.bar.xaxis",
+                        status: coreDuetStatus,
+                        buttonTitle: coreDuetSnapshot.state == .ready ? "Review Cleanup" : "Healthy",
+                        isAvailable: coreDuetSnapshot.state == .ready
+                            || coreDuetSnapshot.state == .healthy,
+                        isActionEnabled: coreDuetSnapshot.state == .ready
+                    ) {
+                        confirmsCoreDuetCleanup = true
+                    }
+
                     catalogSummary
                 }
             }
@@ -413,6 +433,22 @@ struct MaintenanceView: View {
                 "Delivered notifications older than 30 days will be deleted and the %@ database at %@ will be compacted.",
                 maintenanceBytes(notificationSnapshot.sizeBytes),
                 notificationSnapshot.path
+            ))
+        }
+        .confirmationDialog(
+            "Clean old usage data?",
+            isPresented: $confirmsCoreDuetCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Clean Usage Data", role: .destructive) {
+                Task { await cleanCoreDuetData() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MoniLocalization.format(
+                "Usage records older than 90 days will be deleted from %@. WAL and SHM sidecar files are moved to Trash first. Current combined size: %@.",
+                coreDuetSnapshot.databasePath,
+                maintenanceBytes(coreDuetSnapshot.totalSizeBytes)
             ))
         }
     }
@@ -575,7 +611,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "14", MoniPalette.green)
+                catalogMetric("Available now", "15", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -766,6 +802,27 @@ struct MaintenanceView: View {
         }
     }
 
+    private var coreDuetStatus: String {
+        switch coreDuetSnapshot.state {
+        case .ready:
+            MoniLocalization.format(
+                "%@ database needs cleanup",
+                maintenanceBytes(coreDuetSnapshot.totalSizeBytes)
+            )
+        case .healthy:
+            MoniLocalization.format(
+                "Healthy · %@",
+                maintenanceBytes(coreDuetSnapshot.totalSizeBytes)
+            )
+        case .protected:
+            MoniLocalization.string("Protected by whitelist")
+        case .unavailable:
+            MoniLocalization.string("Database unavailable")
+        case .failed:
+            MoniLocalization.string("Inspection failed")
+        }
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -777,9 +834,10 @@ struct MaintenanceView: View {
         async let spotlightRulesResult = SpotlightRulesMaintenanceService.scan()
         async let loginItemsResult = LoginItemsAuditService.scan()
         async let notificationResult = NotificationMaintenanceService.scan()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications) = await (
+        async let coreDuetResult = CoreDuetMaintenanceService.scan()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
-            databaseResult, spotlightRulesResult, loginItemsResult, notificationResult
+            databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -792,6 +850,7 @@ struct MaintenanceView: View {
         spotlightRulesSnapshot = spotlightRules
         loginItemsSnapshot = loginItems
         notificationSnapshot = notifications
+        coreDuetSnapshot = coreDuet
         isScanning = false
     }
 
@@ -1001,6 +1060,38 @@ struct MaintenanceView: View {
         } else {
             resultMessage = MoniLocalization.string("Notification cleanup was skipped because the database changed or became protected.")
         }
+    }
+
+    private func cleanCoreDuetData() async {
+        isRunning = true
+        let result = await CoreDuetMaintenanceService.clean(coreDuetSnapshot)
+        coreDuetSnapshot = await CoreDuetMaintenanceService.scan()
+        isRunning = false
+
+        var parts: [String] = []
+        if result.databaseCleaned {
+            parts.append(MoniLocalization.string("Usage records older than 90 days were removed and the database was compacted."))
+        }
+        if result.trashedSidecarCount > 0 {
+            parts.append(MoniLocalization.format(
+                "Moved %@ database sidecar files to Trash.",
+                result.trashedSidecarCount.formatted()
+            ))
+        }
+        if result.failedSidecarCount > 0 {
+            parts.append(MoniLocalization.format(
+                "%@ database sidecar files could not be moved.",
+                result.failedSidecarCount.formatted()
+            ))
+        }
+        if result.databaseFailed {
+            parts.append(MoniLocalization.string("Usage data cleanup failed because the database was busy, locked, or incompatible."))
+        } else if result.skipped {
+            parts.append(MoniLocalization.string("Usage data cleanup was skipped because the database changed or became protected."))
+        }
+        resultMessage = parts.isEmpty
+            ? MoniLocalization.string("No usage data needed cleanup.")
+            : parts.joined(separator: " ")
     }
 }
 

@@ -685,3 +685,14 @@
 "Old delivered notifications were removed and the database was compacted." = "已移除旧的已送达通知并压缩数据库。";
 "Notification cleanup failed because the database was busy, locked, or incompatible." = "通知清理失败，数据库可能正忙、已锁定或结构不兼容。";
 "Notification cleanup was skipped because the database changed or became protected." = "通知数据库已发生变化或受到保护，本次清理已跳过。";
+"Usage Data" = "使用数据";
+"Remove old local usage-tracking records from supported system databases." = "从受支持的系统数据库中移除旧的本地使用记录。";
+"Clean old usage data?" = "清理旧使用数据？";
+"Clean Usage Data" = "清理使用数据";
+"Usage records older than 90 days will be deleted from %@. WAL and SHM sidecar files are moved to Trash first. Current combined size: %@." = "将从 %@ 删除 90 天前的使用记录；WAL 与 SHM 侧写文件会先移到废纸篓。当前合计大小：%@。";
+"Usage records older than 90 days were removed and the database was compacted." = "已移除 90 天前的使用记录并压缩数据库。";
+"Moved %@ database sidecar files to Trash." = "已将 %@ 个数据库侧写文件移到废纸篓。";
+"%@ database sidecar files could not be moved." = "有 %@ 个数据库侧写文件未能移动。";
+"Usage data cleanup failed because the database was busy, locked, or incompatible." = "使用数据清理失败，数据库可能正忙、已锁定或结构不兼容。";
+"Usage data cleanup was skipped because the database changed or became protected." = "使用数据库已发生变化或受到保护，本次清理已跳过。";
+"No usage data needed cleanup." = "没有使用数据需要清理。";
