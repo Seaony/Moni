@@ -51,6 +51,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case simulatorCaches
     case xcodeDeviceSupport
     case gradleCaches
+    case jetBrainsToolboxOldVersions
 
     var titleKey: String {
         switch self {
@@ -103,6 +104,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .simulatorCaches: "Simulator caches"
         case .xcodeDeviceSupport: "Old Xcode DeviceSupport"
         case .gradleCaches: "Gradle caches"
+        case .jetBrainsToolboxOldVersions: "Old JetBrains Toolbox versions"
         }
     }
 }
@@ -454,6 +456,10 @@ nonisolated enum CacheCleanupService {
         discoveredItems.append(contentsOf: gradleCaches.items)
         unreadableItemCount += gradleCaches.unreadableItemCount
 
+        let toolboxVersions = await scanJetBrainsToolboxOldVersions()
+        discoveredItems.append(contentsOf: toolboxVersions.items)
+        unreadableItemCount += toolboxVersions.unreadableItemCount
+
         let developerBackupFiles = scanDeveloperBackupFiles()
         discoveredItems.append(contentsOf: developerBackupFiles.items)
         unreadableItemCount += developerBackupFiles.unreadableItemCount
@@ -643,7 +649,22 @@ nonisolated enum CacheCleanupService {
             : Set<String>()
         let gradleIsSafe = !items.contains { $0.category == .gradleCaches }
             || gradleIsInactive()
+        let requiresToolboxValidation = items.contains {
+            $0.category == .jetBrainsToolboxOldVersions
+        }
+        let toolboxAllowedPaths = requiresToolboxValidation
+            ? Set(jetBrainsToolboxOldVersionCandidatePaths())
+            : Set<String>()
         for item in items {
+            if item.category == .jetBrainsToolboxOldVersions {
+                guard toolboxAllowedPaths.contains(where: { pathsEqual($0, item.path) }),
+                      jetBrainsToolboxOldVersionItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .gradleCaches {
                 guard gradleIsSafe,
                       gradleCacheItemIsAllowed(item.path) else {
@@ -2200,6 +2221,97 @@ nonisolated enum CacheCleanupService {
             ["-f", "org.gradle.launcher.daemon"],
             ["-f", "GradleDaemon"]
         ])
+    }
+
+    private static func scanJetBrainsToolboxOldVersions() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for path in jetBrainsToolboxOldVersionCandidatePaths() {
+            guard !Task.isCancelled else { return ([], 0) }
+            guard jetBrainsToolboxOldVersionItemIsAllowed(path),
+                  let measurement = await cacheTargetSize(at: path),
+                  measurement.sizeBytes > 0 else {
+                continue
+            }
+            unreadableItemCount += measurement.unreadableItemCount
+            items.append(CacheCleanupItem(
+                path: path,
+                category: .jetBrainsToolboxOldVersions,
+                sizeBytes: measurement.sizeBytes
+            ))
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func jetBrainsToolboxOldVersionItemIsAllowed(_ path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return isRealDirectory(at: normalized)
+            && !isSymbolicLink(at: normalized)
+            && currentUserOwnsItem(at: normalized)
+            && !holdsCompiledModelCache(normalized)
+            && jetBrainsToolboxOldVersionCandidatePaths().contains {
+                pathsEqual($0, normalized)
+            }
+    }
+
+    private static func jetBrainsToolboxOldVersionCandidatePaths() -> [String] {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/JetBrains/Toolbox/apps",
+                isDirectory: true
+            )
+            .standardizedFileURL.path
+        guard isRealDirectory(at: root), currentUserOwnsDirectory(at: root) else { return [] }
+
+        var candidates: [String] = []
+        for product in childDirectories(at: root) {
+            for channel in childDirectories(at: product)
+                where URL(fileURLWithPath: channel).lastPathComponent.hasPrefix("ch-") {
+                let currentPath = jetBrainsToolboxCurrentVersionPath(channel: channel)
+                let versionPaths = childDirectories(at: channel).filter { path in
+                    let name = URL(fileURLWithPath: path).lastPathComponent
+                    guard name.first?.isNumber == true,
+                          name != "plugins",
+                          name != "plugins-lib",
+                          name != "plugins-libs" else {
+                        return false
+                    }
+                    return currentPath.map { !pathsEqual(path, $0) } ?? true
+                }
+                let versions = versionPaths.compactMap { path -> (String, Date)? in
+                    let values = try? URL(fileURLWithPath: path).resourceValues(
+                        forKeys: [.contentModificationDateKey]
+                    )
+                    guard let date = values?.contentModificationDate else { return nil }
+                    return (path, date)
+                }.sorted { lhs, rhs in
+                    if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                    return lhs.0.localizedStandardCompare(rhs.0) == .orderedAscending
+                }
+                guard versions.count == versionPaths.count else { continue }
+                candidates.append(contentsOf: versions.dropFirst().map { $0.0 })
+            }
+        }
+        var seen = Set<String>()
+        return candidates.filter { seen.insert($0).inserted }
+    }
+
+    private static func jetBrainsToolboxCurrentVersionPath(channel: String) -> String? {
+        let current = URL(fileURLWithPath: channel, isDirectory: true)
+            .appendingPathComponent("current", isDirectory: true)
+            .standardizedFileURL
+        if isSymbolicLink(at: current.path),
+           let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: current.path) {
+            let target = destination.hasPrefix("/")
+                ? URL(fileURLWithPath: destination, isDirectory: true)
+                : URL(fileURLWithPath: channel, isDirectory: true)
+                    .appendingPathComponent(destination, isDirectory: true)
+            return target.standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        return isRealDirectory(at: current.path) ? current.path : nil
     }
 
     private static func scanDeveloperToolCaches() async -> (
