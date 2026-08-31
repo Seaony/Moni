@@ -968,10 +968,10 @@ private struct CleanupSettings: View {
                                         HStack(spacing: 5) {
                                             Text(historyAction(record.action))
                                             Text("·")
-                                            Text(record.scope.rawValue.capitalized)
+                                            Text(historyScope(record.scope))
                                             if let detail = record.detail, !detail.isEmpty {
                                                 Text("·")
-                                                Text(detail)
+                                                Text(historyDetail(detail))
                                             }
                                         }
                                         .font(.system(size: 10.5))
@@ -1045,6 +1045,33 @@ private struct CleanupSettings: View {
         case .trashed: "Moved to Trash"
         case .skipped: "Skipped"
         case .failed: "Failed"
+        }
+        return MoniLocalization.string(key)
+    }
+
+    private func historyScope(_ scope: CleanupScope) -> String {
+        let key = switch scope {
+        case .diskBrowser: "Disk Browser"
+        case .cacheAndLogs: "Caches & Logs"
+        case .caches: "Caches"
+        case .logs: "Logs"
+        case .projects: "Projects"
+        case .installers: "Installers"
+        case .applications: "Applications"
+        case .maintenance: "Maintenance"
+        }
+        return MoniLocalization.string(key)
+    }
+
+    private func historyDetail(_ detail: String) -> String {
+        guard let rejection = CleanupRejection(rawValue: detail) else { return detail }
+        let key = switch rejection {
+        case .invalidPath: "Invalid path"
+        case .missing: "Item no longer exists"
+        case .protected: "System-protected path"
+        case .whitelisted: "Custom protected path"
+        case .changed: "Item changed after preview"
+        case .expired: "Preview expired"
         }
         return MoniLocalization.string(key)
     }

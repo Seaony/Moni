@@ -48,6 +48,7 @@
 "Alerts" = "提醒";
 "Modules" = "模块";
 "Cleanup" = "清理";
+"Cleaner" = "清理器";
 "About" = "关于";
 
 "Refresh" = "刷新";
@@ -137,6 +138,28 @@
 "Custom protected path" = "自定义受保护路径";
 "Item changed after preview" = "项目在预览后发生变化";
 "Preview expired" = "预览已过期";
+"Caches & Logs" = "缓存与日志";
+"Caches" = "缓存";
+"Logs" = "日志";
+"Projects" = "项目产物";
+"Installers" = "安装包";
+"Applications" = "应用";
+"Maintenance" = "系统维护";
+"Review rebuildable user caches and logs before moving them to Trash." = "检查可重建的用户缓存和日志，确认后再移到废纸篓。";
+"Scanning caches and logs…" = "正在扫描缓存和日志…";
+"No cleanable items" = "没有可清理项目";
+"No cleanable cache or log files were found." = "未发现可清理的缓存或日志文件。";
+"Rescan" = "重新扫描";
+"Review %@ items" = "检查 %@ 个项目";
+"Reclaimable" = "可释放";
+"Selected" = "已选择";
+"Categories" = "类别";
+"Unreadable" = "无法读取";
+"User app caches" = "用户应用缓存";
+"User app logs" = "用户应用日志";
+"Diagnostic reports" = "诊断报告";
+"Saved application states" = "已保存的应用状态";
+"No selected items can be cleaned." = "所选项目均无法清理。";
 
 "Thresholds" = "阈值";
 "Turn on the notification banner below for these limits to alert you." = "开启下方通知横幅后，指标超过这些阈值时会提醒你。";

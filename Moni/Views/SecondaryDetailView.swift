@@ -1415,7 +1415,7 @@ private struct DiskBrowserView: View {
     }
 }
 
-private struct CleanupConfirmationView: View {
+struct CleanupConfirmationView: View {
     let plan: CleanupPlan
     let onCancel: () -> Void
     let onConfirm: () -> Void

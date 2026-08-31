@@ -16,7 +16,7 @@ private enum StatusBarAction {
 }
 
 enum MonitorSection: String, CaseIterable, Identifiable {
-    case summary, host, cpu, memory, gpu, network, storage, processes, sensors, docker, disks, settings
+    case summary, host, cpu, memory, gpu, network, storage, processes, sensors, docker, cleaner, disks, settings
 
     var id: String { rawValue }
 
@@ -32,6 +32,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .processes: "Processes"
         case .sensors: "Power & Sensors"
         case .docker: "Docker"
+        case .cleaner: "Cleaner"
         case .disks: "Disk Browser"
         case .settings: "Settings"
         }
@@ -50,6 +51,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .processes: "list.bullet.rectangle"
         case .sensors: "bolt.batteryblock"
         case .docker: "cube"
+        case .cleaner: "sparkles"
         case .disks: "folder"
         case .settings: "gearshape"
         }
@@ -65,6 +67,7 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .storage: MoniPalette.orange
         case .processes: MoniPalette.purple
         case .sensors: MoniPalette.yellow
+        case .cleaner: MoniPalette.green
         case .disks, .settings: MoniPalette.foregroundTertiary
         }
     }
@@ -110,6 +113,8 @@ struct ContentView: View {
                             )
                         } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
                             SecondaryDetailView(section: selection, selection: animatedSelection)
+                        } else if selection == .cleaner {
+                            CleanerView()
                         } else if selection == .settings {
                             SettingsView(section: $settingsSection)
                         } else {

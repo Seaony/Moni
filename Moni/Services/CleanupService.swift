@@ -3,6 +3,7 @@ import Foundation
 
 nonisolated enum CleanupScope: String, Codable, Sendable {
     case diskBrowser
+    case cacheAndLogs
     case caches
     case logs
     case projects
