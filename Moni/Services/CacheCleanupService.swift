@@ -7,6 +7,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case diagnosticReports
     case oldCrashReports
     case messagesPreviewCaches
+    case identityAndSuggestionCaches
     case utmCaches
     case savedApplicationState
     case recentItems
@@ -22,6 +23,7 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .diagnosticReports: "Diagnostic reports"
         case .oldCrashReports: "Old crash reports"
         case .messagesPreviewCaches: "Messages preview caches"
+        case .identityAndSuggestionCaches: "Identity and suggestion caches"
         case .utmCaches: "UTM sandbox caches"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
@@ -137,6 +139,10 @@ nonisolated enum CacheCleanupService {
         let messagesPreviewCaches = await scanMessagesPreviewCaches()
         discoveredItems.append(contentsOf: messagesPreviewCaches.items)
         unreadableItemCount += messagesPreviewCaches.unreadableItemCount
+
+        let identityAndSuggestionCaches = await scanIdentityAndSuggestionCaches()
+        discoveredItems.append(contentsOf: identityAndSuggestionCaches.items)
+        unreadableItemCount += identityAndSuggestionCaches.unreadableItemCount
 
         let handoffClipboard = await scanHandoffClipboard(referenceDate: Date())
         discoveredItems.append(contentsOf: handoffClipboard.items)
@@ -268,6 +274,14 @@ nonisolated enum CacheCleanupService {
         }
         let utmIsSafe = !requiresUTMProbe || utmIsInactive()
         for item in items {
+            if item.category == .identityAndSuggestionCaches {
+                guard identityAndSuggestionCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
             if item.category == .utmCaches
                 || (item.category == .userCaches && pathsEqual(item.path, utmApplicationCacheRoot())) {
                 guard utmIsSafe,
@@ -339,6 +353,58 @@ nonisolated enum CacheCleanupService {
             validItems.append(item)
         }
         return (validItems, Set(validItems.map(\.path)), rejectedItems)
+    }
+
+    private static func scanIdentityAndSuggestionCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for rootPath in identityAndSuggestionCacheRoots() where isRealDirectory(at: rootPath) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: rootPath) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                guard !name.hasPrefix("."), identityAndSuggestionCacheItemIsAllowed(path) else {
+                    return nil
+                }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .identityAndSuggestionCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func identityAndSuggestionCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path) else {
+            return false
+        }
+        return identityAndSuggestionCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
+        }
+    }
+
+    private static func identityAndSuggestionCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return [
+            home + "/Library/IdentityCaches",
+            home + "/Library/Suggestions"
+        ]
     }
 
     private static func scanUTMCaches() async -> (
