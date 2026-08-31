@@ -1189,6 +1189,9 @@ nonisolated enum CacheCleanupService {
         var items: [CacheCleanupItem] = []
         var unreadableItemCount = 0
         for root in developerToolCacheRoots() where isRealDirectory(at: root) {
+            if pathsEqual(root, pyInstallerCacheRoot()), !pyInstallerIsInactive() {
+                continue
+            }
             if githubCLICacheRoot().map({ pathsEqual(root, $0) }) == true,
                (!githubCLIIsAvailable() || !githubCLIIsInactive()) {
                 continue
@@ -1290,6 +1293,9 @@ nonisolated enum CacheCleanupService {
         if rubyGemCacheRoots().contains(where: { pathsEqual(root, $0) }) {
             return url.pathExtension == "gem"
         }
+        if pathsEqual(root, pyInstallerCacheRoot()) {
+            return url.lastPathComponent.hasPrefix("bincache") && pyInstallerIsInactive()
+        }
         if githubCLICacheRoot().map({ pathsEqual(root, $0) }) == true {
             return githubCLIIsAvailable() && githubCLIIsInactive()
         }
@@ -1341,6 +1347,7 @@ nonisolated enum CacheCleanupService {
             home + "/.cache/mypy",
             home + "/.pytest_cache",
             home + "/.jupyter/runtime",
+            pyInstallerCacheRoot(),
             home + "/.rustup/downloads",
             home + "/.rbenv/cache",
             home + "/.gem/specs",
@@ -1365,6 +1372,20 @@ nonisolated enum CacheCleanupService {
         roots.append(contentsOf: jenkinsWorkspaceTargetRoots())
         roots.append(contentsOf: rubyGemCacheRoots())
         return roots
+    }
+
+    private static func pyInstallerCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/pyinstaller", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func pyInstallerIsInactive() -> Bool {
+        processProbesAreInactive([
+            ["-x", "pyinstaller"],
+            ["-f", "[p]yinstaller"],
+            ["-f", "[P]yInstaller"]
+        ])
     }
 
     private static func rubyGemCacheRoots() -> [String] {
