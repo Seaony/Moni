@@ -188,6 +188,46 @@ nonisolated enum ApplicationUninstallService {
             for suffix in ["sfl2", "sfl3", "sfl4"] {
                 add(recentDocuments + "/" + bundleIdentifier + "." + suffix, .other)
             }
+
+            let embeddedResult = embeddedBundleIdentifiers(
+                in: application.path,
+                primaryBundleIdentifier: bundleIdentifier
+            )
+            if !embeddedResult.isComplete {
+                isComplete = false
+            }
+            for embeddedIdentifier in embeddedResult.identifiers {
+                let embeddedPaths: [(String, ApplicationRemovalKind)] = [
+                    (home + "/Library/Application Scripts/" + embeddedIdentifier, .container),
+                    (home + "/Library/Application Support/FileProvider/" + embeddedIdentifier, .applicationSupport),
+                    (home + "/Library/Caches/" + embeddedIdentifier, .cache),
+                    (home + "/Library/Containers/" + embeddedIdentifier, .container),
+                    (home + "/Library/HTTPStorages/" + embeddedIdentifier, .webData),
+                    (home + "/Library/HTTPStorages/" + embeddedIdentifier + ".binarycookies", .webData),
+                    (home + "/Library/Preferences/" + embeddedIdentifier + ".plist", .preference),
+                    (home + "/Library/WebKit/" + embeddedIdentifier, .webData)
+                ]
+                for (path, kind) in embeddedPaths {
+                    add(path, kind)
+                }
+
+                let byHostRoot = home + "/Library/Preferences/ByHost"
+                guard fileManager.fileExists(atPath: byHostRoot) else { continue }
+                guard let children = try? fileManager.contentsOfDirectory(
+                    at: URL(fileURLWithPath: byHostRoot, isDirectory: true),
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ) else {
+                    isComplete = false
+                    continue
+                }
+                for child in children where hasBundleIdentifierBoundary(
+                    child.deletingPathExtension().lastPathComponent,
+                    bundleIdentifier: embeddedIdentifier
+                ) {
+                    add(child.path, .preference)
+                }
+            }
         }
 
         let reportRoots = [
@@ -220,6 +260,71 @@ nonisolated enum ApplicationUninstallService {
         }
 
         return (candidates, isComplete)
+    }
+
+    private static func embeddedBundleIdentifiers(
+        in applicationPath: String,
+        primaryBundleIdentifier: String
+    ) -> (identifiers: [String], isComplete: Bool) {
+        let fileManager = FileManager.default
+        let contentsURL = URL(fileURLWithPath: applicationPath, isDirectory: true)
+            .appendingPathComponent("Contents", isDirectory: true)
+        guard fileManager.fileExists(atPath: contentsURL.path) else { return ([], true) }
+
+        var isComplete = true
+        guard let enumerator = fileManager.enumerator(
+            at: contentsURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [],
+            errorHandler: { _, _ in
+                isComplete = false
+                return true
+            }
+        ) else {
+            return ([], false)
+        }
+
+        var identifiers: Set<String> = []
+        var scannedInfoPlists = 0
+        while let url = enumerator.nextObject() as? URL {
+            if enumerator.level > 12 {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard url.lastPathComponent == "Info.plist",
+                  url.deletingLastPathComponent().lastPathComponent == "Contents" else {
+                continue
+            }
+
+            scannedInfoPlists += 1
+            guard scannedInfoPlists <= 128 else { break }
+            let bundleRoot = url.deletingLastPathComponent().deletingLastPathComponent()
+            guard bundleRoot.standardizedFileURL.path
+                != URL(fileURLWithPath: applicationPath).standardizedFileURL.path else { continue }
+
+            let extensionName = bundleRoot.pathExtension.lowercased()
+            if extensionName == "app" {
+                let loginItemsRoot = contentsURL
+                    .appendingPathComponent("Library/LoginItems", isDirectory: true)
+                    .standardizedFileURL.path + "/"
+                guard bundleRoot.standardizedFileURL.path.hasPrefix(loginItemsRoot) else { continue }
+            } else if extensionName != "xpc" && extensionName != "appex" {
+                continue
+            }
+
+            guard let data = try? Data(contentsOf: url),
+                  let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+                  let values = plist as? [String: Any],
+                  let identifier = values["CFBundleIdentifier"] as? String,
+                  isValidBundleIdentifier(identifier),
+                  identifier != primaryBundleIdentifier,
+                  !identifier.lowercased().hasPrefix("org.sparkle-project.") else {
+                continue
+            }
+            identifiers.insert(identifier)
+        }
+
+        return (identifiers.sorted(), isComplete)
     }
 
     private static func safeNameVariants(_ name: String) -> [String] {
