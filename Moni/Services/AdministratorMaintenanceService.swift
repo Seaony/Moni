@@ -71,6 +71,27 @@ nonisolated enum SpotlightOptimizationOutcome: Sendable {
     case notCompleted
 }
 
+nonisolated enum PeriodicMaintenanceState: Sendable {
+    case current
+    case stale
+    case missingLog
+    case unavailable
+    case failed
+}
+
+nonisolated struct PeriodicMaintenanceSnapshot: Sendable {
+    let state: PeriodicMaintenanceState
+    let ageDays: Int?
+}
+
+nonisolated enum PeriodicMaintenanceOutcome: Sendable {
+    case alreadyCurrent
+    case unavailable
+    case inspectionFailed
+    case triggered
+    case notCompleted
+}
+
 nonisolated enum AdministratorMaintenanceService {
     private struct CommandOutput: Sendable {
         let status: Int32
@@ -87,6 +108,8 @@ nonisolated enum AdministratorMaintenanceService {
     private static let diskUtilityExecutable = "/usr/sbin/diskutil"
     private static let powerManagementExecutable = "/usr/bin/pmset"
     private static let metadataSearchExecutable = "/usr/bin/mdfind"
+    private static let periodicLogPath = "/var/log/daily.out"
+    private static let periodicExecutablePaths = ["/usr/sbin/periodic", "/usr/bin/periodic"]
 
     static func scanSystemMaintenance() async -> SystemMaintenanceSnapshot {
         await Task.detached(priority: .utility) {
@@ -199,6 +222,54 @@ nonisolated enum AdministratorMaintenanceService {
                 return runPrivileged(command, timeout: 30) ? .rebuildStarted : .notCompleted
             }
         }.value
+    }
+
+    static func scanPeriodicMaintenance() async -> PeriodicMaintenanceSnapshot {
+        await Task.detached(priority: .utility) {
+            inspectPeriodicMaintenance()
+        }.value
+    }
+
+    static func runPeriodicMaintenance() async -> PeriodicMaintenanceOutcome {
+        await Task.detached(priority: .userInitiated) {
+            let snapshot = inspectPeriodicMaintenance()
+            switch snapshot.state {
+            case .current:
+                return .alreadyCurrent
+            case .unavailable:
+                return .unavailable
+            case .failed:
+                return .inspectionFailed
+            case .stale, .missingLog:
+                guard let executable = periodicExecutable() else { return .unavailable }
+                let command = "\(executable) daily weekly monthly"
+                return runPrivileged(command, timeout: 300) ? .triggered : .notCompleted
+            }
+        }.value
+    }
+
+    private static func inspectPeriodicMaintenance() -> PeriodicMaintenanceSnapshot {
+        guard periodicExecutable() != nil else {
+            return PeriodicMaintenanceSnapshot(state: .unavailable, ageDays: nil)
+        }
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: periodicLogPath) else {
+            return PeriodicMaintenanceSnapshot(state: .missingLog, ageDays: nil)
+        }
+        guard let attributes = try? fileManager.attributesOfItem(atPath: periodicLogPath),
+              let modificationDate = attributes[.modificationDate] as? Date
+        else {
+            return PeriodicMaintenanceSnapshot(state: .failed, ageDays: nil)
+        }
+        let ageDays = Int(Date().timeIntervalSince(modificationDate) / 86_400)
+        return PeriodicMaintenanceSnapshot(
+            state: ageDays < 7 ? .current : .stale,
+            ageDays: ageDays
+        )
+    }
+
+    private static func periodicExecutable() -> String? {
+        periodicExecutablePaths.first(where: FileManager.default.isExecutableFile(atPath:))
     }
 
     private static func inspectSpotlightOptimization() -> SpotlightOptimizationState {
