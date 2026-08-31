@@ -210,6 +210,10 @@ nonisolated enum ApplicationUninstallService {
             }
         }
 
+        let developer = specializedDeveloperCandidates(for: application, home: home)
+        candidates.append(contentsOf: developer.candidates)
+        if !developer.isComplete { isComplete = false }
+
         let launchAgentRoot = home + "/Library/LaunchAgents"
         if application.name.count >= 5,
            !isCommonName(application.name),
@@ -575,6 +579,92 @@ nonisolated enum ApplicationUninstallService {
         return Array(Set([leaf, applicationName + " " + spacedSuffix]))
             .filter { $0 != applicationName }
             .sorted()
+    }
+
+    private static func specializedDeveloperCandidates(
+        for application: InstalledApplication,
+        home: String
+    ) -> (candidates: [Candidate], isComplete: Bool) {
+        let name = application.name.lowercased()
+        let bundleIdentifier = application.bundleIdentifier?.lowercased() ?? ""
+        var candidates: [Candidate] = []
+        var isComplete = true
+
+        func add(_ path: String, _ kind: ApplicationRemovalKind) {
+            if pathExists(path) { candidates.append(Candidate(path: path, kind: kind)) }
+        }
+
+        if name.contains("deveco")
+            || bundleIdentifier.contains("huawei") && bundleIdentifier.contains("deveco") {
+            add(home + "/Library/Caches/Huawei", .cache)
+            add(home + "/Library/Logs/Huawei", .log)
+        }
+
+        if name.contains("android studio")
+            || bundleIdentifier.contains("google") && bundleIdentifier.contains("android")
+            || bundleIdentifier.contains("jetbrains") && bundleIdentifier.contains("android") {
+            add(home + "/.android/cache", .cache)
+            add(home + "/.android/build-cache", .cache)
+            add(home + "/.android/breakpad", .cache)
+            let googleRoot = home + "/Library/Application Support/Google"
+            if pathExists(googleRoot) {
+                if let children = try? FileManager.default.contentsOfDirectory(
+                    at: URL(fileURLWithPath: googleRoot, isDirectory: true),
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ) {
+                    for child in children where
+                        child.lastPathComponent.lowercased().hasPrefix("androidstudio") {
+                        add(child.path, .applicationSupport)
+                    }
+                } else {
+                    isComplete = false
+                }
+            }
+        }
+
+        if name.contains("xcode")
+            || bundleIdentifier.contains("apple") && bundleIdentifier.contains("xcode") {
+            let xcodePaths: [(String, ApplicationRemovalKind)] = [
+                (home + "/Library/Developer/Xcode/DerivedData", .cache),
+                (home + "/Library/Developer/Xcode/iOS DeviceSupport", .cache),
+                (home + "/Library/Developer/Xcode/macOS DeviceSupport", .cache),
+                (home + "/Library/Developer/Xcode/watchOS DeviceSupport", .cache),
+                (home + "/Library/Developer/Xcode/tvOS DeviceSupport", .cache),
+                (home + "/Library/Developer/Xcode/xrOS DeviceSupport", .cache),
+                (home + "/Library/Developer/CoreSimulator/Caches", .cache),
+                (home + "/.Xcode", .cache)
+            ]
+            for (path, kind) in xcodePaths { add(path, kind) }
+        }
+
+        let jetBrainsNames = [
+            "intellij", "pycharm", "webstorm", "goland", "rubymine", "phpstorm",
+            "clion", "datagrip", "rider"
+        ]
+        if bundleIdentifier.contains("jetbrains")
+            || jetBrainsNames.contains(where: name.contains) {
+            let roots: [(String, ApplicationRemovalKind)] = [
+                (home + "/Library/Application Support/JetBrains", .applicationSupport),
+                (home + "/Library/Caches/JetBrains", .cache),
+                (home + "/Library/Logs/JetBrains", .log)
+            ]
+            for (rootPath, kind) in roots where pathExists(rootPath) {
+                guard let children = try? FileManager.default.contentsOfDirectory(
+                    at: URL(fileURLWithPath: rootPath, isDirectory: true),
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ) else {
+                    isComplete = false
+                    continue
+                }
+                for child in children where
+                    child.lastPathComponent.lowercased().hasPrefix(name) {
+                    add(child.path, kind)
+                }
+            }
+        }
+        return (candidates, isComplete)
     }
 
     private static func vendorNestedCandidates(
