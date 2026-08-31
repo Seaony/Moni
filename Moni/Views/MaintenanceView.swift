@@ -98,6 +98,7 @@ struct MaintenanceView: View {
     @State private var systemMaintenanceSnapshot = SystemMaintenanceSnapshot(
         spotlightStatus: .unavailable
     )
+    @State private var networkStackState: NetworkStackState = .unavailable
     @State private var pendingAction: PendingMaintenanceAction?
     @State private var confirmsLaunchServicesRepair = false
     @State private var confirmsDSStorePrevention = false
@@ -112,6 +113,7 @@ struct MaintenanceView: View {
     @State private var confirmsCoreDuetCleanup = false
     @State private var confirmsSystemMaintenance = false
     @State private var confirmsNetworkCacheRefresh = false
+    @State private var confirmsNetworkStackRefresh = false
     @State private var resultMessage: String?
 
     var body: some View {
@@ -204,6 +206,18 @@ struct MaintenanceView: View {
                         isAvailable: true
                     ) {
                         confirmsNetworkCacheRefresh = true
+                    }
+
+                    commandCard(
+                        title: "Network Stack Refresh",
+                        description: "Flush routing and ARP caches to resolve network issues.",
+                        symbol: "point.3.connected.trianglepath.dotted",
+                        status: networkStackStatus,
+                        buttonTitle: networkStackButtonTitle,
+                        isAvailable: networkStackIsAvailable,
+                        isActionEnabled: networkStackState == .needsRefresh
+                    ) {
+                        confirmsNetworkStackRefresh = true
                     }
 
                     commandCard(
@@ -502,6 +516,18 @@ struct MaintenanceView: View {
         } message: {
             Text("macOS will request administrator approval to flush the DNS cache and restart mDNSResponder. The cache is rebuilt automatically as names are resolved again.")
         }
+        .confirmationDialog(
+            "Refresh the network stack?",
+            isPresented: $confirmsNetworkStackRefresh,
+            titleVisibility: .visible
+        ) {
+            Button("Refresh Network Stack") {
+                Task { await refreshNetworkStack() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("macOS will request administrator approval to flush the routing table and ARP cache. Network connections may be interrupted briefly while routes are rebuilt.")
+        }
     }
 
     private var header: some View {
@@ -662,7 +688,7 @@ struct MaintenanceView: View {
             Divider()
 
             HStack(spacing: 10) {
-                catalogMetric("Available now", "17", MoniPalette.green)
+                catalogMetric("Available now", "18", MoniPalette.green)
                 catalogMetric(
                     "Administrator access",
                     MaintenanceService.tasks.count { $0.authorization == .administrator }.formatted(),
@@ -887,6 +913,34 @@ struct MaintenanceView: View {
         }
     }
 
+    private var networkStackStatus: String {
+        switch networkStackState {
+        case .optimal:
+            MoniLocalization.string("Network stack is healthy")
+        case .needsRefresh:
+            MoniLocalization.string("Network issue detected")
+        case .activeVPN:
+            MoniLocalization.string("Active VPN detected")
+        case .unavailable:
+            MoniLocalization.string("Unavailable")
+        case .failed:
+            MoniLocalization.string("Inspection failed")
+        }
+    }
+
+    private var networkStackButtonTitle: String {
+        switch networkStackState {
+        case .needsRefresh: MoniLocalization.string("Review Refresh")
+        case .optimal: MoniLocalization.string("No action needed")
+        case .activeVPN: MoniLocalization.string("VPN active")
+        case .unavailable, .failed: MoniLocalization.string("Unavailable")
+        }
+    }
+
+    private var networkStackIsAvailable: Bool {
+        networkStackState != .unavailable && networkStackState != .failed
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -900,10 +954,11 @@ struct MaintenanceView: View {
         async let notificationResult = NotificationMaintenanceService.scan()
         async let coreDuetResult = CoreDuetMaintenanceService.scan()
         async let systemMaintenanceResult = AdministratorMaintenanceService.scanSystemMaintenance()
-        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance) = await (
+        async let networkStackResult = AdministratorMaintenanceService.scanNetworkStack()
+        let (finder, preferences, repairs, settings, quarantine, databases, spotlightRules, loginItems, notifications, coreDuet, systemMaintenance, networkStack) = await (
             finderResult, preferenceResult, repairResult, settingsResult, quarantineResult,
             databaseResult, spotlightRulesResult, loginItemsResult, notificationResult, coreDuetResult,
-            systemMaintenanceResult
+            systemMaintenanceResult, networkStackResult
         )
         guard !Task.isCancelled else { return }
         snapshot = finder
@@ -918,6 +973,7 @@ struct MaintenanceView: View {
         notificationSnapshot = notifications
         coreDuetSnapshot = coreDuet
         systemMaintenanceSnapshot = systemMaintenance
+        networkStackState = networkStack
         isScanning = false
     }
 
@@ -1191,6 +1247,35 @@ struct MaintenanceView: View {
         resultMessage = result.refreshed
             ? MoniLocalization.string("Network cache was refreshed and mDNSResponder was restarted.")
             : MoniLocalization.string("Network cache refresh was not completed. Administrator approval may have been cancelled.")
+    }
+
+    private func refreshNetworkStack() async {
+        isRunning = true
+        let outcome = await AdministratorMaintenanceService.refreshNetworkStack()
+        networkStackState = await AdministratorMaintenanceService.scanNetworkStack()
+        isRunning = false
+
+        switch outcome {
+        case .alreadyOptimal:
+            resultMessage = MoniLocalization.string("The network stack is already healthy.")
+        case .activeVPN:
+            resultMessage = MoniLocalization.string("Network stack refresh was skipped because an active VPN was detected.")
+        case .unavailable:
+            resultMessage = MoniLocalization.string("Network stack refresh is unavailable on this system.")
+        case .inspectionFailed:
+            resultMessage = MoniLocalization.string("Network stack refresh was skipped because network health could not be verified.")
+        case .authorizationCancelled:
+            resultMessage = MoniLocalization.string("Network stack refresh was not completed. Administrator approval may have been cancelled.")
+        case let .applied(routeFlushed, arpFlushed):
+            var parts: [String] = []
+            parts.append(routeFlushed
+                ? MoniLocalization.string("The network routing table was refreshed.")
+                : MoniLocalization.string("The network routing table could not be refreshed."))
+            parts.append(arpFlushed
+                ? MoniLocalization.string("The ARP cache was cleared.")
+                : MoniLocalization.string("The ARP cache could not be cleared."))
+            resultMessage = parts.joined(separator: " ")
+        }
     }
 }
 
