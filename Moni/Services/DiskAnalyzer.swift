@@ -127,7 +127,10 @@ nonisolated enum DiskAnalyzer {
                     at: child,
                     includingPropertiesForKeys: nil,
                     options: [],
-                    errorHandler: { _, _ in true }
+                    errorHandler: { _, _ in
+                        unreadableItemCount += 1
+                        return true
+                    }
                 ) else {
                     unreadableItemCount += 1
                     continue
