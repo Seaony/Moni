@@ -12,7 +12,8 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
     case addressBookPhotoCaches
     case utmCaches
     case sharedContainerLogs
-    case browserProfileCaches
+    case diaProfileCaches
+    case chromeProfileCaches
     case virtualizationTemporaryData
     case savedApplicationState
     case recentItems
@@ -33,7 +34,8 @@ nonisolated enum CacheCleanupCategory: String, CaseIterable, Sendable {
         case .addressBookPhotoCaches: "Address Book photo caches"
         case .utmCaches: "UTM sandbox caches"
         case .sharedContainerLogs: "Shared container logs"
-        case .browserProfileCaches: "Browser profile caches"
+        case .diaProfileCaches: "Dia profile caches"
+        case .chromeProfileCaches: "Chrome profile caches"
         case .virtualizationTemporaryData: "Virtualization temporary data"
         case .savedApplicationState: "Saved application states"
         case .recentItems: "Recent items"
@@ -118,7 +120,9 @@ nonisolated enum CacheCleanupService {
         }
 
         discoveredItems.removeAll {
-            $0.category == .userCaches && pathsEqual($0.path, diaGeneralCacheRoot())
+            $0.category == .userCaches
+                && (pathsEqual($0.path, diaGeneralCacheRoot())
+                    || pathsEqual($0.path, googleGeneralCacheRoot()))
         }
 
         let diaIsSafe = await Task.detached(priority: .utility) {
@@ -128,6 +132,15 @@ nonisolated enum CacheCleanupService {
             let browserProfileCaches = await scanDiaProfileCaches()
             discoveredItems.append(contentsOf: browserProfileCaches.items)
             unreadableItemCount += browserProfileCaches.unreadableItemCount
+        }
+
+        let chromeIsSafe = await Task.detached(priority: .utility) {
+            chromeIsInactive()
+        }.value
+        if chromeIsSafe {
+            let chromeProfileCaches = await scanChromeProfileCaches()
+            discoveredItems.append(contentsOf: chromeProfileCaches.items)
+            unreadableItemCount += chromeProfileCaches.unreadableItemCount
         }
 
         let utmIsSafe = await Task.detached(priority: .utility) {
@@ -320,13 +333,24 @@ nonisolated enum CacheCleanupService {
                 || ($0.category == .userCaches && pathsEqual($0.path, utmApplicationCacheRoot()))
         }
         let utmIsSafe = !requiresUTMProbe || utmIsInactive()
-        let requiresDiaProbe = items.contains { $0.category == .browserProfileCaches }
+        let requiresDiaProbe = items.contains { $0.category == .diaProfileCaches }
         let diaIsSafe = !requiresDiaProbe || diaIsInactive()
+        let requiresChromeProbe = items.contains { $0.category == .chromeProfileCaches }
+        let chromeIsSafe = !requiresChromeProbe || chromeIsInactive()
         let userCacheProcessGuard = items.contains { $0.category == .userCaches }
             ? UserCacheProcessGuard.capture()
             : nil
         for item in items {
-            if item.category == .browserProfileCaches {
+            if item.category == .chromeProfileCaches {
+                guard chromeIsSafe,
+                      chromeProfileCacheItemIsAllowed(item.path) else {
+                    rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
+                    continue
+                }
+                validItems.append(item)
+                continue
+            }
+            if item.category == .diaProfileCaches {
                 guard diaIsSafe,
                       diaProfileCacheItemIsAllowed(item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
@@ -746,7 +770,7 @@ nonisolated enum CacheCleanupService {
                 }
                 return CacheCleanupItem(
                     path: path,
-                    category: .browserProfileCaches,
+                    category: .diaProfileCaches,
                     sizeBytes: size
                 )
             })
@@ -816,26 +840,127 @@ nonisolated enum CacheCleanupService {
             .standardizedFileURL.path
     }
 
+    private static func googleGeneralCacheRoot() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/Google", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
     private static func diaIsInactive() -> Bool {
-        let executable = "/usr/bin/pgrep"
-        guard FileManager.default.isExecutableFile(atPath: executable) else { return false }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = ["-x", "Dia"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
+        processProbesAreInactive([["-x", "Dia"]])
+    }
+
+    private static func scanChromeProfileCaches() async -> (
+        items: [CacheCleanupItem],
+        unreadableItemCount: Int
+    ) {
+        var items: [CacheCleanupItem] = []
+        var unreadableItemCount = 0
+        for root in chromeProfileCacheRoots() where isRealDirectory(at: root) {
+            var finalUpdate: DiskAnalysisUpdate?
+            for await update in DiskAnalyzer.updates(for: root) {
+                guard !Task.isCancelled else { return ([], 0) }
+                if update.isComplete { finalUpdate = update }
+            }
+            guard let finalUpdate else {
+                unreadableItemCount += 1
+                continue
+            }
+            unreadableItemCount += finalUpdate.unreadableItemCount
+            items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                guard !name.hasPrefix("."), chromeProfileCacheItemIsAllowed(path) else {
+                    return nil
+                }
+                return CacheCleanupItem(
+                    path: path,
+                    category: .chromeProfileCaches,
+                    sizeBytes: size
+                )
+            })
+        }
+        return (items, unreadableItemCount)
+    }
+
+    private static func chromeProfileCacheItemIsAllowed(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard !url.lastPathComponent.hasPrefix("."),
+              !isSymbolicLink(at: url.path),
+              !holdsCompiledModelCache(url.path) else {
             return false
         }
-        let timeout = DispatchWorkItem {
-            if process.isRunning { process.terminate() }
+        return chromeProfileCacheRoots().contains { root in
+            isRealDirectory(at: root)
+                && pathsEqual(url.deletingLastPathComponent().path, root)
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5, execute: timeout)
-        process.waitUntilExit()
-        timeout.cancel()
-        return process.terminationReason == .exit && process.terminationStatus == 1
+    }
+
+    private static func chromeProfileCacheRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let chromeCaches = home + "/Library/Caches/Google/Chrome"
+        let chromeSupport = home + "/Library/Application Support/Google/Chrome"
+        var roots = [
+            chromeCaches,
+            chromeSupport + "/component_crx_cache",
+            chromeSupport + "/ShaderCache",
+            chromeSupport + "/GrShaderCache",
+            chromeSupport + "/GraphiteDawnCache",
+            chromeSupport + "/Crashpad/completed",
+            chromeSupport + "/OptGuideOnDeviceModel",
+            chromeSupport + "/OptGuideOnDeviceClassifierModel",
+            chromeSupport + "/optimization_guide_model_store"
+        ]
+        roots.append(contentsOf: childDirectories(at: chromeSupport).flatMap { profile in
+            [
+                profile + "/Application Cache",
+                profile + "/Code Cache",
+                profile + "/GPUCache",
+                profile + "/DawnCache",
+                profile + "/GrShaderCache",
+                profile + "/GraphiteDawnCache"
+            ]
+        })
+        var seen: Set<String> = []
+        return roots.filter { seen.insert($0).inserted }
+    }
+
+    private static func chromeIsInactive() -> Bool {
+        processProbesAreInactive([
+            ["-x", "Google Chrome"],
+            ["-x", "Google Chrome Helper"],
+            ["-f", "/Google Chrome.app/"]
+        ])
+    }
+
+    private static func processProbesAreInactive(_ probes: [[String]]) -> Bool {
+        let executable = "/usr/bin/pgrep"
+        guard !probes.isEmpty,
+              FileManager.default.isExecutableFile(atPath: executable) else {
+            return false
+        }
+        for arguments in probes {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+            } catch {
+                return false
+            }
+            let timeout = DispatchWorkItem {
+                if process.isRunning { process.terminate() }
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5, execute: timeout)
+            process.waitUntilExit()
+            timeout.cancel()
+            guard process.terminationReason == .exit,
+                  process.terminationStatus == 1 else {
+                return false
+            }
+        }
+        return true
     }
 
     private static func scanSharedContainerLogs() async -> (
