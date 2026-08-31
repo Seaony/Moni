@@ -1329,7 +1329,15 @@ nonisolated enum CacheCleanupService {
             home + "/.circleci/cache",
             home + "/.sonar",
             home + "/.cache/prisma",
-            home + "/.cache/opencode"
+            home + "/.cache/opencode",
+            home + "/.pyenv/cache",
+            home + "/.cache/poetry",
+            home + "/Library/Caches/pypoetry/artifacts",
+            home + "/Library/Caches/pypoetry/cache",
+            home + "/.cache/ruff",
+            home + "/.cache/mypy",
+            home + "/.pytest_cache",
+            home + "/.jupyter/runtime"
         ]
         if let githubRoot = githubCLICacheRoot() {
             roots.append(githubRoot)
