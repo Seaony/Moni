@@ -34,9 +34,40 @@ nonisolated enum DiskAnalyzer {
     }
 
     static func updates(for rootPath: String) -> AsyncStream<DiskAnalysisUpdate> {
-        AsyncStream { continuation in
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task.detached(priority: .utility) {
-                scan(rootPath: rootPath, continuation: continuation)
+                _ = scan(
+                    rootPath: rootPath,
+                    timeLimit: nil,
+                    tracksLargestFiles: true,
+                    publishProgress: { continuation.yield($0) }
+                )
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    static func finalUpdates(
+        for rootPath: String,
+        timeLimit: TimeInterval = 6,
+        excludingPaths: Set<String> = []
+    ) -> AsyncStream<DiskAnalysisUpdate> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let task = Task.detached(priority: .utility) {
+                let update = scan(
+                    rootPath: rootPath,
+                    timeLimit: timeLimit,
+                    tracksLargestFiles: false,
+                    excludingPaths: excludingPaths,
+                    publishProgress: nil
+                )
+                guard !Task.isCancelled else {
+                    continuation.finish()
+                    return
+                }
+                continuation.yield(update)
+                continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
         }
@@ -44,24 +75,37 @@ nonisolated enum DiskAnalyzer {
 
     private static func scan(
         rootPath: String,
-        continuation: AsyncStream<DiskAnalysisUpdate>.Continuation
-    ) {
+        timeLimit: TimeInterval?,
+        tracksLargestFiles: Bool,
+        excludingPaths: Set<String> = [],
+        publishProgress: ((DiskAnalysisUpdate) -> Void)?
+    ) -> DiskAnalysisUpdate {
         let rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
         let normalizedRootPath = rootURL.standardizedFileURL.path
         let fileManager = FileManager.default
+        let deadline = timeLimit.map { ProcessInfo.processInfo.systemUptime + $0 }
+        let normalizedExcludedPaths = Set(excludingPaths.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        })
         var entrySizes: [String: UInt64] = [:]
         var largestFiles: [DiskAnalysisFile] = []
         var seenFiles: Set<FileIdentity> = []
         var scannedFileCount = 0
         var scannedBytes: UInt64 = 0
         var unreadableItemCount = 0
+        var didReachTimeLimit = false
 
-        func publish(currentPath: String?, isComplete: Bool) {
-            let rankedFiles = largestFiles
-                .sorted { $0.sizeBytes > $1.sizeBytes }
-                .prefix(100)
-                .map { $0 }
-            continuation.yield(DiskAnalysisUpdate(
+        func update(currentPath: String?, isComplete: Bool) -> DiskAnalysisUpdate {
+            let rankedFiles: [DiskAnalysisFile]
+            if tracksLargestFiles {
+                rankedFiles = largestFiles
+                    .sorted { $0.sizeBytes > $1.sizeBytes }
+                    .prefix(100)
+                    .map { $0 }
+            } else {
+                rankedFiles = []
+            }
+            return DiskAnalysisUpdate(
                 rootPath: rootPath,
                 entrySizes: entrySizes,
                 largestFiles: rankedFiles,
@@ -70,16 +114,21 @@ nonisolated enum DiskAnalyzer {
                 unreadableItemCount: unreadableItemCount,
                 currentPath: currentPath,
                 isComplete: isComplete
-            ))
+            )
+        }
+
+        func deadlineReached() -> Bool {
+            guard let deadline else { return false }
+            return ProcessInfo.processInfo.systemUptime >= deadline
         }
 
         guard let rootMetadata = metadata(at: rootURL),
               rootMetadata.isDirectory,
               !rootMetadata.isSymbolicLink else {
             unreadableItemCount = 1
-            publish(currentPath: nil, isComplete: true)
-            continuation.finish()
-            return
+            let finalUpdate = update(currentPath: nil, isComplete: true)
+            publishProgress?(finalUpdate)
+            return finalUpdate
         }
 
         let children: [URL]
@@ -91,9 +140,9 @@ nonisolated enum DiskAnalyzer {
             )
         } catch {
             unreadableItemCount = 1
-            publish(currentPath: nil, isComplete: true)
-            continuation.finish()
-            return
+            let finalUpdate = update(currentPath: nil, isComplete: true)
+            publishProgress?(finalUpdate)
+            return finalUpdate
         }
         var allowedDevices: Set<UInt64> = [rootMetadata.identity.device]
         if normalizedRootPath == "/",
@@ -107,10 +156,17 @@ nonisolated enum DiskAnalyzer {
             }
         }
 
-        for child in children {
+        childLoop: for child in children {
             guard !Task.isCancelled else {
-                continuation.finish()
-                return
+                return update(currentPath: nil, isComplete: false)
+            }
+            if deadlineReached() {
+                unreadableItemCount += 1
+                didReachTimeLimit = true
+                break
+            }
+            if normalizedExcludedPaths.contains(child.standardizedFileURL.path) {
+                continue
             }
             guard let childMetadata = metadata(at: child) else {
                 unreadableItemCount += 1
@@ -139,8 +195,12 @@ nonisolated enum DiskAnalyzer {
                 var itemsSinceUpdate = 0
                 while let item = enumerator.nextObject() as? URL {
                     guard !Task.isCancelled else {
-                        continuation.finish()
-                        return
+                        return update(currentPath: nil, isComplete: false)
+                    }
+                    if deadlineReached() {
+                        unreadableItemCount += 1
+                        didReachTimeLimit = true
+                        break childLoop
                     }
                     guard let itemMetadata = metadata(at: item) else {
                         unreadableItemCount += 1
@@ -153,6 +213,10 @@ nonisolated enum DiskAnalyzer {
                         continue
                     }
                     if itemMetadata.isDirectory {
+                        if normalizedExcludedPaths.contains(item.standardizedFileURL.path) {
+                            enumerator.skipDescendants()
+                            continue
+                        }
                         let isDataVolumeAlias = normalizedRootPath == "/"
                             && item.standardizedFileURL.path == "/System/Volumes/Data"
                         if isDataVolumeAlias
@@ -169,16 +233,18 @@ nonisolated enum DiskAnalyzer {
                     scannedFileCount += 1
                     scannedBytes = addingWithoutOverflow(scannedBytes, itemMetadata.allocatedBytes)
                     childSize = addingWithoutOverflow(childSize, itemMetadata.allocatedBytes)
-                    largestFiles.append(DiskAnalysisFile(
-                        path: item.path,
-                        sizeBytes: itemMetadata.allocatedBytes
-                    ))
-                    trimLargestFiles(&largestFiles)
+                    if tracksLargestFiles {
+                        largestFiles.append(DiskAnalysisFile(
+                            path: item.path,
+                            sizeBytes: itemMetadata.allocatedBytes
+                        ))
+                        trimLargestFiles(&largestFiles)
+                    }
 
                     itemsSinceUpdate += 1
-                    if itemsSinceUpdate >= 256 {
+                    if itemsSinceUpdate >= 256, publishProgress != nil {
                         entrySizes[child.path] = childSize
-                        publish(currentPath: item.path, isComplete: false)
+                        publishProgress?(update(currentPath: item.path, isComplete: false))
                         itemsSinceUpdate = 0
                     }
                 }
@@ -188,17 +254,20 @@ nonisolated enum DiskAnalyzer {
                 scannedFileCount += 1
                 scannedBytes = addingWithoutOverflow(scannedBytes, childMetadata.allocatedBytes)
                 entrySizes[child.path] = childMetadata.allocatedBytes
-                largestFiles.append(DiskAnalysisFile(
-                    path: child.path,
-                    sizeBytes: childMetadata.allocatedBytes
-                ))
-                trimLargestFiles(&largestFiles)
+                if tracksLargestFiles {
+                    largestFiles.append(DiskAnalysisFile(
+                        path: child.path,
+                        sizeBytes: childMetadata.allocatedBytes
+                    ))
+                    trimLargestFiles(&largestFiles)
+                }
             }
-            publish(currentPath: child.path, isComplete: false)
+            publishProgress?(update(currentPath: child.path, isComplete: false))
         }
 
-        publish(currentPath: nil, isComplete: true)
-        continuation.finish()
+        let finalUpdate = update(currentPath: nil, isComplete: !didReachTimeLimit)
+        publishProgress?(finalUpdate)
+        return finalUpdate
     }
 
     private static func metadata(at url: URL) -> FileMetadata? {

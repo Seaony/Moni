@@ -12,6 +12,7 @@ import SwiftUI
 struct MoniApp: App {
     @StateObject private var monitor = SystemMonitor()
     @StateObject private var updates = UpdateController()
+    @StateObject private var cacheCleanupScanner = CacheCleanupScanner()
     @AppStorage(PreferenceKey.appLanguage) private var appLanguage = AppLanguage.english.rawValue
 
     var body: some Scene {
@@ -19,6 +20,7 @@ struct MoniApp: App {
             ContentView()
                 .environmentObject(monitor)
                 .environmentObject(updates)
+                .environmentObject(cacheCleanupScanner)
                 .background(
                     MenuBarWindowPositioner { isVisible in
                         monitor.setPanelVisible(isVisible)

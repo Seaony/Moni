@@ -1,6 +1,52 @@
 import Darwin
 import Foundation
 
+private nonisolated enum ProjectArtifactPathPolicy {
+    static func normalizedSearchRoot(_ path: String) -> String? {
+        guard path.hasPrefix("/"),
+              !path.contains("\0"),
+              !path.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+            return nil
+        }
+
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let canonical = URL(fileURLWithPath: normalized).resolvingSymlinksInPath().standardizedFileURL.path
+        let exactDenied = [
+            "/", "/Applications", "/Library", "/System", "/Users", "/Users/Shared",
+            "/Volumes", "/Network", "/private", "/var", "/usr", "/bin", "/sbin",
+            "/dev", "/etc", "/opt", "/tmp", "/home", "/net", "/cores", home
+        ]
+        guard !exactDenied.contains(where: { pathsEqual(canonical, $0) }) else { return nil }
+
+        let deniedTrees = [
+            "/Applications", "/Library", "/System", "/usr", "/bin", "/sbin", "/dev", "/etc",
+            "/private/etc", "/private/tmp", "/private/var/db", "/private/var/root",
+            "/private/var/folders", "/opt/homebrew"
+        ]
+        guard !deniedTrees.contains(where: { pathIsInside(canonical, root: $0) }) else { return nil }
+
+        if pathIsInside(canonical, root: "/Users"),
+           !pathIsInside(canonical, root: home),
+           !pathIsInside(canonical, root: "/Users/Shared") {
+            return nil
+        }
+        if pathIsInside(canonical, root: "/Volumes") {
+            let relative = canonical.dropFirst("/Volumes/".count)
+            guard relative.contains("/") else { return nil }
+        }
+        return normalized
+    }
+
+    private static func pathIsInside(_ path: String, root: String) -> Bool {
+        pathsEqual(path, root) || path.lowercased().hasPrefix(root.lowercased() + "/")
+    }
+
+    private static func pathsEqual(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.compare(rhs, options: [.caseInsensitive, .literal]) == .orderedSame
+    }
+}
+
 nonisolated enum ProjectArtifactPreferences {
     static func searchRoots() -> [String] {
         normalizedRoots(
@@ -40,15 +86,7 @@ nonisolated enum ProjectArtifactPreferences {
     }
 
     private static func normalizedRoot(_ path: String) -> String {
-        guard path.hasPrefix("/"),
-              !path.contains("\0"),
-              !path.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
-            return ""
-        }
-        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-        guard normalized != "/", normalized != home else { return "" }
-        return normalized
+        ProjectArtifactPathPolicy.normalizedSearchRoot(path) ?? ""
     }
 }
 
@@ -150,9 +188,14 @@ nonisolated enum ProjectArtifactService {
     ]
 
     static func scan(referenceDate: Date = Date()) async -> ProjectArtifactSnapshot {
-        let rawSnapshot = await Task.detached(priority: .utility) {
+        let worker = Task.detached(priority: .utility) {
             scanSynchronously(referenceDate: referenceDate)
-        }.value
+        }
+        let rawSnapshot = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
         guard !Task.isCancelled else {
             return ProjectArtifactSnapshot(searchRootPaths: [], items: [], failedRootPaths: [])
         }
@@ -276,20 +319,26 @@ nonisolated enum ProjectArtifactService {
         let roots = discoverSearchRoots()
         var candidates: [ScanCandidate] = []
         var failedRoots: [String] = []
+        let rootScanDeadline = Date().addingTimeInterval(rootScanTimeLimit)
 
-        for root in roots {
+        for (index, root) in roots.enumerated() {
             guard !Task.isCancelled else {
                 return ProjectArtifactSnapshot(searchRootPaths: roots, items: [], failedRootPaths: [])
             }
-            let result = scanRoot(root)
+            guard Date() < rootScanDeadline else {
+                failedRoots.append(contentsOf: roots[index...])
+                break
+            }
+            let result = scanRoot(root, deadline: rootScanDeadline)
+            candidates.append(contentsOf: result.candidates)
             if result.failed {
                 failedRoots.append(root)
-            } else {
-                candidates.append(contentsOf: result.candidates)
             }
         }
 
         let filteredCandidates = filterNestedCandidates(candidates)
+        let failedRootSet = Set(failedRoots)
+        let detailDeadline = Date().addingTimeInterval(artifactScanTimeLimit)
         var items: [ProjectArtifactItem] = []
         for candidate in filteredCandidates {
             guard !Task.isCancelled else {
@@ -300,14 +349,18 @@ nonisolated enum ProjectArtifactService {
                   let projectRoot = projectRoot(for: candidate.path) else {
                 continue
             }
-            let details = artifactDetails(at: candidate.path, referenceDate: referenceDate)
+            let details = artifactDetails(
+                at: candidate.path,
+                referenceDate: referenceDate,
+                overallDeadline: detailDeadline
+            )
             items.append(ProjectArtifactItem(
                 path: candidate.path,
                 searchRootPath: candidate.searchRootPath,
                 projectRootPath: projectRoot,
                 name: URL(fileURLWithPath: candidate.path).lastPathComponent,
                 sizeBytes: details.sizeBytes,
-                activity: details.activity,
+                activity: failedRootSet.contains(candidate.searchRootPath) ? .uncertain : details.activity,
                 isCloudSynced: isCloudSynced(candidate.path)
             ))
         }
@@ -409,11 +462,10 @@ nonisolated enum ProjectArtifactService {
         return false
     }
 
-    private static func scanRoot(_ rootPath: String) -> RootScanResult {
+    private static func scanRoot(_ rootPath: String, deadline: Date) -> RootScanResult {
         let fileManager = FileManager.default
         let root = URL(fileURLWithPath: rootPath, isDirectory: true)
         let rootDepth = root.pathComponents.count
-        let deadline = Date().addingTimeInterval(rootScanTimeLimit)
         var candidates: [ScanCandidate] = []
         var encounteredError = false
 
@@ -431,7 +483,7 @@ nonisolated enum ProjectArtifactService {
 
         while let url = enumerator.nextObject() as? URL {
             guard !Task.isCancelled, Date() < deadline else {
-                return RootScanResult(candidates: [], failed: true)
+                return RootScanResult(candidates: candidates, failed: true)
             }
             let depth = url.pathComponents.count - rootDepth
             if depth > maximumScanDepth + 1 {
@@ -472,7 +524,7 @@ nonisolated enum ProjectArtifactService {
             }
         }
 
-        return RootScanResult(candidates: encounteredError ? [] : candidates, failed: encounteredError)
+        return RootScanResult(candidates: candidates, failed: encounteredError)
     }
 
     private static func hasValidCacheTag(_ url: URL) -> Bool {
@@ -502,7 +554,7 @@ nonisolated enum ProjectArtifactService {
     private static func isSafeArtifact(_ path: String, under rootPath: String) -> Bool {
         let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
         let standardizedRoot = URL(fileURLWithPath: rootPath).standardizedFileURL.path
-        guard standardizedRoot != "/",
+        guard ProjectArtifactPathPolicy.normalizedSearchRoot(standardizedRoot) != nil,
               pathIsInside(standardizedPath, root: standardizedRoot),
               !pathsEqual(standardizedPath, standardizedRoot) else {
             return false
@@ -578,10 +630,14 @@ nonisolated enum ProjectArtifactService {
         }
     }
 
-    private static func artifactDetails(at path: String, referenceDate: Date) -> ArtifactDetails {
+    private static func artifactDetails(
+        at path: String,
+        referenceDate: Date,
+        overallDeadline: Date
+    ) -> ArtifactDetails {
         let root = URL(fileURLWithPath: path, isDirectory: true)
         let cutoff = referenceDate.addingTimeInterval(-minimumAge)
-        let deadline = Date().addingTimeInterval(artifactScanTimeLimit)
+        let deadline = min(Date().addingTimeInterval(artifactScanTimeLimit), overallDeadline)
         var activity: ProjectArtifactActivity = .old
         var sizeBytes: UInt64 = 0
         var seenFiles: Set<FileIdentity> = []

@@ -1,4 +1,46 @@
+import Combine
 import SwiftUI
+
+@MainActor
+final class CacheCleanupScanner: ObservableObject {
+    @Published private(set) var snapshot: CacheCleanupSnapshot?
+    @Published private(set) var isScanning = false
+    @Published private(set) var phase = CacheCleanupScanPhase.preparing
+    @Published private(set) var completedScanID = 0
+
+    private var worker: Task<CacheCleanupSnapshot, Never>?
+
+    func start(force: Bool = false) {
+        guard worker == nil else { return }
+        guard force || snapshot == nil else { return }
+
+        isScanning = true
+        phase = .preparing
+        let (phases, continuation) = AsyncStream<CacheCleanupScanPhase>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        let worker = Task.detached(priority: .utility) {
+            let snapshot = await CacheCleanupService.scan { phase in
+                continuation.yield(phase)
+            }
+            continuation.finish()
+            return snapshot
+        }
+        self.worker = worker
+
+        Task { [weak self] in
+            for await phase in phases {
+                self?.phase = phase
+            }
+            let snapshot = await worker.value
+            guard let self, self.worker != nil else { return }
+            self.snapshot = snapshot
+            self.worker = nil
+            self.isScanning = false
+            self.completedScanID += 1
+        }
+    }
+}
 
 private enum CleanerMode: String, CaseIterable {
     case caches
@@ -38,11 +80,13 @@ struct CleanerView: View {
 
 private struct CacheCleanerView: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @EnvironmentObject private var scanner: CacheCleanupScanner
     @State private var items: [CacheCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var unreadableItemCount = 0
-    @State private var isScanning = false
+    @State private var isScanComplete = true
     @State private var isCleaning = false
+    @State private var selectAllAfterScan = true
     @State private var pendingPlan: CacheCleanupPlan?
     @State private var cleanupMessage: String?
 
@@ -51,13 +95,20 @@ private struct CacheCleanerView: View {
             header
             summary
 
-            if isScanning {
+            if scanner.isScanning {
                 VStack(spacing: 10) {
                     ProgressView()
-                    Text("Scanning caches and logs…")
+                    Text(MoniLocalization.string(scanner.phase.titleKey))
                         .font(.system(size: 12.5))
                         .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if items.isEmpty, !isScanComplete {
+                ContentUnavailableView(
+                    "Scan incomplete",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("The scan reached its time limit. Rescan to check the remaining locations.")
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if items.isEmpty {
                 ContentUnavailableView(
@@ -79,8 +130,15 @@ private struct CacheCleanerView: View {
                 }
             }
         }
-        .task {
-            await scan(selectAll: true)
+        .onAppear {
+            if let snapshot = scanner.snapshot {
+                apply(snapshot, selectAll: true)
+            }
+            scanner.start()
+        }
+        .onChange(of: scanner.completedScanID) { _, _ in
+            guard let snapshot = scanner.snapshot else { return }
+            apply(snapshot, selectAll: selectAllAfterScan)
         }
         .sheet(item: $pendingPlan) { plan in
             CleanupConfirmationView(
@@ -112,12 +170,13 @@ private struct CacheCleanerView: View {
             Spacer(minLength: 12)
 
             Button {
-                Task { await scan(selectAll: true) }
+                selectAllAfterScan = true
+                scanner.start(force: true)
             } label: {
                 Label(MoniLocalization.string("Rescan"), systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
-            .disabled(isScanning || isCleaning)
+            .disabled(scanner.isScanning || isCleaning)
 
             Button {
                 Task { await prepareCleanup() }
@@ -129,7 +188,7 @@ private struct CacheCleanerView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(MoniPalette.red)
-            .disabled(selectedPaths.isEmpty || isScanning || isCleaning)
+            .disabled(selectedPaths.isEmpty || scanner.isScanning || isCleaning)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -284,14 +343,11 @@ private struct CacheCleanerView: View {
         }
     }
 
-    private func scan(selectAll: Bool) async {
-        isScanning = true
-        let snapshot = await CacheCleanupService.scan()
-        guard !Task.isCancelled else { return }
+    private func apply(_ snapshot: CacheCleanupSnapshot, selectAll: Bool) {
         items = snapshot.items
         unreadableItemCount = snapshot.unreadableItemCount
+        isScanComplete = snapshot.isComplete
         selectedPaths = selectAll ? Set(snapshot.items.map(\.path)) : []
-        isScanning = false
     }
 
     private func prepareCleanup() async {
@@ -308,7 +364,8 @@ private struct CacheCleanerView: View {
     private func execute(_ plan: CacheCleanupPlan) async {
         isCleaning = true
         let result = await CacheCleanupService.executeCleanup(plan)
-        await scan(selectAll: false)
+        selectAllAfterScan = false
+        scanner.start(force: true)
         isCleaning = false
         monitor.refresh(forceSlowMetrics: true)
 

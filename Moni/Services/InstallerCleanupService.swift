@@ -57,6 +57,7 @@ nonisolated struct InstallerCleanupItem: Identifiable, Sendable {
 nonisolated struct InstallerCleanupSnapshot: Sendable {
     let items: [InstallerCleanupItem]
     let unreadableItemCount: Int
+    let isComplete: Bool
 }
 
 nonisolated struct InstallerCleanupPlan: Identifiable, Sendable {
@@ -75,6 +76,12 @@ nonisolated enum InstallerCleanupService {
     private struct ScanResult: Sendable {
         let items: [InstallerCleanupItem]
         let unreadableItemCount: Int
+        let isComplete: Bool
+    }
+
+    private struct ZipInspection {
+        let isInstaller: Bool
+        let isComplete: Bool
     }
 
     private static let maximumScanDepth = 2
@@ -82,19 +89,26 @@ nonisolated enum InstallerCleanupService {
     private static let maximumZipListingBytes = 256 * 1_024
     private static let macOSInstallerMinimumAge: TimeInterval = 14 * 24 * 60 * 60
     private static let macOSInstallerSizeTimeout: TimeInterval = 30
+    private static let scanTimeLimit: TimeInterval = 30
     private static let cleanupPlanLifetime: TimeInterval = 5 * 60
 
     static func scan() async -> InstallerCleanupSnapshot {
-        let rawResult = await Task.detached(priority: .utility) {
+        let worker = Task.detached(priority: .utility) {
             scanSynchronously()
-        }.value
+        }
+        let rawResult = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
         guard !Task.isCancelled else {
-            return InstallerCleanupSnapshot(items: [], unreadableItemCount: 0)
+            return InstallerCleanupSnapshot(items: [], unreadableItemCount: 0, isComplete: false)
         }
         let eligiblePaths = await CleanupService.shared.eligiblePaths(rawResult.items.map(\.path))
         return InstallerCleanupSnapshot(
             items: rawResult.items.filter { eligiblePaths.contains($0.path) },
-            unreadableItemCount: rawResult.unreadableItemCount
+            unreadableItemCount: rawResult.unreadableItemCount,
+            isComplete: rawResult.isComplete
         )
     }
 
@@ -399,8 +413,25 @@ nonisolated enum InstallerCleanupService {
 
         var itemsByPath: [String: InstallerCleanupItem] = [:]
         var unreadableItemCount = 0
+        var isComplete = true
+        let deadline = Date().addingTimeInterval(scanTimeLimit)
+
+        let macOSInstallers = scanMacOSInstallers(referenceDate: Date(), deadline: deadline)
+        unreadableItemCount += macOSInstallers.unreadableItemCount
+        isComplete = isComplete && macOSInstallers.isComplete
+        for item in macOSInstallers.items {
+            itemsByPath[item.path] = item
+        }
+
         for root in roots {
-            guard !Task.isCancelled else { return ScanResult(items: [], unreadableItemCount: 0) }
+            guard !Task.isCancelled else {
+                return ScanResult(items: [], unreadableItemCount: 0, isComplete: false)
+            }
+            guard Date() < deadline else {
+                unreadableItemCount += 1
+                isComplete = false
+                break
+            }
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
                   isDirectory.boolValue else {
@@ -412,16 +443,25 @@ nonisolated enum InstallerCleanupService {
                 options: [],
                 errorHandler: { _, _ in
                     unreadableItemCount += 1
+                    isComplete = false
                     return true
                 }
             ) else {
                 unreadableItemCount += 1
+                isComplete = false
                 continue
             }
 
             let rootDepth = URL(fileURLWithPath: root.path).pathComponents.count
             while let url = enumerator.nextObject() as? URL {
-                guard !Task.isCancelled else { return ScanResult(items: [], unreadableItemCount: 0) }
+                guard !Task.isCancelled else {
+                    return ScanResult(items: [], unreadableItemCount: 0, isComplete: false)
+                }
+                guard Date() < deadline else {
+                    unreadableItemCount += 1
+                    isComplete = false
+                    break
+                }
                 let depth = url.pathComponents.count - rootDepth
                 if depth > maximumScanDepth {
                     enumerator.skipDescendants()
@@ -429,6 +469,7 @@ nonisolated enum InstallerCleanupService {
                 }
                 guard let metadata = fileMetadata(at: url) else {
                     unreadableItemCount += 1
+                    isComplete = false
                     continue
                 }
                 if metadata.isSymbolicLink {
@@ -436,9 +477,16 @@ nonisolated enum InstallerCleanupService {
                     continue
                 }
                 guard metadata.isRegularFile,
-                      let kind = installerKind(for: url),
-                      kind != .zipArchive || isInstallerZip(url) else {
+                      let kind = installerKind(for: url) else {
                     continue
+                }
+                if kind == .zipArchive {
+                    let inspection = inspectInstallerZip(url, deadline: deadline)
+                    if !inspection.isComplete {
+                        unreadableItemCount += 1
+                        isComplete = false
+                    }
+                    guard inspection.isInstaller else { continue }
                 }
 
                 let path = url.standardizedFileURL.path
@@ -458,12 +506,6 @@ nonisolated enum InstallerCleanupService {
             }
         }
 
-        let macOSInstallers = scanMacOSInstallers(referenceDate: Date())
-        unreadableItemCount += macOSInstallers.unreadableItemCount
-        for item in macOSInstallers.items {
-            itemsByPath[item.path] = item
-        }
-
         let items = itemsByPath.values.sorted {
             if $0.source != $1.source {
                 let lhs = InstallerSource.allCases.firstIndex(of: $0.source) ?? 0
@@ -473,12 +515,16 @@ nonisolated enum InstallerCleanupService {
             if $0.sizeBytes != $1.sizeBytes { return $0.sizeBytes > $1.sizeBytes }
             return $0.path.localizedStandardCompare($1.path) == .orderedAscending
         }
-        return ScanResult(items: items, unreadableItemCount: unreadableItemCount)
+        return ScanResult(
+            items: items,
+            unreadableItemCount: unreadableItemCount,
+            isComplete: isComplete
+        )
     }
 
-    private static func scanMacOSInstallers(referenceDate: Date) -> ScanResult {
+    private static func scanMacOSInstallers(referenceDate: Date, deadline: Date) -> ScanResult {
         guard softwareUpdateQueueIsExplicitlyEmpty() else {
-            return ScanResult(items: [], unreadableItemCount: 0)
+            return ScanResult(items: [], unreadableItemCount: 0, isComplete: true)
         }
         let applications = URL(fileURLWithPath: "/Applications", isDirectory: true)
         let urls: [URL]
@@ -489,13 +535,24 @@ nonisolated enum InstallerCleanupService {
                 options: [.skipsHiddenFiles]
             )
         } catch {
-            return ScanResult(items: [], unreadableItemCount: 1)
+            return ScanResult(items: [], unreadableItemCount: 1, isComplete: false)
         }
 
         var items: [InstallerCleanupItem] = []
         var unreadableItemCount = 0
+        var isComplete = true
         for url in urls where url.lastPathComponent.hasPrefix("Install macOS ") {
-            guard !Task.isCancelled else { return ScanResult(items: [], unreadableItemCount: 0) }
+            guard !Task.isCancelled else {
+                return ScanResult(items: [], unreadableItemCount: 0, isComplete: false)
+            }
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else {
+                return ScanResult(
+                    items: items,
+                    unreadableItemCount: unreadableItemCount + 1,
+                    isComplete: false
+                )
+            }
             guard let identity = directoryIdentity(at: url) else {
                 continue
             }
@@ -508,8 +565,12 @@ nonisolated enum InstallerCleanupService {
             ) else {
                 continue
             }
-            guard let size = directoryAllocatedSize(at: url, timeout: macOSInstallerSizeTimeout) else {
+            guard let size = directoryAllocatedSize(
+                at: url,
+                timeout: min(macOSInstallerSizeTimeout, remaining)
+            ) else {
                 unreadableItemCount += 1
+                isComplete = false
                 continue
             }
             guard macOSInstallerIsEligible(
@@ -532,7 +593,11 @@ nonisolated enum InstallerCleanupService {
                 filesystemFileID: identity.fileID
             ))
         }
-        return ScanResult(items: items, unreadableItemCount: unreadableItemCount)
+        return ScanResult(
+            items: items,
+            unreadableItemCount: unreadableItemCount,
+            isComplete: isComplete
+        )
     }
 
     private static func macOSInstallerIsEligible(
@@ -723,8 +788,15 @@ nonisolated enum InstallerCleanupService {
         }
     }
 
-    private static func isInstallerZip(_ url: URL) -> Bool {
-        guard let executable = zipListExecutable() else { return false }
+    private static func inspectInstallerZip(_ url: URL, deadline: Date) -> ZipInspection {
+        guard let executable = zipListExecutable() else {
+            return ZipInspection(isInstaller: false, isComplete: false)
+        }
+        let remaining = min(5, deadline.timeIntervalSinceNow)
+        guard remaining > 0 else {
+            return ZipInspection(isInstaller: false, isComplete: false)
+        }
+        let inspectionDeadline = Date().addingTimeInterval(remaining)
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: executable.path)
@@ -734,12 +806,12 @@ nonisolated enum InstallerCleanupService {
         do {
             try process.run()
         } catch {
-            return false
+            return ZipInspection(isInstaller: false, isComplete: false)
         }
         let timeout = DispatchWorkItem {
             if process.isRunning { process.terminate() }
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5, execute: timeout)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + remaining, execute: timeout)
         var data = Data()
         var newlineCount = 0
         var stoppedAtEntryLimit = false
@@ -771,12 +843,17 @@ nonisolated enum InstallerCleanupService {
         }
         process.waitUntilExit()
         timeout.cancel()
-        guard !exceededByteLimit,
-              stoppedAtEntryLimit || process.terminationStatus == 0 else {
-            return false
+        guard !exceededByteLimit else {
+            return ZipInspection(isInstaller: false, isComplete: false)
+        }
+        guard stoppedAtEntryLimit || process.terminationStatus == 0 else {
+            return ZipInspection(
+                isInstaller: false,
+                isComplete: Date() < inspectionDeadline
+            )
         }
 
-        return String(decoding: data, as: UTF8.self)
+        let isInstaller = String(decoding: data, as: UTF8.self)
             .split(whereSeparator: \.isNewline)
             .prefix(maximumZipEntries)
             .contains { entry in
@@ -785,6 +862,7 @@ nonisolated enum InstallerCleanupService {
                     lowercased.hasSuffix(suffix) || lowercased.contains(suffix + "/")
                 }
             }
+        return ZipInspection(isInstaller: isInstaller, isComplete: true)
     }
 
     private static func zipListExecutable() -> (path: String, arguments: [String])? {

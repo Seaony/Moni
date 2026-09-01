@@ -19,6 +19,7 @@ nonisolated struct ApplicationRemovalItem: Identifiable, Sendable {
     let path: String
     let kind: ApplicationRemovalKind
     let sizeBytes: UInt64?
+    let isSelectedByDefault: Bool
 
     var id: String { path }
 }
@@ -49,6 +50,17 @@ nonisolated enum ApplicationUninstallService {
     private struct Candidate {
         let path: String
         let kind: ApplicationRemovalKind
+        let isSelectedByDefault: Bool
+
+        init(
+            path: String,
+            kind: ApplicationRemovalKind,
+            isSelectedByDefault: Bool = true
+        ) {
+            self.path = path
+            self.kind = kind
+            self.isSelectedByDefault = isSelectedByDefault
+        }
     }
 
     static func preview(
@@ -87,14 +99,16 @@ nonisolated enum ApplicationUninstallService {
                 kind: candidate.kind,
                 sizeBytes: candidate.kind == .applicationBundle && application.steamAppID != nil
                     ? nil
-                    : quickSize(at: normalized)
+                    : quickSize(at: normalized),
+                isSelectedByDefault: candidate.isSelectedByDefault
             )
         }
         let reviewOnlySystemItems = collapsed(reviewOnlySystemCandidates).map { candidate in
             ApplicationRemovalItem(
                 path: candidate.path,
                 kind: candidate.kind,
-                sizeBytes: quickSize(at: candidate.path)
+                sizeBytes: quickSize(at: candidate.path),
+                isSelectedByDefault: false
             )
         }
 
@@ -137,20 +151,28 @@ nonisolated enum ApplicationUninstallService {
         var candidates: [Candidate] = []
         var isComplete = true
 
-        func add(_ path: String, _ kind: ApplicationRemovalKind) {
+        func add(
+            _ path: String,
+            _ kind: ApplicationRemovalKind,
+            selectedByDefault: Bool = true
+        ) {
             if pathExists(path) {
-                candidates.append(Candidate(path: path, kind: kind))
+                candidates.append(Candidate(
+                    path: path,
+                    kind: kind,
+                    isSelectedByDefault: selectedByDefault
+                ))
             }
         }
 
         let names = safeNameVariants(application.name)
         for name in names {
-            add(home + "/Library/Application Support/" + name, .applicationSupport)
-            add(home + "/Library/Caches/" + name, .cache)
-            add(home + "/Library/Logs/" + name, .log)
-            add(home + "/Library/Preferences/" + name, .preference)
-            add(home + "/Library/Preferences/" + name + ".plist", .preference)
-            add(home + "/Library/Saved Application State/" + name + ".savedState", .savedState)
+            add(home + "/Library/Application Support/" + name, .applicationSupport, selectedByDefault: false)
+            add(home + "/Library/Caches/" + name, .cache, selectedByDefault: false)
+            add(home + "/Library/Logs/" + name, .log, selectedByDefault: false)
+            add(home + "/Library/Preferences/" + name, .preference, selectedByDefault: false)
+            add(home + "/Library/Preferences/" + name + ".plist", .preference, selectedByDefault: false)
+            add(home + "/Library/Saved Application State/" + name + ".savedState", .savedState, selectedByDefault: false)
         }
 
         if let bundleIdentifier = application.bundleIdentifier,
@@ -159,11 +181,11 @@ nonisolated enum ApplicationUninstallService {
                 bundleIdentifier: bundleIdentifier,
                 applicationName: application.name
             ) {
-                add(home + "/Library/Application Support/" + name, .applicationSupport)
-                add(home + "/Library/Caches/" + name, .cache)
-                add(home + "/Library/Logs/" + name, .log)
-                add(home + "/Library/Preferences/" + name + ".plist", .preference)
-                add(home + "/Library/Saved Application State/" + name + ".savedState", .savedState)
+                add(home + "/Library/Application Support/" + name, .applicationSupport, selectedByDefault: false)
+                add(home + "/Library/Caches/" + name, .cache, selectedByDefault: false)
+                add(home + "/Library/Logs/" + name, .log, selectedByDefault: false)
+                add(home + "/Library/Preferences/" + name + ".plist", .preference, selectedByDefault: false)
+                add(home + "/Library/Saved Application State/" + name + ".savedState", .savedState, selectedByDefault: false)
             }
 
             let nested = vendorNestedCandidates(
@@ -199,15 +221,15 @@ nonisolated enum ApplicationUninstallService {
             (home + "/Library/Accessibility/" + application.name + ".bundle", .other),
             (home + "/Library/Mail/Bundles/" + application.name + ".mailbundle", .other)
         ]
-        for (path, kind) in pluginPaths { add(path, kind) }
+        for (path, kind) in pluginPaths { add(path, kind, selectedByDefault: false) }
 
         let independentCLINames: Set<String> = ["claude", "opencode", "codex", "gemini"]
         if !independentCLINames.contains(application.name.lowercased()) {
             let xdgNames = Set(names.flatMap { [$0, $0.lowercased()] })
             for name in xdgNames {
-                add(home + "/.config/" + name, .applicationSupport)
-                add(home + "/.cache/" + name, .cache)
-                add(home + "/.local/share/" + name, .applicationSupport)
+                add(home + "/.config/" + name, .applicationSupport, selectedByDefault: false)
+                add(home + "/.cache/" + name, .cache, selectedByDefault: false)
+                add(home + "/.local/share/" + name, .applicationSupport, selectedByDefault: false)
             }
         }
 
@@ -1083,16 +1105,37 @@ nonisolated enum ApplicationUninstallService {
     }
 
     private static func collapsed(_ candidates: [Candidate]) -> [Candidate] {
-        var seen: Set<String> = []
-        let unique = candidates.compactMap { candidate -> Candidate? in
+        var uniqueByPath: [String: Candidate] = [:]
+        for candidate in candidates {
             let path = URL(fileURLWithPath: candidate.path).standardizedFileURL.path
-            guard seen.insert(path.lowercased()).inserted else { return nil }
-            return Candidate(path: path, kind: candidate.kind)
+            let key = path.lowercased()
+            if let existing = uniqueByPath[key] {
+                uniqueByPath[key] = Candidate(
+                    path: path,
+                    kind: existing.kind,
+                    isSelectedByDefault: existing.isSelectedByDefault || candidate.isSelectedByDefault
+                )
+            } else {
+                uniqueByPath[key] = Candidate(
+                    path: path,
+                    kind: candidate.kind,
+                    isSelectedByDefault: candidate.isSelectedByDefault
+                )
+            }
         }
-        return unique.sorted { pathDepth($0.path) < pathDepth($1.path) }.reduce(into: []) { result, candidate in
-            guard !result.contains(where: { pathContains($0.path, candidate.path) }) else { return }
-            result.append(candidate)
-        }
+        return uniqueByPath.values
+            .sorted { pathDepth($0.path) < pathDepth($1.path) }
+            .reduce(into: []) { result, candidate in
+                let containingParent = result.first {
+                    pathContains($0.path, candidate.path)
+                }
+                guard containingParent == nil
+                        || containingParent?.isSelectedByDefault == false
+                            && candidate.isSelectedByDefault else {
+                    return
+                }
+                result.append(candidate)
+            }
     }
 
     private static func pathDepth(_ path: String) -> Int {

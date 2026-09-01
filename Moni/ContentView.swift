@@ -416,4 +416,5 @@ private struct ModulePlaceholder: View {
 #Preview {
     ContentView()
         .environmentObject(SystemMonitor())
+        .environmentObject(CacheCleanupScanner())
 }

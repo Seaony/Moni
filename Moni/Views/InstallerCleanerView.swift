@@ -5,6 +5,7 @@ struct InstallerCleanerView: View {
     @State private var items: [InstallerCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var unreadableItemCount = 0
+    @State private var isScanComplete = true
     @State private var isScanning = false
     @State private var isCleaning = false
     @State private var pendingPlan: InstallerCleanupPlan?
@@ -22,6 +23,13 @@ struct InstallerCleanerView: View {
                         .font(.system(size: 12.5))
                         .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if items.isEmpty, !isScanComplete {
+                ContentUnavailableView(
+                    "Scan incomplete",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("The scan reached its time limit. Rescan to check the remaining locations.")
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if items.isEmpty {
                 ContentUnavailableView(
@@ -268,6 +276,7 @@ struct InstallerCleanerView: View {
         }
         items = snapshot.items
         unreadableItemCount = snapshot.unreadableItemCount
+        isScanComplete = snapshot.isComplete
         selectedPaths = []
         isScanning = false
     }

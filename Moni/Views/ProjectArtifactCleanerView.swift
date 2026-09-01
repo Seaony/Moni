@@ -23,6 +23,13 @@ struct ProjectArtifactCleanerView: View {
                         .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if items.isEmpty, failedRootCount > 0 {
+                ContentUnavailableView(
+                    "Scan incomplete",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("Some project locations could not be fully scanned. Rescan to try again.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if items.isEmpty {
                 ContentUnavailableView(
                     "No project artifacts",
@@ -109,7 +116,8 @@ struct ProjectArtifactCleanerView: View {
             summaryCard("Projects", projectGroups.count.formatted(), color: MoniPalette.orange)
             if unknownSizeCount > 0 {
                 summaryCard("Unknown size", unknownSizeCount.formatted(), color: MoniPalette.yellow)
-            } else if failedRootCount > 0 {
+            }
+            if failedRootCount > 0 {
                 summaryCard("Unavailable roots", failedRootCount.formatted(), color: MoniPalette.red)
             }
         }

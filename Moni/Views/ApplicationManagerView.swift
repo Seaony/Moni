@@ -404,7 +404,7 @@ struct ApplicationManagerView: View {
         let preview = await ApplicationUninstallService.preview(application: application, inventory: inventory)
         guard !Task.isCancelled, selectedApplicationPath == application.path else { return }
         removalPreview = preview
-        selectedRemovalPaths = Set(preview.items.map(\.path))
+        selectedRemovalPaths = Set(preview.items.filter(\.isSelectedByDefault).map(\.path))
         isPreparing = false
     }
 

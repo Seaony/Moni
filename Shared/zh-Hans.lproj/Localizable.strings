@@ -128,6 +128,9 @@
 "Preview selected items before moving them to Trash" = "预览所选项目，然后移到废纸篓";
 "Select for cleanup" = "选择进行清理";
 "Remove from cleanup" = "从清理选择中移除";
+"Scan incomplete" = "扫描未完成";
+"The scan reached its time limit. Rescan to check the remaining locations." = "扫描已达到时间上限，请重新扫描以检查其余位置。";
+"Some project locations could not be fully scanned. Rescan to try again." = "部分项目位置未能完整扫描，请重新扫描后再试。";
 "Cleanup result" = "清理结果";
 "OK" = "好";
 "Moved %@ items to Trash." = "已将 %@ 个项目移到废纸篓。";
@@ -155,6 +158,12 @@
 "Maintenance" = "系统维护";
 "Review rebuildable user caches and logs before moving them to Trash." = "检查可重建的用户缓存和日志，确认后再移到废纸篓。";
 "Scanning caches and logs…" = "正在扫描缓存和日志…";
+"Preparing cache scan…" = "正在准备缓存扫描…";
+"Scanning user caches and logs…" = "正在扫描用户缓存和日志…";
+"Scanning browser caches…" = "正在扫描浏览器缓存…";
+"Scanning application caches…" = "正在扫描应用缓存…";
+"Scanning developer caches…" = "正在扫描开发工具缓存…";
+"Finishing cache scan…" = "正在整理扫描结果…";
 "No cleanable items" = "没有可清理项目";
 "No cleanable cache or log files were found." = "未发现可清理的缓存或日志文件。";
 "Rescan" = "重新扫描";

@@ -125,6 +125,27 @@ nonisolated struct CacheCleanupSnapshot: Sendable {
     let items: [CacheCleanupItem]
     let scannedBytes: UInt64
     let unreadableItemCount: Int
+    let isComplete: Bool
+}
+
+nonisolated enum CacheCleanupScanPhase: Sendable {
+    case preparing
+    case userFiles
+    case browsers
+    case applications
+    case developerTools
+    case finishing
+
+    var titleKey: String {
+        switch self {
+        case .preparing: "Preparing cache scan…"
+        case .userFiles: "Scanning user caches and logs…"
+        case .browsers: "Scanning browser caches…"
+        case .applications: "Scanning application caches…"
+        case .developerTools: "Scanning developer caches…"
+        case .finishing: "Finishing cache scan…"
+        }
+    }
 }
 
 nonisolated struct CacheCleanupPlan: Identifiable, Sendable {
@@ -135,6 +156,42 @@ nonisolated struct CacheCleanupPlan: Identifiable, Sendable {
 }
 
 nonisolated enum CacheCleanupService {
+    typealias ProgressHandler = @Sendable (CacheCleanupScanPhase) -> Void
+
+    private final class ScanBudget: @unchecked Sendable {
+        private let deadline: Date
+        private let lock = NSLock()
+        private var timedOut = false
+
+        init(timeLimit: TimeInterval) {
+            deadline = Date().addingTimeInterval(timeLimit)
+        }
+
+        func remaining(cappedAt timeLimit: TimeInterval) -> TimeInterval? {
+            let remaining = min(timeLimit, deadline.timeIntervalSinceNow)
+            guard remaining > 0 else {
+                markTimedOut()
+                return nil
+            }
+            return remaining
+        }
+
+        func markTimedOut() {
+            lock.lock()
+            timedOut = true
+            lock.unlock()
+        }
+
+        var isComplete: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return !timedOut
+        }
+    }
+
+    @TaskLocal private static var activeScanBudget: ScanBudget?
+    private static let totalScanTimeLimit: TimeInterval = 60
+
     private struct Source: Sendable {
         let path: String
         let category: CacheCleanupCategory
@@ -166,7 +223,38 @@ nonisolated enum CacheCleanupService {
         let launcher: String
     }
 
-    static func scan() async -> CacheCleanupSnapshot {
+    private struct ScanResult: Sendable {
+        let items: [CacheCleanupItem]
+        let unreadableItemCount: Int
+
+        init(
+            items: [CacheCleanupItem],
+            unreadableItemCount: Int
+        ) {
+            self.items = items
+            self.unreadableItemCount = unreadableItemCount
+        }
+
+        init(_ result: (items: [CacheCleanupItem], unreadableItemCount: Int)) {
+            self.init(items: result.items, unreadableItemCount: result.unreadableItemCount)
+        }
+    }
+
+    private struct ScanJob: Sendable {
+        let operation: @Sendable () async -> ScanResult
+    }
+
+    static func scan(progress: ProgressHandler? = nil) async -> CacheCleanupSnapshot {
+        let budget = ScanBudget(timeLimit: totalScanTimeLimit)
+        return await $activeScanBudget.withValue(budget) {
+            await scanWithinBudget(progress: progress)
+        }
+    }
+
+    private static func scanWithinBudget(
+        progress: ProgressHandler?
+    ) async -> CacheCleanupSnapshot {
+        progress?(.preparing)
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         let userCacheProcessGuard = await Task.detached(priority: .utility) {
             UserCacheProcessGuard.capture()
@@ -177,312 +265,171 @@ nonisolated enum CacheCleanupService {
             Source(path: home + "/Library/DiagnosticReports", category: .diagnosticReports),
             Source(path: home + "/Library/Saved Application State", category: .savedApplicationState)
         ]
+        let resolvedPythonPackageCacheRoots = pythonPackageCacheRoots()
+        let resolvedMiseCacheRoot = miseCacheRoot()
+        let cacheExclusions = Set([
+            diaGeneralCacheRoot(),
+            googleGeneralCacheRoot(),
+            firefoxGeneralCacheRoot(),
+            braveGeneralCacheRoot(),
+            arcGeneralCacheRoot(),
+            vivaldiGeneralCacheRoot(),
+            qqBrowserGeneralCacheRoot(),
+            heliumGeneralCacheRoot(),
+            xcodeApplicationCacheRoot(),
+            utmApplicationCacheRoot()
+        ] + resolvedPythonPackageCacheRoots + [resolvedMiseCacheRoot].compactMap { $0 })
+        let logExclusions = Set([coreSimulatorLogRoot()])
 
         var discoveredItems: [CacheCleanupItem] = []
         var unreadableItemCount = 0
 
-        for source in sources {
-            guard !Task.isCancelled,
-                  FileManager.default.fileExists(atPath: source.path) else {
-                continue
-            }
-
-            var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: source.path) {
-                guard !Task.isCancelled else {
-                    return CacheCleanupSnapshot(items: [], scannedBytes: 0, unreadableItemCount: 0)
+        progress?(.userFiles)
+        let sourceResults = await runScanJobs(sources.map { source in
+            ScanJob {
+                guard !Task.isCancelled,
+                      FileManager.default.fileExists(atPath: source.path) else {
+                    return ScanResult(items: [], unreadableItemCount: 0)
                 }
-                if update.isComplete {
-                    finalUpdate = update
+                let exclusions: Set<String>
+                switch source.category {
+                case .userCaches: exclusions = cacheExclusions
+                case .userLogs: exclusions = logExclusions
+                default: exclusions = []
                 }
-            }
-
-            guard let finalUpdate else { continue }
-            unreadableItemCount += finalUpdate.unreadableItemCount
-            discoveredItems.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
-                let name = URL(fileURLWithPath: path).lastPathComponent
-                guard size > 0,
-                      !name.hasPrefix("."),
-                      source.category != .userCaches
-                        || UserCacheProcessGuard.permits(path, using: userCacheProcessGuard) else {
-                    return nil
+                var finalUpdate: DiskAnalysisUpdate?
+                for await update in boundedFinalUpdates(
+                    for: source.path,
+                    timeLimit: 30,
+                    excludingPaths: exclusions
+                ) {
+                    guard !Task.isCancelled else {
+                        return ScanResult(items: [], unreadableItemCount: 0)
+                    }
+                    if update.isComplete { finalUpdate = update }
                 }
-                return CacheCleanupItem(path: path, category: source.category, sizeBytes: size)
-            })
-        }
-
-        let resolvedPythonPackageCacheRoots = pythonPackageCacheRoots()
-        let resolvedMiseCacheRoot = miseCacheRoot()
-        discoveredItems.removeAll { item in
-            (item.category == .userCaches
-                && (pathsEqual(item.path, diaGeneralCacheRoot())
-                    || pathsEqual(item.path, googleGeneralCacheRoot())
-                    || pathsEqual(item.path, firefoxGeneralCacheRoot())
-                    || pathsEqual(item.path, braveGeneralCacheRoot())
-                    || pathsEqual(item.path, arcGeneralCacheRoot())
-                    || pathsEqual(item.path, vivaldiGeneralCacheRoot())
-                    || pathsEqual(item.path, qqBrowserGeneralCacheRoot())
-                    || pathsEqual(item.path, heliumGeneralCacheRoot())
-                    || pathsEqual(item.path, xcodeApplicationCacheRoot())
-                    || resolvedPythonPackageCacheRoots.contains(where: { pathsEqual(item.path, $0) })
-                    || resolvedMiseCacheRoot.map { pathsEqual(item.path, $0) } == true))
-                || (item.category == .userLogs
-                    && pathsEqual(item.path, coreSimulatorLogRoot()))
-        }
-
-        let diaIsSafe = await Task.detached(priority: .utility) {
-            diaIsInactive()
-        }.value
-        if diaIsSafe {
-            let browserProfileCaches = await scanDiaProfileCaches()
-            discoveredItems.append(contentsOf: browserProfileCaches.items)
-            unreadableItemCount += browserProfileCaches.unreadableItemCount
-        }
-
-        let chromeIsSafe = await Task.detached(priority: .utility) {
-            chromeIsInactive()
-        }.value
-        if chromeIsSafe {
-            let chromeProfileCaches = await scanChromeProfileCaches()
-            discoveredItems.append(contentsOf: chromeProfileCaches.items)
-            unreadableItemCount += chromeProfileCaches.unreadableItemCount
-        }
-
-        let firefoxIsSafe = await Task.detached(priority: .utility) {
-            firefoxIsInactive()
-        }.value
-        if firefoxIsSafe {
-            let firefoxProfileCaches = await scanFirefoxProfileCaches()
-            discoveredItems.append(contentsOf: firefoxProfileCaches.items)
-            unreadableItemCount += firefoxProfileCaches.unreadableItemCount
-        }
-
-        let braveIsSafe = await Task.detached(priority: .utility) {
-            braveIsInactive()
-        }.value
-        if braveIsSafe {
-            let braveProfileCaches = await scanBraveProfileCaches()
-            discoveredItems.append(contentsOf: braveProfileCaches.items)
-            unreadableItemCount += braveProfileCaches.unreadableItemCount
-        }
-
-        let arcIsSafe = await Task.detached(priority: .utility) {
-            arcIsInactive()
-        }.value
-        if arcIsSafe {
-            let arcProfileCaches = await scanArcProfileCaches()
-            discoveredItems.append(contentsOf: arcProfileCaches.items)
-            unreadableItemCount += arcProfileCaches.unreadableItemCount
-        }
-
-        let vivaldiIsSafe = await Task.detached(priority: .utility) {
-            vivaldiIsInactive()
-        }.value
-        if vivaldiIsSafe {
-            let vivaldiProfileCaches = await scanVivaldiProfileCaches()
-            discoveredItems.append(contentsOf: vivaldiProfileCaches.items)
-            unreadableItemCount += vivaldiProfileCaches.unreadableItemCount
-        }
-
-        let qqBrowserIsSafe = await Task.detached(priority: .utility) {
-            qqBrowserIsInactive()
-        }.value
-        if qqBrowserIsSafe {
-            let qqBrowserProfileCaches = await scanQQBrowserProfileCaches()
-            discoveredItems.append(contentsOf: qqBrowserProfileCaches.items)
-            unreadableItemCount += qqBrowserProfileCaches.unreadableItemCount
-        }
-
-        let puppeteerCaches = await scanPuppeteerCaches()
-        discoveredItems.append(contentsOf: puppeteerCaches.items)
-        unreadableItemCount += puppeteerCaches.unreadableItemCount
-
-        let heliumProcessGuard = await Task.detached(priority: .utility) {
-            UserCacheProcessGuard.capture()
-        }.value
-        if UserCacheProcessGuard.permits(owner: heliumOwner, using: heliumProcessGuard) {
-            let heliumProfileCaches = await scanHeliumProfileCaches()
-            discoveredItems.append(contentsOf: heliumProfileCaches.items)
-            unreadableItemCount += heliumProfileCaches.unreadableItemCount
-        }
-
-        let browserServiceWorkerCaches = await scanBrowserServiceWorkerCaches()
-        discoveredItems.append(contentsOf: browserServiceWorkerCaches.items)
-        unreadableItemCount += browserServiceWorkerCaches.unreadableItemCount
-
-        let browserOldVersions = await scanBrowserOldVersions()
-        discoveredItems.append(contentsOf: browserOldVersions.items)
-        unreadableItemCount += browserOldVersions.unreadableItemCount
-
-        let edgeUpdaterOldVersions = await scanEdgeUpdaterOldVersions()
-        discoveredItems.append(contentsOf: edgeUpdaterOldVersions.items)
-        unreadableItemCount += edgeUpdaterOldVersions.unreadableItemCount
-
-        let googleUpdaterCaches = await scanGoogleUpdaterCaches()
-        discoveredItems.append(contentsOf: googleUpdaterCaches.items)
-        unreadableItemCount += googleUpdaterCaches.unreadableItemCount
-
-        let sandboxedAppCaches = await scanSandboxedAppCaches(processGuard: userCacheProcessGuard)
-        discoveredItems.append(contentsOf: sandboxedAppCaches.items)
-        unreadableItemCount += sandboxedAppCaches.unreadableItemCount
-
-        let utmIsSafe = await Task.detached(priority: .utility) {
-            utmIsInactive()
-        }.value
-        if !utmIsSafe {
-            discoveredItems.removeAll { item in
-                item.category == .userCaches && pathsEqual(item.path, utmApplicationCacheRoot())
+                guard let finalUpdate else {
+                    return ScanResult(items: [], unreadableItemCount: 1)
+                }
+                let items: [CacheCleanupItem] = finalUpdate.entrySizes.compactMap { entry in
+                    let (path, size) = entry
+                    let name = URL(fileURLWithPath: path).lastPathComponent
+                    guard size > 0,
+                          !name.hasPrefix("."),
+                          source.category != .userCaches
+                            || UserCacheProcessGuard.permits(path, using: userCacheProcessGuard) else {
+                        return nil
+                    }
+                    return CacheCleanupItem(path: path, category: source.category, sizeBytes: size)
+                }
+                return ScanResult(
+                    items: items,
+                    unreadableItemCount: finalUpdate.unreadableItemCount
+                )
             }
-        } else {
-            let utmCaches = await scanUTMCaches()
-            discoveredItems.append(contentsOf: utmCaches.items)
-            unreadableItemCount += utmCaches.unreadableItemCount
+        })
+        append(sourceResults, to: &discoveredItems, unreadableItemCount: &unreadableItemCount)
+
+        progress?(.browsers)
+        let browserResults = await runScanJobs([
+            ScanJob {
+                guard diaIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
+                return ScanResult(await scanDiaProfileCaches())
+            },
+            ScanJob {
+                guard chromeIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
+                return ScanResult(await scanChromeProfileCaches())
+            },
+            ScanJob {
+                guard firefoxIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
+                return ScanResult(await scanFirefoxProfileCaches())
+            },
+            ScanJob {
+                guard braveIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
+                return ScanResult(await scanBraveProfileCaches())
+            },
+            ScanJob {
+                guard arcIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
+                return ScanResult(await scanArcProfileCaches())
+            },
+            ScanJob {
+                guard vivaldiIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
+                return ScanResult(await scanVivaldiProfileCaches())
+            },
+            ScanJob {
+                guard qqBrowserIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
+                return ScanResult(await scanQQBrowserProfileCaches())
+            },
+            ScanJob { ScanResult(await scanPuppeteerCaches()) },
+            ScanJob {
+                let processGuard = UserCacheProcessGuard.capture()
+                guard UserCacheProcessGuard.permits(owner: heliumOwner, using: processGuard) else {
+                    return ScanResult(items: [], unreadableItemCount: 0)
+                }
+                return ScanResult(await scanHeliumProfileCaches())
+            },
+            ScanJob { ScanResult(await scanBrowserServiceWorkerCaches()) },
+            ScanJob { ScanResult(await scanBrowserOldVersions()) },
+            ScanJob { ScanResult(await scanEdgeUpdaterOldVersions()) },
+            ScanJob { ScanResult(await scanGoogleUpdaterCaches()) }
+        ])
+        append(browserResults, to: &discoveredItems, unreadableItemCount: &unreadableItemCount)
+
+        progress?(.applications)
+        let applicationResults = await runScanJobs([
+            ScanJob { ScanResult(await scanSandboxedAppCaches(processGuard: userCacheProcessGuard)) },
+            ScanJob {
+                guard utmIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
+                return ScanResult(await scanUTMCaches())
+            },
+            ScanJob { ScanResult(await scanSharedContainerLogs()) },
+            ScanJob { ScanResult(await scanSharedContainerCaches(processGuard: userCacheProcessGuard)) },
+            ScanJob { ScanResult(await scanApplicationSupportCaches()) },
+            ScanJob { ScanResult(await scanVirtualizationTemporaryData()) },
+            ScanJob { ScanResult(scanIncompleteDownloads()) },
+            ScanJob { ScanResult(scanOldMailAttachments(referenceDate: Date())) },
+            ScanJob { ScanResult(scanRecentItems()) },
+            ScanJob { ScanResult(scanFinderMetadata()) },
+            ScanJob { ScanResult(scanExternalVolumeMetadata()) },
+            ScanJob { ScanResult(await scanExternalVolumeTemporaryData()) },
+            ScanJob { ScanResult(scanOldCrashReports(referenceDate: Date())) },
+            ScanJob { ScanResult(await scanMessagesPreviewCaches()) },
+            ScanJob { ScanResult(await scanIdentityAndSuggestionCaches()) },
+            ScanJob { ScanResult(await scanCalendarCache()) },
+            ScanJob { ScanResult(await scanAddressBookPhotoCaches()) },
+            ScanJob { ScanResult(await scanHandoffClipboard(referenceDate: Date())) },
+            ScanJob { ScanResult(scanCachedDeviceFirmware()) }
+        ])
+        append(applicationResults, to: &discoveredItems, unreadableItemCount: &unreadableItemCount)
+
+        progress?(.developerTools)
+        let developerResults = await runScanJobs([
+            ScanJob { ScanResult(await scanNodePackageCaches()) },
+            ScanJob { ScanResult(await scanPythonPackageCaches()) },
+            ScanJob { ScanResult(await scanDeveloperToolCaches()) },
+            ScanJob { ScanResult(await scanMiseCache(root: resolvedMiseCacheRoot)) },
+            ScanJob { ScanResult(await scanRustCaches()) },
+            ScanJob { ScanResult(await scanGoCaches()) },
+            ScanJob { ScanResult(await scanClangModuleCache()) },
+            ScanJob { ScanResult(await scanXcodeBuildCaches()) },
+            ScanJob { ScanResult(await scanSimulatorCaches()) },
+            ScanJob { ScanResult(await scanXcodeDeviceSupport()) },
+            ScanJob { ScanResult(await scanGradleCaches()) },
+            ScanJob { ScanResult(await scanJetBrainsToolboxOldVersions()) },
+            ScanJob { ScanResult(await scanDeveloperToolOldVersions()) },
+            ScanJob { ScanResult(await scanObsoleteEditorExtensions()) },
+            ScanJob { ScanResult(scanDeveloperBackupFiles()) }
+        ])
+        append(developerResults, to: &discoveredItems, unreadableItemCount: &unreadableItemCount)
+
+        progress?(.finishing)
+        var uniqueItemsByPath: [String: CacheCleanupItem] = [:]
+        for item in discoveredItems {
+            uniqueItemsByPath[item.path] = item
         }
-
-        let sharedContainerLogs = await scanSharedContainerLogs()
-        discoveredItems.append(contentsOf: sharedContainerLogs.items)
-        unreadableItemCount += sharedContainerLogs.unreadableItemCount
-
-        let sharedContainerCaches = await scanSharedContainerCaches(processGuard: userCacheProcessGuard)
-        discoveredItems.append(contentsOf: sharedContainerCaches.items)
-        unreadableItemCount += sharedContainerCaches.unreadableItemCount
-
-        let applicationSupportCaches = await scanApplicationSupportCaches()
-        discoveredItems.append(contentsOf: applicationSupportCaches.items)
-        unreadableItemCount += applicationSupportCaches.unreadableItemCount
-
-        let virtualizationTemporaryData = await scanVirtualizationTemporaryData()
-        discoveredItems.append(contentsOf: virtualizationTemporaryData.items)
-        unreadableItemCount += virtualizationTemporaryData.unreadableItemCount
-
-        let incompleteDownloads = await Task.detached(priority: .utility) {
-            scanIncompleteDownloads()
-        }.value
-        discoveredItems.append(contentsOf: incompleteDownloads.items)
-        unreadableItemCount += incompleteDownloads.unreadableItemCount
-
-        let mailAttachments = await Task.detached(priority: .utility) {
-            scanOldMailAttachments(referenceDate: Date())
-        }.value
-        discoveredItems.append(contentsOf: mailAttachments.items)
-        unreadableItemCount += mailAttachments.unreadableItemCount
-
-        let recentItems = await Task.detached(priority: .utility) {
-            scanRecentItems()
-        }.value
-        discoveredItems.append(contentsOf: recentItems.items)
-        unreadableItemCount += recentItems.unreadableItemCount
-
-        let finderMetadata = await Task.detached(priority: .utility) {
-            scanFinderMetadata()
-        }.value
-        discoveredItems.append(contentsOf: finderMetadata.items)
-        unreadableItemCount += finderMetadata.unreadableItemCount
-
-        let externalVolumeMetadata = await Task.detached(priority: .utility) {
-            scanExternalVolumeMetadata()
-        }.value
-        discoveredItems.append(contentsOf: externalVolumeMetadata.items)
-        unreadableItemCount += externalVolumeMetadata.unreadableItemCount
-
-        let externalVolumeTemporaryData = await scanExternalVolumeTemporaryData()
-        discoveredItems.append(contentsOf: externalVolumeTemporaryData.items)
-        unreadableItemCount += externalVolumeTemporaryData.unreadableItemCount
-
-        let oldCrashReports = await Task.detached(priority: .utility) {
-            scanOldCrashReports(referenceDate: Date())
-        }.value
-        discoveredItems.append(contentsOf: oldCrashReports.items)
-        unreadableItemCount += oldCrashReports.unreadableItemCount
-
-        let messagesPreviewCaches = await scanMessagesPreviewCaches()
-        discoveredItems.append(contentsOf: messagesPreviewCaches.items)
-        unreadableItemCount += messagesPreviewCaches.unreadableItemCount
-
-        let identityAndSuggestionCaches = await scanIdentityAndSuggestionCaches()
-        discoveredItems.append(contentsOf: identityAndSuggestionCaches.items)
-        unreadableItemCount += identityAndSuggestionCaches.unreadableItemCount
-
-        let calendarCache = await scanCalendarCache()
-        discoveredItems.append(contentsOf: calendarCache.items)
-        unreadableItemCount += calendarCache.unreadableItemCount
-
-        let addressBookPhotoCaches = await scanAddressBookPhotoCaches()
-        discoveredItems.append(contentsOf: addressBookPhotoCaches.items)
-        unreadableItemCount += addressBookPhotoCaches.unreadableItemCount
-
-        let handoffClipboard = await scanHandoffClipboard(referenceDate: Date())
-        discoveredItems.append(contentsOf: handoffClipboard.items)
-        unreadableItemCount += handoffClipboard.unreadableItemCount
-
-        let cachedDeviceFirmware = await Task.detached(priority: .utility) {
-            scanCachedDeviceFirmware()
-        }.value
-        discoveredItems.append(contentsOf: cachedDeviceFirmware.items)
-        unreadableItemCount += cachedDeviceFirmware.unreadableItemCount
-
-        let nodePackageCaches = await scanNodePackageCaches()
-        discoveredItems.append(contentsOf: nodePackageCaches.items)
-        unreadableItemCount += nodePackageCaches.unreadableItemCount
-
-        let pythonPackageCaches = await scanPythonPackageCaches()
-        discoveredItems.append(contentsOf: pythonPackageCaches.items)
-        unreadableItemCount += pythonPackageCaches.unreadableItemCount
-
-        let developerToolCaches = await scanDeveloperToolCaches()
-        discoveredItems.append(contentsOf: developerToolCaches.items)
-        unreadableItemCount += developerToolCaches.unreadableItemCount
-
-        let miseCache = await scanMiseCache(root: resolvedMiseCacheRoot)
-        discoveredItems.append(contentsOf: miseCache.items)
-        unreadableItemCount += miseCache.unreadableItemCount
-
-        let rustCaches = await scanRustCaches()
-        discoveredItems.append(contentsOf: rustCaches.items)
-        unreadableItemCount += rustCaches.unreadableItemCount
-
-        let goCaches = await scanGoCaches()
-        discoveredItems.append(contentsOf: goCaches.items)
-        unreadableItemCount += goCaches.unreadableItemCount
-
-        let clangModuleCache = await scanClangModuleCache()
-        discoveredItems.append(contentsOf: clangModuleCache.items)
-        unreadableItemCount += clangModuleCache.unreadableItemCount
-
-        let xcodeBuildCaches = await scanXcodeBuildCaches()
-        discoveredItems.append(contentsOf: xcodeBuildCaches.items)
-        unreadableItemCount += xcodeBuildCaches.unreadableItemCount
-
-        let simulatorCaches = await scanSimulatorCaches()
-        discoveredItems.append(contentsOf: simulatorCaches.items)
-        unreadableItemCount += simulatorCaches.unreadableItemCount
-
-        let xcodeDeviceSupport = await scanXcodeDeviceSupport()
-        discoveredItems.append(contentsOf: xcodeDeviceSupport.items)
-        unreadableItemCount += xcodeDeviceSupport.unreadableItemCount
-
-        let gradleCaches = await scanGradleCaches()
-        discoveredItems.append(contentsOf: gradleCaches.items)
-        unreadableItemCount += gradleCaches.unreadableItemCount
-
-        let toolboxVersions = await scanJetBrainsToolboxOldVersions()
-        discoveredItems.append(contentsOf: toolboxVersions.items)
-        unreadableItemCount += toolboxVersions.unreadableItemCount
-
-        let developerToolVersions = await scanDeveloperToolOldVersions()
-        discoveredItems.append(contentsOf: developerToolVersions.items)
-        unreadableItemCount += developerToolVersions.unreadableItemCount
-
-        let obsoleteEditorExtensions = await scanObsoleteEditorExtensions()
-        discoveredItems.append(contentsOf: obsoleteEditorExtensions.items)
-        unreadableItemCount += obsoleteEditorExtensions.unreadableItemCount
-
-        let developerBackupFiles = scanDeveloperBackupFiles()
-        discoveredItems.append(contentsOf: developerBackupFiles.items)
-        unreadableItemCount += developerBackupFiles.unreadableItemCount
-
-        let eligiblePaths = await CleanupService.shared.eligiblePaths(discoveredItems.map(\.path))
-        let items = discoveredItems
+        let uniqueItems = Array(uniqueItemsByPath.values)
+        let eligiblePaths = await CleanupService.shared.eligiblePaths(uniqueItems.map(\.path))
+        let items = uniqueItems
             .filter { eligiblePaths.contains($0.path) }
             .sorted {
                 if $0.category != $1.category {
@@ -501,8 +448,91 @@ nonisolated enum CacheCleanupService {
         return CacheCleanupSnapshot(
             items: items,
             scannedBytes: scannedBytes,
-            unreadableItemCount: unreadableItemCount
+            unreadableItemCount: unreadableItemCount,
+            isComplete: (activeScanBudget?.isComplete ?? true) && unreadableItemCount == 0
         )
+    }
+
+    private static func boundedFinalUpdates(
+        for rootPath: String,
+        timeLimit: TimeInterval = 6,
+        excludingPaths: Set<String> = []
+    ) -> AsyncStream<DiskAnalysisUpdate> {
+        guard let budget = activeScanBudget else {
+            return DiskAnalyzer.finalUpdates(
+                for: rootPath,
+                timeLimit: timeLimit,
+                excludingPaths: excludingPaths
+            )
+        }
+        guard let effectiveTimeLimit = budget.remaining(cappedAt: timeLimit) else {
+            return AsyncStream { $0.finish() }
+        }
+
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let task = Task(priority: .utility) {
+                for await update in DiskAnalyzer.finalUpdates(
+                    for: rootPath,
+                    timeLimit: effectiveTimeLimit,
+                    excludingPaths: excludingPaths
+                ) {
+                    if !update.isComplete { budget.markTimedOut() }
+                    continuation.yield(update)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private static var scanBudgetAllowsWork: Bool {
+        guard let budget = activeScanBudget else { return true }
+        return budget.remaining(cappedAt: totalScanTimeLimit) != nil
+    }
+
+    private static func runScanJobs(
+        _ jobs: [ScanJob],
+        maxConcurrent: Int = 4
+    ) async -> [ScanResult] {
+        guard !jobs.isEmpty, scanBudgetAllowsWork else {
+            return []
+        }
+        return await withTaskGroup(of: (Int, ScanResult).self) { group in
+            var results = Array<ScanResult?>(repeating: nil, count: jobs.count)
+            var nextIndex = 0
+            let initialCount = min(maxConcurrent, jobs.count)
+
+            while nextIndex < initialCount {
+                let index = nextIndex
+                group.addTask(priority: .utility) {
+                    (index, await jobs[index].operation())
+                }
+                nextIndex += 1
+            }
+
+            while let (index, result) = await group.next() {
+                results[index] = result
+                if nextIndex < jobs.count, scanBudgetAllowsWork {
+                    let index = nextIndex
+                    group.addTask(priority: .utility) {
+                        (index, await jobs[index].operation())
+                    }
+                    nextIndex += 1
+                }
+            }
+            return results.compactMap { $0 }
+        }
+    }
+
+    private static func append(
+        _ results: [ScanResult],
+        to items: inout [CacheCleanupItem],
+        unreadableItemCount: inout Int
+    ) {
+        for result in results {
+            items.append(contentsOf: result.items)
+            unreadableItemCount += result.unreadableItemCount
+        }
     }
 
     static func previewCleanup(items: [CacheCleanupItem]) async -> CacheCleanupPlan {
@@ -1140,6 +1170,9 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for appDirectory in appDirectories {
             guard !Task.isCancelled else { return ([], 0) }
+            guard scanBudgetAllowsWork else {
+                return (items, unreadableItemCount + 1)
+            }
             let appName = appDirectory.lastPathComponent
             guard applicationSupportDirectoryIsAllowed(appDirectory.path, name: appName) else {
                 continue
@@ -1148,7 +1181,7 @@ nonisolated enum CacheCleanupService {
             for candidate in applicationSupportCacheRoots(appDirectory.path)
                 where isRealDirectory(at: candidate) {
                 var finalUpdate: DiskAnalysisUpdate?
-                for await update in DiskAnalyzer.updates(for: candidate) {
+                for await update in boundedFinalUpdates(for: candidate, timeLimit: 0.5) {
                     guard !Task.isCancelled else { return ([], 0) }
                     if update.isComplete { finalUpdate = update }
                 }
@@ -2697,8 +2730,16 @@ nonisolated enum CacheCleanupService {
     ) {
         var items: [CacheCleanupItem] = []
         var unreadableItemCount = 0
-        for root in developerToolCacheRoots() where isRealDirectory(at: root) {
+        let androidStudioRoots = androidStudioCacheRoots()
+        for root in developerToolCacheRoots(androidStudioRoots: androidStudioRoots) where isRealDirectory(at: root) {
+            guard scanBudgetAllowsWork else {
+                return (items, unreadableItemCount + 1)
+            }
             if pathsEqual(root, pyInstallerCacheRoot()), !pyInstallerIsInactive() {
+                continue
+            }
+            if androidStudioRoots.contains(where: { pathsEqual(root, $0) }),
+               !androidStudioIsInactive() {
                 continue
             }
             if githubCLICacheRoot().map({ pathsEqual(root, $0) }) == true,
@@ -2719,7 +2760,7 @@ nonisolated enum CacheCleanupService {
             for child in children {
                 guard !Task.isCancelled else { return ([], 0) }
                 let path = child.standardizedFileURL.path
-                guard developerToolCacheItemIsAllowed(path),
+                guard developerToolCacheItemIsAllowed(path, knownRoot: root),
                       let measurement = await cacheTargetSize(at: path),
                       measurement.sizeBytes > 0 else {
                     continue
@@ -2788,12 +2829,15 @@ nonisolated enum CacheCleanupService {
         return UInt64(value.st_blocks) * 512
     }
 
-    private static func developerToolCacheItemIsAllowed(_ path: String) -> Bool {
+    private static func developerToolCacheItemIsAllowed(
+        _ path: String,
+        knownRoot: String? = nil
+    ) -> Bool {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         guard !url.lastPathComponent.hasPrefix("."),
               isRealFileOrDirectory(at: url.path),
               !isSymbolicLink(at: url.path),
-              let root = developerToolCacheRoots().first(where: {
+              let root = knownRoot ?? developerToolCacheRoots().first(where: {
                   isRealDirectory(at: $0)
                       && pathsEqual(url.deletingLastPathComponent().path, $0)
               }) else {
@@ -2808,10 +2852,15 @@ nonisolated enum CacheCleanupService {
         if githubCLICacheRoot().map({ pathsEqual(root, $0) }) == true {
             return githubCLIIsAvailable() && githubCLIIsInactive()
         }
+        if androidStudioCacheRoots().contains(where: { pathsEqual(root, $0) }) {
+            return androidStudioIsInactive()
+        }
         return true
     }
 
-    private static func developerToolCacheRoots() -> [String] {
+    private static func developerToolCacheRoots(
+        androidStudioRoots: [String]? = nil
+    ) -> [String] {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         var roots = [
             home + "/.kube/cache",
@@ -2879,7 +2928,38 @@ nonisolated enum CacheCleanupService {
         }
         roots.append(contentsOf: jenkinsWorkspaceTargetRoots())
         roots.append(contentsOf: rubyGemCacheRoots())
+        roots.append(contentsOf: androidStudioRoots ?? androidStudioCacheRoots())
         return roots
+    }
+
+    private static func androidStudioCacheRoots() -> [String] {
+        let googleCacheRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/Google", isDirectory: true)
+            .standardizedFileURL
+        guard isRealDirectory(at: googleCacheRoot.path),
+              let children = try? FileManager.default.contentsOfDirectory(
+                at: googleCacheRoot,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+        return children.compactMap { child in
+            guard child.lastPathComponent.lowercased().hasPrefix("androidstudio"),
+                  isRealDirectory(at: child.path),
+                  pathsEqual(child.deletingLastPathComponent().path, googleCacheRoot.path) else {
+                return nil
+            }
+            return child.standardizedFileURL.path
+        }
+    }
+
+    private static func androidStudioIsInactive() -> Bool {
+        processProbesAreInactive([
+            ["-x", "Android Studio"],
+            ["-f", "/Android Studio.app/"],
+            ["-f", "[A]ndroidStudio"]
+        ])
     }
 
     private static func pyInstallerCacheRoot() -> String {
@@ -3016,7 +3096,7 @@ nonisolated enum CacheCleanupService {
         let vagrantRoot = vagrantTemporaryRoot()
         if isRealDirectory(at: vagrantRoot) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: vagrantRoot) {
+            for await update in boundedFinalUpdates(for: vagrantRoot) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3153,7 +3233,7 @@ nonisolated enum CacheCleanupService {
         }
         guard kind == S_IFDIR else { return nil }
         var finalUpdate: DiskAnalysisUpdate?
-        for await update in DiskAnalyzer.updates(for: path) {
+        for await update in boundedFinalUpdates(for: path) {
             guard !Task.isCancelled else { return nil }
             if update.isComplete { finalUpdate = update }
         }
@@ -3182,7 +3262,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for rootPath in identityAndSuggestionCacheRoots() where isRealDirectory(at: rootPath) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: rootPath) {
+            for await update in boundedFinalUpdates(for: rootPath) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3234,7 +3314,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for rootPath in utmSandboxCacheRoots() where isRealDirectory(at: rootPath) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: rootPath) {
+            for await update in boundedFinalUpdates(for: rootPath) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3279,6 +3359,9 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for container in containers {
             guard !Task.isCancelled else { return ([], 0) }
+            guard scanBudgetAllowsWork else {
+                return (items, unreadableItemCount + 1)
+            }
             let identifier = container.lastPathComponent
             guard SandboxContainerProtection.permits(identifier),
                   UserCacheProcessGuard.permits(owner: identifier, using: processGuard),
@@ -3292,7 +3375,7 @@ nonisolated enum CacheCleanupService {
             guard isRealDirectory(at: cacheRoot) else { continue }
 
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: cacheRoot) {
+            for await update in boundedFinalUpdates(for: cacheRoot) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3358,7 +3441,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for root in diaProfileCacheRoots() where isRealDirectory(at: root) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: root) {
+            for await update in boundedFinalUpdates(for: root) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3498,7 +3581,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for root in chromeProfileCacheRoots() where isRealDirectory(at: root) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: root) {
+            for await update in boundedFinalUpdates(for: root) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3530,7 +3613,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for root in firefoxProfileCacheRoots() where isRealDirectory(at: root) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: root) {
+            for await update in boundedFinalUpdates(for: root) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3559,7 +3642,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for root in braveProfileCacheRoots() where isRealDirectory(at: root) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: root) {
+            for await update in boundedFinalUpdates(for: root) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3588,7 +3671,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for root in arcProfileCacheRoots() where isRealDirectory(at: root) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: root) {
+            for await update in boundedFinalUpdates(for: root) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3617,7 +3700,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for root in vivaldiProfileCacheRoots() where isRealDirectory(at: root) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: root) {
+            for await update in boundedFinalUpdates(for: root) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3646,7 +3729,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for root in qqBrowserProfileCacheRoots() where isRealDirectory(at: root) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: root) {
+            for await update in boundedFinalUpdates(for: root) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3674,7 +3757,7 @@ nonisolated enum CacheCleanupService {
         let root = puppeteerCacheRoot()
         guard isRealDirectory(at: root) else { return ([], 0) }
         var finalUpdate: DiskAnalysisUpdate?
-        for await update in DiskAnalyzer.updates(for: root) {
+            for await update in boundedFinalUpdates(for: root) {
             guard !Task.isCancelled else { return ([], 0) }
             if update.isComplete { finalUpdate = update }
         }
@@ -3698,7 +3781,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for root in heliumProfileCacheRoots() where isRealDirectory(at: root) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: root) {
+            for await update in boundedFinalUpdates(for: root) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3726,6 +3809,9 @@ nonisolated enum CacheCleanupService {
         var items: [CacheCleanupItem] = []
         var unreadableItemCount = 0
         for source in browserServiceWorkerSources() {
+            guard scanBudgetAllowsWork else {
+                return (items, unreadableItemCount + 1)
+            }
             guard processProbesAreInactive(source.processProbes) else { continue }
             var sourceItems: [CacheCleanupItem] = []
             var sourceIsSafe = true
@@ -3739,7 +3825,7 @@ nonisolated enum CacheCleanupService {
                         }
                         guard !serviceWorkerCacheNameIsProtected(path) else { continue }
                         var finalUpdate: DiskAnalysisUpdate?
-                        for await update in DiskAnalyzer.updates(for: path) {
+                        for await update in boundedFinalUpdates(for: path) {
                             guard !Task.isCancelled else { return ([], 0) }
                             if update.isComplete { finalUpdate = update }
                         }
@@ -3791,7 +3877,7 @@ nonisolated enum CacheCleanupService {
                         break
                     }
                     var finalUpdate: DiskAnalysisUpdate?
-                    for await update in DiskAnalyzer.updates(for: path) {
+                    for await update in boundedFinalUpdates(for: path) {
                         guard !Task.isCancelled else { return ([], 0) }
                         if update.isComplete { finalUpdate = update }
                     }
@@ -3830,7 +3916,7 @@ nonisolated enum CacheCleanupService {
             guard !Task.isCancelled else { return ([], 0) }
             guard edgeIsInactive() else { return ([], unreadableItemCount) }
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: path) {
+            for await update in boundedFinalUpdates(for: path) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -3858,7 +3944,7 @@ nonisolated enum CacheCleanupService {
         let crxRoot = googleUpdaterRoot() + "/crx_cache"
         if isRealDirectory(at: crxRoot) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: crxRoot) {
+            for await update in boundedFinalUpdates(for: crxRoot) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -4591,12 +4677,15 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for container in containers {
             guard !Task.isCancelled else { return ([], 0) }
+            guard scanBudgetAllowsWork else {
+                return (items, unreadableItemCount + 1)
+            }
             let identifier = container.lastPathComponent
             guard sharedContainerIsAllowed(container.path, identifier: identifier) else { continue }
 
             for logRoot in sharedContainerLogRoots(container.path) where isRealDirectory(at: logRoot) {
                 var finalUpdate: DiskAnalysisUpdate?
-                for await update in DiskAnalyzer.updates(for: logRoot) {
+                for await update in boundedFinalUpdates(for: logRoot) {
                     guard !Task.isCancelled else { return ([], 0) }
                     if update.isComplete { finalUpdate = update }
                 }
@@ -4675,6 +4764,9 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for container in containers {
             guard !Task.isCancelled else { return ([], 0) }
+            guard scanBudgetAllowsWork else {
+                return (items, unreadableItemCount + 1)
+            }
             let identifier = container.lastPathComponent
             guard sharedContainerIsAllowed(container.path, identifier: identifier),
                   sharedContainerCachesAreAllowed(identifier: identifier),
@@ -4684,7 +4776,7 @@ nonisolated enum CacheCleanupService {
 
             for cacheRoot in sharedContainerCacheRoots(container.path) where isRealDirectory(at: cacheRoot) {
                 var finalUpdate: DiskAnalysisUpdate?
-                for await update in DiskAnalyzer.updates(for: cacheRoot) {
+                for await update in boundedFinalUpdates(for: cacheRoot) {
                     guard !Task.isCancelled else { return ([], 0) }
                     if update.isComplete { finalUpdate = update }
                 }
@@ -4879,7 +4971,7 @@ nonisolated enum CacheCleanupService {
         var unreadableItemCount = 0
         for rootPath in messagesPreviewCacheRoots() where isRealDirectory(at: rootPath) {
             var finalUpdate: DiskAnalysisUpdate?
-            for await update in DiskAnalyzer.updates(for: rootPath) {
+            for await update in boundedFinalUpdates(for: rootPath) {
                 guard !Task.isCancelled else { return ([], 0) }
                 if update.isComplete { finalUpdate = update }
             }
@@ -5166,7 +5258,7 @@ nonisolated enum CacheCleanupService {
         }
 
         var finalUpdate: DiskAnalysisUpdate?
-        for await update in DiskAnalyzer.updates(for: root) {
+        for await update in boundedFinalUpdates(for: root) {
             guard !Task.isCancelled else { return ([], 0) }
             if update.isComplete { finalUpdate = update }
         }
