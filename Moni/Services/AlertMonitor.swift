@@ -38,6 +38,8 @@ final class AlertMonitor {
                 threshold: threshold(PreferenceKey.temperatureAlertThreshold, fallback: 80),
                 unit: "°C"
             )
+        } else {
+            reset("temperature")
         }
         evaluate(
             id: "disk",
@@ -70,16 +72,12 @@ final class AlertMonitor {
         unit: String = "%"
     ) {
         guard enabled else {
-            activeAlerts.remove(id)
-            lastNotification.removeValue(forKey: id)
-            exceededSince.removeValue(forKey: id)
+            reset(id)
             return
         }
 
         guard value >= threshold else {
-            activeAlerts.remove(id)
-            lastNotification.removeValue(forKey: id)
-            exceededSince.removeValue(forKey: id)
+            reset(id)
             return
         }
 
@@ -115,5 +113,11 @@ final class AlertMonitor {
         }
         let request = UNNotificationRequest(identifier: "moni.\(id).\(Date().timeIntervalSince1970)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+
+    private func reset(_ id: String) {
+        activeAlerts.remove(id)
+        lastNotification.removeValue(forKey: id)
+        exceededSince.removeValue(forKey: id)
     }
 }

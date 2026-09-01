@@ -7,10 +7,11 @@ final class CacheCleanupScanner: ObservableObject {
     @Published private(set) var isScanning = false
     @Published private(set) var phase = CacheCleanupScanPhase.preparing
     @Published private(set) var completedScanID = 0
+    @Published private(set) var completedScanSelectAll = true
 
     private var worker: Task<CacheCleanupSnapshot, Never>?
 
-    func start(force: Bool = false) {
+    func start(force: Bool = false, selectAll: Bool = true) {
         guard worker == nil else { return }
         guard force || snapshot == nil else { return }
 
@@ -35,6 +36,7 @@ final class CacheCleanupScanner: ObservableObject {
             let snapshot = await worker.value
             guard let self, self.worker != nil else { return }
             self.snapshot = snapshot
+            self.completedScanSelectAll = selectAll
             self.worker = nil
             self.isScanning = false
             self.completedScanID += 1
@@ -50,6 +52,7 @@ private enum CleanerMode: String, CaseIterable {
 }
 
 struct CleanerView: View {
+    let refreshSystem: () -> Void
     @State private var mode = CleanerMode.caches
 
     var body: some View {
@@ -66,27 +69,26 @@ struct CleanerView: View {
 
             switch mode {
             case .caches:
-                CacheCleanerView()
+                CacheCleanerView(refreshSystem: refreshSystem)
             case .projects:
-                ProjectArtifactCleanerView()
+                ProjectArtifactCleanerView(refreshSystem: refreshSystem)
             case .installers:
-                InstallerCleanerView()
+                InstallerCleanerView(refreshSystem: refreshSystem)
             case .trash:
-                TrashCleanerView()
+                TrashCleanerView(refreshSystem: refreshSystem)
             }
         }
     }
 }
 
 private struct CacheCleanerView: View {
-    @EnvironmentObject private var monitor: SystemMonitor
+    let refreshSystem: () -> Void
     @EnvironmentObject private var scanner: CacheCleanupScanner
     @State private var items: [CacheCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var unreadableItemCount = 0
     @State private var isScanComplete = true
     @State private var isCleaning = false
-    @State private var selectAllAfterScan = true
     @State private var pendingPlan: CacheCleanupPlan?
     @State private var cleanupMessage: String?
 
@@ -132,13 +134,13 @@ private struct CacheCleanerView: View {
         }
         .onAppear {
             if let snapshot = scanner.snapshot {
-                apply(snapshot, selectAll: true)
+                apply(snapshot, selectAll: scanner.completedScanSelectAll)
             }
             scanner.start()
         }
         .onChange(of: scanner.completedScanID) { _, _ in
             guard let snapshot = scanner.snapshot else { return }
-            apply(snapshot, selectAll: selectAllAfterScan)
+            apply(snapshot, selectAll: scanner.completedScanSelectAll)
         }
         .sheet(item: $pendingPlan) { plan in
             CleanupConfirmationView(
@@ -170,8 +172,7 @@ private struct CacheCleanerView: View {
             Spacer(minLength: 12)
 
             Button {
-                selectAllAfterScan = true
-                scanner.start(force: true)
+                scanner.start(force: true, selectAll: true)
             } label: {
                 Label(MoniLocalization.string("Rescan"), systemImage: "arrow.clockwise")
             }
@@ -364,10 +365,9 @@ private struct CacheCleanerView: View {
     private func execute(_ plan: CacheCleanupPlan) async {
         isCleaning = true
         let result = await CacheCleanupService.executeCleanup(plan)
-        selectAllAfterScan = false
-        scanner.start(force: true)
+        scanner.start(force: true, selectAll: false)
         isCleaning = false
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
 
         var parts: [String] = []
         if !result.trashedPaths.isEmpty {

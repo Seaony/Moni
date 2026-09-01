@@ -572,6 +572,7 @@ private struct PowerDetailView: View {
     private var power: PowerUsage { monitor.snapshot.power }
 
     var body: some View {
+        let temperatureHistory = monitor.temperatureHistory
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 12) {
                 HStack(alignment: .top, spacing: 12) {
@@ -612,19 +613,19 @@ private struct PowerDetailView: View {
                             series: [
                                 InteractiveSparklineSeries(
                                     name: "CPU",
-                                    values: monitor.cpuTemperatureHistory,
+                                    values: temperatureHistory.cpu,
                                     color: MoniPalette.orange,
                                     showsFill: true,
                                     formatValue: { String(format: "%.1f°C", $0) }
                                 ),
                                 InteractiveSparklineSeries(
                                     name: "GPU",
-                                    values: monitor.gpuTemperatureHistory,
+                                    values: temperatureHistory.gpu,
                                     color: MoniPalette.green,
                                     formatValue: { String(format: "%.1f°C", $0) }
                                 )
                             ],
-                            dates: monitor.cpuTemperatureHistoryDates
+                            dates: temperatureHistory.dates
                         )
                             .frame(height: 108)
                         if power.fans.isEmpty {
@@ -842,6 +843,7 @@ private struct DiskBrowserView: View {
     @EnvironmentObject private var monitor: SystemMonitor
     @State private var selectedPath = "/"
     @State private var items: [FileItem] = []
+    @State private var pendingLoadPath: String?
     @State private var loadingPath: String?
     @State private var loadError: String?
     @State private var browserMode = BrowserMode.contents
@@ -913,21 +915,27 @@ private struct DiskBrowserView: View {
                 columnHeader
                 Divider()
 
-                if let loadError {
+                if pendingLoadPath == selectedPath {
+                    Group {
+                        if loadingPath == selectedPath {
+                            HStack(spacing: 9) {
+                                ProgressView().controlSize(.small)
+                                Text("Reading folder…")
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                            }
+                            .font(.system(size: 12.5))
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(MoniMotion.itemTransition)
+                } else if let loadError {
                     ContentUnavailableView(
                         "Unable to read folder",
                         systemImage: "folder.badge.questionmark",
                         description: Text(loadError)
                     )
-                    .transition(MoniMotion.itemTransition)
-                } else if loadingPath == selectedPath {
-                    HStack(spacing: 9) {
-                        ProgressView().controlSize(.small)
-                        Text("Reading folder…")
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                    }
-                    .font(.system(size: 12.5))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(MoniMotion.itemTransition)
                 } else if browserMode == .contents, items.isEmpty {
                     ContentUnavailableView(
@@ -983,14 +991,20 @@ private struct DiskBrowserView: View {
         }
         .moniAnimation(value: loadingPath)
         .moniAnimation(value: loadError)
-        .onChange(of: selectedPath) { _, _ in
+        .onChange(of: selectedPath) { _, newPath in
             resetAnalysis()
+            pendingLoadPath = newPath
+            loadingPath = nil
+            loadError = nil
+            items = []
         }
         .onDisappear {
             analysisTask?.cancel()
         }
         .task(id: selectedPath) {
             let requestedPath = selectedPath
+            pendingLoadPath = requestedPath
+            loadError = nil
             // Most folders list in a few milliseconds; flashing a spinner through
             // a cross-fade for those reads as flicker, so it only appears once a
             // read has been running long enough to feel slow. It is keyed by path
@@ -1001,13 +1015,20 @@ private struct DiskBrowserView: View {
                 guard !Task.isCancelled, selectedPath == requestedPath else { return }
                 loadingPath = requestedPath
             }
-            let result = await Task.detached(priority: .userInitiated) {
+            let worker = Task.detached(priority: .userInitiated) {
                 Self.loadItems(at: requestedPath)
-            }.value
+            }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                spinner.cancel()
+                worker.cancel()
+            }
             spinner.cancel()
             guard !Task.isCancelled, selectedPath == requestedPath else { return }
             items = result.items
             loadError = result.error
+            pendingLoadPath = nil
             loadingPath = nil
         }
         .task {
@@ -1432,16 +1453,19 @@ private struct DiskBrowserView: View {
                 includingPropertiesForKeys: Array(keys),
                 options: [.skipsHiddenFiles]
             )
-            let items = urls.compactMap { url -> FileItem? in
-                guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
-                return FileItem(
+            var items: [FileItem] = []
+            items.reserveCapacity(urls.count)
+            for url in urls {
+                guard !Task.isCancelled else { return LoadResult(items: [], error: nil) }
+                guard let values = try? url.resourceValues(forKeys: keys) else { continue }
+                items.append(FileItem(
                     url: url,
                     isDirectory: values.isDirectory ?? false,
                     size: UInt64(max(0, values.fileSize ?? 0)),
                     modified: values.contentModificationDate
-                )
+                ))
             }
-            .sorted {
+            items.sort {
                 if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
                 return $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
             }

@@ -28,6 +28,7 @@ nonisolated enum DiskAnalyzer {
     private struct FileMetadata {
         let identity: FileIdentity
         let allocatedBytes: UInt64
+        let linkCount: UInt16
         let isDirectory: Bool
         let isRegularFile: Bool
         let isSymbolicLink: Bool
@@ -225,8 +226,11 @@ nonisolated enum DiskAnalyzer {
                         }
                         continue
                     }
-                    guard itemMetadata.isRegularFile,
-                          seenFiles.insert(itemMetadata.identity).inserted else {
+                    guard itemMetadata.isRegularFile else {
+                        continue
+                    }
+                    if itemMetadata.linkCount > 1,
+                       !seenFiles.insert(itemMetadata.identity).inserted {
                         continue
                     }
 
@@ -249,8 +253,11 @@ nonisolated enum DiskAnalyzer {
                     }
                 }
                 entrySizes[child.path] = childSize
-            } else if childMetadata.isRegularFile,
-                      seenFiles.insert(childMetadata.identity).inserted {
+            } else if childMetadata.isRegularFile {
+                if childMetadata.linkCount > 1,
+                   !seenFiles.insert(childMetadata.identity).inserted {
+                    continue
+                }
                 scannedFileCount += 1
                 scannedBytes = addingWithoutOverflow(scannedBytes, childMetadata.allocatedBytes)
                 entrySizes[child.path] = childMetadata.allocatedBytes
@@ -285,6 +292,7 @@ nonisolated enum DiskAnalyzer {
         return FileMetadata(
             identity: FileIdentity(device: UInt64(value.st_dev), inode: UInt64(value.st_ino)),
             allocatedBytes: allocatedBytes,
+            linkCount: value.st_nlink,
             isDirectory: kind == S_IFDIR,
             isRegularFile: kind == S_IFREG,
             isSymbolicLink: kind == S_IFLNK

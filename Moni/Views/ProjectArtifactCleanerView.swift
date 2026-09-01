@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ProjectArtifactCleanerView: View {
-    @EnvironmentObject private var monitor: SystemMonitor
+    let refreshSystem: () -> Void
     @State private var items: [ProjectArtifactItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var failedRootCount = 0
@@ -332,7 +332,7 @@ struct ProjectArtifactCleanerView: View {
         let result = await ProjectArtifactService.executeCleanup(plan)
         await scan(useDefaultSelection: false)
         isCleaning = false
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
 
         var parts: [String] = []
         if !result.trashedPaths.isEmpty {

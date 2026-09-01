@@ -3,7 +3,7 @@ import Darwin
 import SwiftUI
 
 struct ApplicationManagerView: View {
-    @EnvironmentObject private var monitor: SystemMonitor
+    let refreshSystem: () -> Void
     @State private var inventory = ApplicationInventorySnapshot(applications: [], unreadablePaths: [])
     @State private var selectedApplicationPath: String?
     @State private var removalPreview: ApplicationUninstallPreview?
@@ -517,7 +517,7 @@ struct ApplicationManagerView: View {
             )
         }
         isPreparing = false
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
 
         var parts: [String] = []
         if !result.trashedPaths.isEmpty {
@@ -632,7 +632,7 @@ struct ApplicationManagerView: View {
                 + MoniLocalization.format("%@ background items could not be stopped.", teardown.failedActionCount.formatted())
         }
         isPreparing = false
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
         await scanApplications()
     }
 

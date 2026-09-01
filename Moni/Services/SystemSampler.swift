@@ -45,7 +45,12 @@ actor SystemSampler {
     }
 
     private var previousCPUTicks: [CPUTicks] = []
-    private var previousNetworkBytes: (received: UInt64, sent: UInt64, date: Date)?
+    private var previousNetworkBytes: (
+        interfaceName: String?,
+        received: UInt64,
+        sent: UInt64,
+        date: Date
+    )?
     private var previousDiskCounters: (
         readBytes: UInt64,
         writtenBytes: UInt64,
@@ -79,11 +84,13 @@ actor SystemSampler {
     private var cachedDocker = DockerStatus()
     private var lastProcessSample: Date?
     private var lastPeripheralSample: Date?
+    private var lastDriveHealthSample: Date?
     private var lastConnectionSample: Date?
     private var lastDockerSample: Date?
 
     private let processInterval: TimeInterval = 2
     private let peripheralInterval: TimeInterval = 5
+    private let driveHealthInterval: TimeInterval = 5 * 60
     private let connectionInterval: TimeInterval = 5
     private let dockerInterval: TimeInterval = 15
     private let idleProcessInterval: TimeInterval = 30
@@ -96,9 +103,17 @@ actor SystemSampler {
     /// `nettop` subprocess and is only ever shown on the open Network page, so it
     /// pauses outright.
     private var isPanelVisible = false
+    private var isNetworkDetailsVisible = false
 
     func setPanelVisible(_ isVisible: Bool) {
         isPanelVisible = isVisible
+    }
+
+    func setNetworkDetailsVisible(_ isVisible: Bool) {
+        if isVisible, !isNetworkDetailsVisible {
+            lastConnectionSample = nil
+        }
+        isNetworkDetailsVisible = isVisible
     }
 
     func sample(forceSlowMetrics: Bool = false) -> SystemSnapshot {
@@ -124,12 +139,16 @@ actor SystemSampler {
             interval: isPanelVisible ? peripheralInterval : idlePeripheralInterval
         ) {
             cachedVolumes = sampleVolumes()
-            if cachedDriveHealth.smartStatus == nil {
-                cachedDriveHealth = sampleDriveHealth()
-            }
             cachedPower = samplePower()
             cachedNetworkMetadata = Self.loadNetworkMetadata()
             lastPeripheralSample = now
+        }
+        if forceSlowMetrics || shouldRefresh(lastDriveHealthSample, at: now, interval: driveHealthInterval) {
+            let driveHealth = sampleDriveHealth()
+            if driveHealth.smartStatus != nil {
+                cachedDriveHealth = driveHealth
+            }
+            lastDriveHealthSample = now
         }
         if forceSlowMetrics || shouldRefresh(
             lastDockerSample,
@@ -294,7 +313,9 @@ actor SystemSampler {
     }
 
     private func sampleNetwork(at date: Date) -> NetworkUsage {
-        if isPanelVisible, shouldRefresh(lastConnectionSample, at: date, interval: connectionInterval) {
+        if isPanelVisible,
+           isNetworkDetailsVisible,
+           shouldRefresh(lastConnectionSample, at: date, interval: connectionInterval) {
             cachedNetworkConnections = sampleNetworkConnections()
             lastConnectionSample = date
         }
@@ -306,8 +327,6 @@ actor SystemSampler {
         var interfaces: [NetworkInterfaceUsage] = []
         var ipv4Addresses: [String: String] = [:]
         var ipv6Addresses: [String: String] = [:]
-        var received: UInt64 = 0
-        var sent: UInt64 = 0
         var cursor: UnsafeMutablePointer<ifaddrs>? = first
 
         while let item = cursor?.pointee {
@@ -362,18 +381,23 @@ actor SystemSampler {
                 linkSpeedBitsPerSecond: wifiRate ?? UInt64(usage.ifi_baudrate)
             )
             interfaces.append(interface)
-            received += interface.receivedBytes
-            sent += interface.sentBytes
         }
 
+        let primaryInterfaceName = cachedNetworkMetadata.primaryInterfaceName
+        let primaryInterface = interfaces.first {
+            $0.name == primaryInterfaceName && $0.isActive
+        }
+        let received = primaryInterface?.receivedBytes ?? 0
+        let sent = primaryInterface?.sentBytes ?? 0
         let elapsed = previousNetworkBytes.map { date.timeIntervalSince($0.date) } ?? 0
-        let previousReceived = previousNetworkBytes?.received ?? received
-        let previousSent = previousNetworkBytes?.sent ?? sent
+        let hasSameInterface = previousNetworkBytes?.interfaceName == primaryInterfaceName
+        let previousReceived = hasSameInterface ? previousNetworkBytes?.received ?? received : received
+        let previousSent = hasSameInterface ? previousNetworkBytes?.sent ?? sent : sent
         let receivedDelta = received >= previousReceived ? received - previousReceived : 0
         let sentDelta = sent >= previousSent ? sent - previousSent : 0
         let download = elapsed > 0 ? Double(receivedDelta) / elapsed : 0
         let upload = elapsed > 0 ? Double(sentDelta) / elapsed : 0
-        previousNetworkBytes = (received, sent, date)
+        previousNetworkBytes = (primaryInterfaceName, received, sent, date)
         let proxy = cachedNetworkMetadata.proxy ?? tunnelUsage(from: interfaces)
 
         return NetworkUsage(
@@ -381,7 +405,7 @@ actor SystemSampler {
             uploadBytesPerSecond: upload,
             totalReceivedBytes: received,
             totalSentBytes: sent,
-            primaryInterfaceName: cachedNetworkMetadata.primaryInterfaceName,
+            primaryInterfaceName: primaryInterfaceName,
             gateway: cachedNetworkMetadata.gateway,
             proxy: proxy,
             wifi: cachedNetworkMetadata.wifi,
@@ -400,8 +424,13 @@ actor SystemSampler {
         let globalIPv4 = store.flatMap {
             SCDynamicStoreCopyValue($0, "State:/Network/Global/IPv4" as CFString) as? [String: Any]
         }
+        let globalIPv6 = store.flatMap {
+            SCDynamicStoreCopyValue($0, "State:/Network/Global/IPv6" as CFString) as? [String: Any]
+        }
         let primaryInterfaceName = globalIPv4?["PrimaryInterface"] as? String
+            ?? globalIPv6?["PrimaryInterface"] as? String
         let gateway = globalIPv4?["Router"] as? String
+            ?? globalIPv6?["Router"] as? String
         let proxy = loadConfiguredProxy()
 
         var kinds: [String: String] = [:]
@@ -575,14 +604,23 @@ actor SystemSampler {
         ]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
 
         do {
             try process.run()
         } catch {
             return []
         }
+        let timeout = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + 2,
+            execute: timeout
+        )
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        timeout.cancel()
         guard process.terminationStatus == 0 else { return [] }
         guard let output = String(data: data, encoding: .utf8) else { return [] }
 

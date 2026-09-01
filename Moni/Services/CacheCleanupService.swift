@@ -490,6 +490,28 @@ nonisolated enum CacheCleanupService {
         return budget.remaining(cappedAt: totalScanTimeLimit) != nil
     }
 
+    private static func containerCacheIsConclusivelyIdle(at path: String) -> Bool {
+        guard let budget = activeScanBudget else {
+            return ContainerCacheSafety.isConclusivelyIdle(at: path)
+        }
+        guard let remaining = budget.remaining(cappedAt: 15) else { return false }
+        return ContainerCacheSafety.isConclusivelyIdle(
+            at: path,
+            commandTimeout: remaining / 3
+        )
+    }
+
+    private static func containerCacheHasNoVisibleOpenHandles(at path: String) -> Bool {
+        guard let budget = activeScanBudget else {
+            return ContainerCacheSafety.hasNoVisibleOpenHandles(at: path)
+        }
+        guard let remaining = budget.remaining(cappedAt: 5) else { return false }
+        return ContainerCacheSafety.hasNoVisibleOpenHandles(
+            at: path,
+            commandTimeout: remaining
+        )
+    }
+
     private static func runScanJobs(
         _ jobs: [ScanJob],
         maxConcurrent: Int = 4
@@ -1008,7 +1030,7 @@ nonisolated enum CacheCleanupService {
             if item.category == .sharedContainerLogs {
                 guard sharedContainerLogItemIsAllowed(item.path),
                       !holdsCompiledModelCache(item.path),
-                      ContainerCacheSafety.isConclusivelyIdle(at: item.path) else {
+                      containerCacheIsConclusivelyIdle(at: item.path) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -1052,7 +1074,7 @@ nonisolated enum CacheCleanupService {
                 guard utmIsSafe,
                       item.category == .userCaches
                         || (utmCacheItemIsAllowed(item.path)
-                            && ContainerCacheSafety.isConclusivelyIdle(at: item.path)) else {
+                            && containerCacheIsConclusivelyIdle(at: item.path)) else {
                     rejectedItems.append(CleanupRejectedItem(path: item.path, reason: .changed))
                     continue
                 }
@@ -1207,7 +1229,7 @@ nonisolated enum CacheCleanupService {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         guard isRealFileOrDirectory(at: url.path),
               !holdsCompiledModelCache(url.path),
-              ContainerCacheSafety.hasNoVisibleOpenHandles(at: url.path) else {
+              containerCacheHasNoVisibleOpenHandles(at: url.path) else {
             return false
         }
 
@@ -3327,7 +3349,7 @@ nonisolated enum CacheCleanupService {
                 let name = URL(fileURLWithPath: path).lastPathComponent
                 guard !name.hasPrefix("."),
                       utmCacheItemIsAllowed(path),
-                      ContainerCacheSafety.isConclusivelyIdle(at: path) else {
+                      containerCacheIsConclusivelyIdle(at: path) else {
                     return nil
                 }
                 return CacheCleanupItem(path: path, category: .utmCaches, sizeBytes: size)
@@ -3405,7 +3427,7 @@ nonisolated enum CacheCleanupService {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         guard isRealFileOrDirectory(at: url.path),
               !holdsCompiledModelCache(url.path),
-              ContainerCacheSafety.hasNoVisibleOpenHandles(at: url.path) else {
+              containerCacheHasNoVisibleOpenHandles(at: url.path) else {
             return false
         }
 
@@ -4697,7 +4719,7 @@ nonisolated enum CacheCleanupService {
                 items.append(contentsOf: finalUpdate.entrySizes.compactMap { path, size in
                     guard sharedContainerLogItemIsAllowed(path),
                           !holdsCompiledModelCache(path),
-                          ContainerCacheSafety.isConclusivelyIdle(at: path) else {
+                          containerCacheIsConclusivelyIdle(at: path) else {
                         return nil
                     }
                     return CacheCleanupItem(
@@ -4807,7 +4829,7 @@ nonisolated enum CacheCleanupService {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         guard isRealFileOrDirectory(at: url.path),
               !holdsCompiledModelCache(url.path),
-              ContainerCacheSafety.hasNoVisibleOpenHandles(at: url.path) else {
+              containerCacheHasNoVisibleOpenHandles(at: url.path) else {
             return false
         }
 

@@ -25,7 +25,7 @@ final class SystemMonitor: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var storageScanTask: Task<Void, Never>?
     private var networkExternalTask: Task<Void, Never>?
-    private var didCompleteStorageScan = false
+    private var lastStorageScan: Date?
     private var lastNetworkExternalLoad: Date?
     private var samplingInterval: TimeInterval
     private var recentHistory: [HistorySample] = []
@@ -81,6 +81,15 @@ final class SystemMonitor: ObservableObject {
         }
     }
 
+    func setNetworkDetailsVisible(_ isVisible: Bool) {
+        Task { [sampler] in
+            await sampler.setNetworkDetailsVisible(isVisible)
+            if isVisible {
+                refresh(forceSlowMetrics: true)
+            }
+        }
+    }
+
     func stop() {
         timer?.cancel()
         timer = nil
@@ -109,14 +118,18 @@ final class SystemMonitor: ObservableObject {
     }
 
     func loadStorageFoldersIfNeeded() {
-        guard !didCompleteStorageScan, storageScanTask == nil else { return }
+        guard storageScanTask == nil else { return }
+        if let lastStorageScan,
+           Date().timeIntervalSince(lastStorageScan) < 6 * 60 * 60 {
+            return
+        }
         let defaults = UserDefaults.standard
         if let data = defaults.data(forKey: PreferenceKey.storageFolderCache),
            let cached = try? JSONDecoder().decode([StorageFolderUsage].self, from: data) {
             largestFolders = cached
             let cacheDate = defaults.object(forKey: PreferenceKey.storageFolderCacheDate) as? Date
             if let cacheDate, Date().timeIntervalSince(cacheDate) < 6 * 60 * 60 {
-                didCompleteStorageScan = true
+                lastStorageScan = cacheDate
                 return
             }
         }
@@ -126,15 +139,16 @@ final class SystemMonitor: ObservableObject {
                 Self.scanLargestFolders()
             }.value
             guard !Task.isCancelled, let self else { return }
+            let scanDate = Date()
+            lastStorageScan = scanDate
             if !folders.isEmpty {
                 largestFolders = folders
                 if let data = try? JSONEncoder().encode(folders) {
                     defaults.set(data, forKey: PreferenceKey.storageFolderCache)
-                    defaults.set(Date(), forKey: PreferenceKey.storageFolderCacheDate)
+                    defaults.set(scanDate, forKey: PreferenceKey.storageFolderCacheDate)
                 }
             }
             isScanningStorage = false
-            didCompleteStorageScan = true
             storageScanTask = nil
         }
     }
@@ -190,7 +204,28 @@ final class SystemMonitor: ObservableObject {
     var cpuTemperatureHistoryDates: [Date] {
         recentHistory.compactMap { $0.cpuTemperature == nil ? nil : $0.date }
     }
-    var gpuTemperatureHistory: [Double] { recentHistory.compactMap(\.gpuTemperature) }
+    var temperatureHistory: (cpu: [Double], gpu: [Double], dates: [Date]) {
+        let hasGPUReadings = recentHistory.contains { $0.gpuTemperature != nil }
+        if hasGPUReadings {
+            let paired = recentHistory.compactMap { sample -> (Date, Double, Double)? in
+                guard let cpu = sample.cpuTemperature,
+                      let gpu = sample.gpuTemperature else {
+                    return nil
+                }
+                return (sample.date, cpu, gpu)
+            }
+            return (
+                paired.map(\.1),
+                paired.map(\.2),
+                paired.map(\.0)
+            )
+        }
+        return (
+            recentHistory.compactMap(\.cpuTemperature),
+            [],
+            recentHistory.compactMap { $0.cpuTemperature == nil ? nil : $0.date }
+        )
+    }
     var batteryHistory: [Double] {
         let referenceDate = minuteHistory.last?.date ?? snapshot.date
         let cutoff = referenceDate.addingTimeInterval(-12 * 60 * 60)

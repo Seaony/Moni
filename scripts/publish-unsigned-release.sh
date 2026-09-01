@@ -52,13 +52,25 @@ for command_name in gh xcodebuild ditto hdiutil xmllint lipo codesign; do
     fi
 done
 gh auth status >/dev/null
+if ! /usr/bin/security find-generic-password -a "$sparkle_account" >/dev/null 2>&1; then
+    echo "Sparkle private key was not found in the login Keychain for account: $sparkle_account" >&2
+    exit 1
+fi
 
 work_dir="$(mktemp -d /tmp/moni-unsigned-release.XXXXXX)"
-trap 'rm -rf "$work_dir"' EXIT
 derived_data="$work_dir/DerivedData"
 updates_dir="$work_dir/updates"
 dmg_root="$work_dir/dmg-root"
 output_dir="$PWD/build/releases/$tag"
+output_created=false
+tag_created=false
+cleanup() {
+    rm -rf "$work_dir"
+    if [[ "$output_created" == true && "$tag_created" == false ]]; then
+        rm -rf "$output_dir"
+    fi
+}
+trap cleanup EXIT
 mkdir -p "$updates_dir" "$dmg_root"
 if [[ -e "$output_dir" ]]; then
     echo "Release output already exists: $output_dir" >&2
@@ -124,6 +136,7 @@ fi
 zip_name="$app_name-$version-unsigned.zip"
 dmg_name="$app_name-$version-unsigned.dmg"
 mkdir -p "$output_dir"
+output_created=true
 ditto -c -k --sequesterRsrc --keepParent "$app_path" "$output_dir/$zip_name"
 ditto "$app_path" "$dmg_root/$app_name.app"
 ln -s /Applications "$dmg_root/Applications"
@@ -165,6 +178,7 @@ cp "$updates_dir/appcast.xml" "$output_dir/appcast.xml"
 scripts/validate-release.sh "$app_path" "$output_dir/appcast.xml"
 
 git tag -a "$tag" -m "$app_name $version"
+tag_created=true
 git push origin "$tag"
 gh release create "$tag" \
     --repo "$repository" \

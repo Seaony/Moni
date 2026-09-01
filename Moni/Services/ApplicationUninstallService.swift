@@ -732,8 +732,18 @@ nonisolated enum ApplicationUninstallService {
         let bundleIdentifier = application.bundleIdentifier?.lowercased() ?? ""
         var candidates: [Candidate] = []
 
-        func add(_ path: String, _ kind: ApplicationRemovalKind) {
-            if pathExists(path) { candidates.append(Candidate(path: path, kind: kind)) }
+        func add(
+            _ path: String,
+            _ kind: ApplicationRemovalKind,
+            selectedByDefault: Bool = true
+        ) {
+            if pathExists(path) {
+                candidates.append(Candidate(
+                    path: path,
+                    kind: kind,
+                    isSelectedByDefault: selectedByDefault
+                ))
+            }
         }
 
         if bundleIdentifier.contains("microsoft") && bundleIdentifier.contains("vscode") {
@@ -762,13 +772,13 @@ nonisolated enum ApplicationUninstallService {
             add(home + "/Library/Application Support/AnkiProgramFiles", .applicationSupport)
         }
         if name.contains("unity") {
-            add(home + "/Library/Unity", .applicationSupport)
+            add(home + "/Library/Unity", .applicationSupport, selectedByDefault: false)
         }
         if name.contains("unreal") {
-            add(home + "/Library/Application Support/Epic", .applicationSupport)
+            add(home + "/Library/Application Support/Epic", .applicationSupport, selectedByDefault: false)
         }
         if name.contains("godot") {
-            add(home + "/Library/Application Support/Godot", .applicationSupport)
+            add(home + "/Library/Application Support/Godot", .applicationSupport, selectedByDefault: false)
         }
         return candidates
     }

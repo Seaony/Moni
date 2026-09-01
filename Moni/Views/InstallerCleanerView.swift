@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct InstallerCleanerView: View {
-    @EnvironmentObject private var monitor: SystemMonitor
+    let refreshSystem: () -> Void
+    private static let relativeDateFormatter = RelativeDateTimeFormatter()
     @State private var items: [InstallerCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var unreadableItemCount = 0
@@ -296,7 +297,7 @@ struct InstallerCleanerView: View {
         let result = await InstallerCleanupService.executeCleanup(plan)
         await scan()
         isCleaning = false
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
 
         var parts: [String] = []
         if !result.trashedPaths.isEmpty {
@@ -312,7 +313,7 @@ struct InstallerCleanerView: View {
     }
 
     private func relativeDate(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
+        let formatter = Self.relativeDateFormatter
         formatter.locale = MoniLocalization.currentLanguage.locale
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())

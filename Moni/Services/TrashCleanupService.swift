@@ -150,7 +150,10 @@ nonisolated enum TrashCleanupService {
         var candidates = [(path: trashRoot(), locationName: "Current user Trash")]
         candidates.append(contentsOf: externalWritableVolumes().map { volume in
             (
-                volume.appendingPathComponent(".Trashes", isDirectory: true).standardizedFileURL.path,
+                volume
+                    .appendingPathComponent(".Trashes", isDirectory: true)
+                    .appendingPathComponent(String(getuid()), isDirectory: true)
+                    .standardizedFileURL.path,
                 "\(volume.lastPathComponent) Trash"
             )
         })
@@ -195,7 +198,8 @@ nonisolated enum TrashCleanupService {
     private static func directoryIdentity(at path: String) -> (device: UInt64, inode: UInt64)? {
         var value = stat()
         guard path.withCString({ lstat($0, &value) }) == 0,
-              value.st_mode & S_IFMT == S_IFDIR else {
+              value.st_mode & S_IFMT == S_IFDIR,
+              value.st_uid == getuid() else {
             return nil
         }
         return (UInt64(value.st_dev), UInt64(value.st_ino))

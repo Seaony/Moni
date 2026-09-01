@@ -19,9 +19,12 @@ nonisolated enum ContainerCacheSafety {
         let timedOut: Bool
     }
 
-    static func isConclusivelyIdle(at rawPath: String) -> Bool {
+    static func isConclusivelyIdle(
+        at rawPath: String,
+        commandTimeout: TimeInterval = 5
+    ) -> Bool {
         let path = URL(fileURLWithPath: rawPath).standardizedFileURL.path
-        guard let mode = completeLsofMode(),
+        guard let mode = completeLsofMode(commandTimeout: commandTimeout),
               let targetBefore = fileIdentity(at: path),
               targetBefore.kind != mode_t(S_IFLNK) else {
             return false
@@ -36,7 +39,7 @@ nonisolated enum ContainerCacheSafety {
         } else {
             arguments = ["-F", "pfn", "--", path]
         }
-        let result = runLsof(mode: mode, arguments: arguments, timeout: 5)
+        let result = runLsof(mode: mode, arguments: arguments, timeout: commandTimeout)
         guard !result.timedOut else { return false }
         if result.status == 0 || containsFieldRecord(result.output) {
             return false
@@ -50,7 +53,10 @@ nonisolated enum ContainerCacheSafety {
         return true
     }
 
-    static func hasNoVisibleOpenHandles(at rawPath: String) -> Bool {
+    static func hasNoVisibleOpenHandles(
+        at rawPath: String,
+        commandTimeout: TimeInterval = 5
+    ) -> Bool {
         let path = URL(fileURLWithPath: rawPath).standardizedFileURL.path
         guard FileManager.default.isExecutableFile(atPath: "/usr/sbin/lsof"),
               let targetBefore = fileIdentity(at: path),
@@ -64,7 +70,7 @@ nonisolated enum ContainerCacheSafety {
         let arguments = targetBefore.kind == mode_t(S_IFDIR)
             ? ["-F", "pfn", "+D", path]
             : ["-F", "pfn", "--", path]
-        let result = run("/usr/sbin/lsof", arguments: arguments, timeout: 5)
+        let result = run("/usr/sbin/lsof", arguments: arguments, timeout: commandTimeout)
         guard !result.timedOut else { return false }
         if result.status == 0 || containsFieldRecord(result.output) {
             return false
@@ -75,14 +81,14 @@ nonisolated enum ContainerCacheSafety {
             && fileIdentity(at: parent) == parentBefore
     }
 
-    private static func completeLsofMode() -> LsofMode? {
+    private static func completeLsofMode(commandTimeout: TimeInterval) -> LsofMode? {
         let executable = "/usr/sbin/lsof"
         guard FileManager.default.isExecutableFile(atPath: executable) else { return nil }
 
         let direct = run(
             executable,
             arguments: ["-F", "pu", "-p", "1"],
-            timeout: 5
+            timeout: commandTimeout
         )
         if confirmsRootVisibility(direct) {
             return .direct
@@ -93,7 +99,7 @@ nonisolated enum ContainerCacheSafety {
         let privileged = run(
             sudo,
             arguments: ["-n", executable, "-F", "pu", "-p", "1"],
-            timeout: 5
+            timeout: commandTimeout
         )
         return confirmsRootVisibility(privileged) ? .sudo : nil
     }

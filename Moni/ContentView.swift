@@ -119,11 +119,11 @@ struct ContentView: View {
                         } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
                             SecondaryDetailView(section: selection, selection: animatedSelection)
                         } else if selection == .applications {
-                            ApplicationManagerView()
+                            ApplicationManagerView(refreshSystem: refreshSystem)
                         } else if selection == .cleaner {
-                            CleanerView()
+                            CleanerView(refreshSystem: refreshSystem)
                         } else if selection == .maintenance {
-                            MaintenanceView()
+                            MaintenanceView(refreshSystem: refreshSystem)
                         } else if selection == .settings {
                             SettingsView(section: $settingsSection)
                         } else {
@@ -163,6 +163,7 @@ struct ContentView: View {
             MoniLocalization.setLanguage(selectedLanguage)
             applyAppearance(appearance)
             monitor.setSamplingInterval(samplingInterval)
+            monitor.setNetworkDetailsVisible(selection == .network)
             NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
         }
         .onChange(of: appearance) { _, value in
@@ -239,6 +240,11 @@ struct ContentView: View {
     private func select(_ section: MonitorSection) {
         guard section != selection else { return }
         selection = section
+        monitor.setNetworkDetailsVisible(section == .network)
+    }
+
+    private func refreshSystem() {
+        monitor.refresh(forceSlowMetrics: true)
     }
 
     private var toolbar: some View {

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct TrashCleanerView: View {
-    @EnvironmentObject private var monitor: SystemMonitor
+    let refreshSystem: () -> Void
     @State private var items: [TrashCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var unreadableItemCount = 0
@@ -281,7 +281,7 @@ struct TrashCleanerView: View {
         let result = await TrashCleanupService.executeCleanup(plan)
         await scan()
         isCleaning = false
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
 
         var parts: [String] = []
         if !result.trashedPaths.isEmpty {

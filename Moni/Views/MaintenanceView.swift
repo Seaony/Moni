@@ -43,7 +43,7 @@ private struct LoginItemsReview: Identifiable {
 }
 
 struct MaintenanceView: View {
-    @EnvironmentObject private var monitor: SystemMonitor
+    let refreshSystem: () -> Void
     @State private var snapshot = FinderMaintenanceSnapshot(
         cachePaths: [],
         staleSavedStatePaths: [],
@@ -1960,7 +1960,7 @@ struct MaintenanceView: View {
         isRunning = true
         let result = await SystemCleanupService.executeCleanup(plan)
         isRunning = false
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
 
         let trashedPaths = Set(result.trashedPaths)
         let remainingItems = systemCleanupSnapshot.items.filter {
@@ -2014,7 +2014,7 @@ struct MaintenanceView: View {
         let result = await TimeMachineSnapshotService.executeCleanup(plan)
         await scan()
         isRunning = false
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
 
         var parts: [String] = []
         if !result.removedPaths.isEmpty {
@@ -2155,7 +2155,7 @@ struct MaintenanceView: View {
 
         await scan()
         isRunning = false
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
         resultMessage = parts.joined(separator: " ")
     }
 
@@ -2277,7 +2277,7 @@ struct MaintenanceView: View {
         if parts.isEmpty {
             parts.append(MoniLocalization.string("No databases needed optimization."))
         }
-        monitor.refresh(forceSlowMetrics: true)
+        refreshSystem()
         resultMessage = parts.joined(separator: " ")
     }
 

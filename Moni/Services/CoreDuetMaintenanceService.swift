@@ -61,34 +61,13 @@ nonisolated enum CoreDuetMaintenanceService {
                 return skippedResult()
             }
 
-            let sidecars = current.files.filter { $0.path != current.databasePath }
-            var trashedSidecarCount = 0
-            var failedSidecarCount = 0
-            for file in sidecars {
-                guard matchesIdentity(file),
-                      !CleanupPreferences.isWhitelisted(file.path) else {
-                    failedSidecarCount += 1
-                    continue
-                }
-                do {
-                    var resultingURL: NSURL?
-                    try FileManager.default.trashItem(
-                        at: URL(fileURLWithPath: file.path),
-                        resultingItemURL: &resultingURL
-                    )
-                    trashedSidecarCount += 1
-                } catch {
-                    failedSidecarCount += 1
-                }
-            }
-
             guard let database = current.files.first(where: { $0.path == current.databasePath }),
                   matchesIdentity(database),
                   !CleanupPreferences.isWhitelisted(database.path) else {
                 return CoreDuetMaintenanceResult(
                     databaseCleaned: false,
-                    trashedSidecarCount: trashedSidecarCount,
-                    failedSidecarCount: failedSidecarCount,
+                    trashedSidecarCount: 0,
+                    failedSidecarCount: 0,
                     skipped: true,
                     databaseFailed: false
                 )
@@ -103,8 +82,8 @@ nonisolated enum CoreDuetMaintenanceService {
             )
             return CoreDuetMaintenanceResult(
                 databaseCleaned: result.status == 0,
-                trashedSidecarCount: trashedSidecarCount,
-                failedSidecarCount: failedSidecarCount,
+                trashedSidecarCount: 0,
+                failedSidecarCount: 0,
                 skipped: false,
                 databaseFailed: result.status != 0
             )
