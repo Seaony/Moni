@@ -269,7 +269,7 @@ actor SystemSampler {
         let pageSize = UInt64(vm_kernel_page_size)
         let total = ProcessInfo.processInfo.physicalMemory
         let free = UInt64(statistics.free_count) * pageSize
-        let cached = UInt64(statistics.inactive_count + statistics.speculative_count) * pageSize
+        let cached = UInt64(statistics.external_page_count) * pageSize
         let wired = UInt64(statistics.wire_count) * pageSize
         let compressed = UInt64(statistics.compressor_page_count) * pageSize
         let used = total > free + cached ? total - free - cached : 0
