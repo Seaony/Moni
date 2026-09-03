@@ -1140,7 +1140,7 @@ private struct DiskBrowserView: View {
 
     private var columnHeader: some View {
         HStack(spacing: 8) {
-            Color.clear.frame(width: 22)
+            Color.clear.frame(width: 22, height: 22)
             if browserMode == .contents {
                 Text("Name").frame(maxWidth: .infinity, alignment: .leading)
                 Text("Size").frame(width: 110, alignment: .trailing)

@@ -4,8 +4,10 @@ struct ProjectArtifactCleanerView: View {
     let refreshSystem: () -> Void
     @State private var items: [ProjectArtifactItem] = []
     @State private var selectedPaths: Set<String> = []
+    @State private var expandedProjectPaths: Set<String> = []
     @State private var failedRootCount = 0
     @State private var isScanning = false
+    @State private var scanProgress: CleanerScanProgress?
     @State private var isCleaning = false
     @State private var pendingPlan: ProjectArtifactCleanupPlan?
     @State private var cleanupMessage: String?
@@ -16,13 +18,12 @@ struct ProjectArtifactCleanerView: View {
             summary
 
             if isScanning {
-                VStack(spacing: 10) {
+                if let scanProgress {
+                    CleanerScanProgressView(progress: scanProgress)
+                } else {
                     ProgressView()
-                    Text("Scanning project build artifacts…")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if items.isEmpty, failedRootCount > 0 {
                 ContentUnavailableView(
                     "Scan incomplete",
@@ -142,70 +143,85 @@ struct ProjectArtifactCleanerView: View {
 
     private func projectPanel(path: String, items projectItems: [ProjectArtifactItem]) -> some View {
         VStack(spacing: 0) {
-            Button {
-                toggle(projectItems)
-            } label: {
-                HStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Button {
+                    toggle(projectItems)
+                } label: {
                     Image(systemName: selectionSymbol(projectItems))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(MoniPalette.blue)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(URL(fileURLWithPath: path).lastPathComponent)
-                            .font(.system(size: 13.5, weight: .bold))
-                            .lineLimit(1)
-                        Text(path)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    Spacer(minLength: 10)
-                    Text(groupSizeLabel(projectItems))
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                        .frame(width: 28, height: 28)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
 
-            Divider().padding(.horizontal, 12)
-
-            ForEach(projectItems) { item in
                 Button {
-                    toggle(item.path)
+                    toggleExpansion(of: path)
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
-                            .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.name)
-                                .font(.system(size: 12.5, weight: .medium))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(URL(fileURLWithPath: path).lastPathComponent)
+                                .font(.system(size: 13.5, weight: .bold))
                                 .lineLimit(1)
-                            HStack(spacing: 6) {
-                                Text(item.path)
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                activityLabel(item)
-                            }
+                            Text(path)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
                         Spacer(minLength: 10)
-                        Text(item.sizeBytes.map(artifactBytes) ?? MoniLocalization.string("Unknown"))
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text(groupSizeLabel(projectItems))
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
                             .foregroundStyle(MoniPalette.foregroundSecondary)
+                        Image(systemName: expandedProjectPaths.contains(path) ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .frame(width: 12)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                    .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+
+            if expandedProjectPaths.contains(path) {
+                Divider().padding(.horizontal, 12)
+
+                ForEach(projectItems) { item in
+                    Button {
+                        toggle(item.path)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
+                                .frame(width: 20)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.name)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .lineLimit(1)
+                                HStack(spacing: 6) {
+                                    Text(item.path)
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    activityLabel(item)
+                                }
+                            }
+                            Spacer(minLength: 10)
+                            Text(item.sizeBytes.map(artifactBytes) ?? MoniLocalization.string("Unknown"))
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .background(MoniPalette.card)
@@ -302,18 +318,46 @@ struct ProjectArtifactCleanerView: View {
         }
     }
 
+    private func toggleExpansion(of path: String) {
+        if expandedProjectPaths.contains(path) {
+            expandedProjectPaths.remove(path)
+        } else {
+            expandedProjectPaths.insert(path)
+        }
+    }
+
     private func scan(useDefaultSelection: Bool) async {
         isScanning = true
-        let snapshot = await ProjectArtifactService.scan()
+        scanProgress = nil
+        let (progressUpdates, continuation) = AsyncStream<CleanerScanProgress>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        let worker = Task.detached(priority: .utility) {
+            let snapshot = await ProjectArtifactService.scan { progress in
+                continuation.yield(progress)
+            }
+            continuation.finish()
+            return snapshot
+        }
+        let snapshot = await withTaskCancellationHandler {
+            for await progress in progressUpdates {
+                scanProgress = progress
+            }
+            return await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
         guard !Task.isCancelled else {
             isScanning = false
             return
         }
         items = snapshot.items
+        expandedProjectPaths = []
         failedRootCount = snapshot.failedRootPaths.count
         selectedPaths = useDefaultSelection
             ? Set(snapshot.items.filter(\.isSelectedByDefault).map(\.path))
             : []
+        scanProgress = nil
         isScanning = false
     }
 

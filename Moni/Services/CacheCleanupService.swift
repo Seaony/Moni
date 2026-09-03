@@ -146,6 +146,34 @@ nonisolated enum CacheCleanupScanPhase: Sendable {
         case .finishing: "Finishing cache scan…"
         }
     }
+
+    var stepNumber: Int {
+        switch self {
+        case .preparing: 1
+        case .userFiles: 2
+        case .browsers: 3
+        case .applications: 4
+        case .developerTools: 5
+        case .finishing: 6
+        }
+    }
+
+    static let stepCount = 6
+}
+
+nonisolated struct CacheCleanupScanProgress: Sendable {
+    let phase: CacheCleanupScanPhase
+    let completedTaskCount: Int
+    let totalTaskCount: Int
+    let activeTaskTitleKeys: [String]
+    let discoveredItemCount: Int
+    let startedAt: Date
+    let timeLimit: TimeInterval
+
+    var fractionCompleted: Double? {
+        guard totalTaskCount > 0 else { return nil }
+        return min(1, Double(completedTaskCount) / Double(totalTaskCount))
+    }
 }
 
 nonisolated struct CacheCleanupPlan: Identifiable, Sendable {
@@ -156,7 +184,7 @@ nonisolated struct CacheCleanupPlan: Identifiable, Sendable {
 }
 
 nonisolated enum CacheCleanupService {
-    typealias ProgressHandler = @Sendable (CacheCleanupScanPhase) -> Void
+    typealias ProgressHandler = @Sendable (CacheCleanupScanProgress) -> Void
 
     private final class ScanBudget: @unchecked Sendable {
         private let deadline: Date
@@ -241,20 +269,44 @@ nonisolated enum CacheCleanupService {
     }
 
     private struct ScanJob: Sendable {
+        let titleKey: String
         let operation: @Sendable () async -> ScanResult
+
+        init(
+            _ category: CacheCleanupCategory,
+            operation: @escaping @Sendable () async -> ScanResult
+        ) {
+            titleKey = category.titleKey
+            self.operation = operation
+        }
+
+        init(
+            titleKey: String,
+            operation: @escaping @Sendable () async -> ScanResult
+        ) {
+            self.titleKey = titleKey
+            self.operation = operation
+        }
     }
 
     static func scan(progress: ProgressHandler? = nil) async -> CacheCleanupSnapshot {
+        let startedAt = Date()
         let budget = ScanBudget(timeLimit: totalScanTimeLimit)
+        reportProgress(
+            phase: .preparing,
+            discoveredItemCount: 0,
+            startedAt: startedAt,
+            to: progress
+        )
         return await $activeScanBudget.withValue(budget) {
-            await scanWithinBudget(progress: progress)
+            await scanWithinBudget(progress: progress, startedAt: startedAt)
         }
     }
 
     private static func scanWithinBudget(
-        progress: ProgressHandler?
+        progress: ProgressHandler?,
+        startedAt: Date
     ) async -> CacheCleanupSnapshot {
-        progress?(.preparing)
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         let userCacheProcessGuard = await Task.detached(priority: .utility) {
             UserCacheProcessGuard.capture()
@@ -284,145 +336,250 @@ nonisolated enum CacheCleanupService {
         var discoveredItems: [CacheCleanupItem] = []
         var unreadableItemCount = 0
 
-        progress?(.userFiles)
-        let sourceResults = await runScanJobs(sources.map { source in
-            ScanJob {
-                guard !Task.isCancelled,
-                      FileManager.default.fileExists(atPath: source.path) else {
-                    return ScanResult(items: [], unreadableItemCount: 0)
-                }
-                let exclusions: Set<String>
-                switch source.category {
-                case .userCaches: exclusions = cacheExclusions
-                case .userLogs: exclusions = logExclusions
-                default: exclusions = []
-                }
-                var finalUpdate: DiskAnalysisUpdate?
-                for await update in boundedFinalUpdates(
-                    for: source.path,
-                    timeLimit: 30,
-                    excludingPaths: exclusions
-                ) {
-                    guard !Task.isCancelled else {
+        let sourceResults = await runScanJobs(
+            sources.map { source in
+                ScanJob(titleKey: source.category.titleKey) {
+                    guard !Task.isCancelled,
+                          FileManager.default.fileExists(atPath: source.path) else {
                         return ScanResult(items: [], unreadableItemCount: 0)
                     }
-                    if update.isComplete { finalUpdate = update }
-                }
-                guard let finalUpdate else {
-                    return ScanResult(items: [], unreadableItemCount: 1)
-                }
-                let items: [CacheCleanupItem] = finalUpdate.entrySizes.compactMap { entry in
-                    let (path, size) = entry
-                    let name = URL(fileURLWithPath: path).lastPathComponent
-                    guard size > 0,
-                          !name.hasPrefix("."),
-                          source.category != .userCaches
-                            || UserCacheProcessGuard.permits(path, using: userCacheProcessGuard) else {
-                        return nil
+                    let exclusions: Set<String>
+                    switch source.category {
+                    case .userCaches: exclusions = cacheExclusions
+                    case .userLogs: exclusions = logExclusions
+                    default: exclusions = []
                     }
-                    return CacheCleanupItem(path: path, category: source.category, sizeBytes: size)
+                    var finalUpdate: DiskAnalysisUpdate?
+                    for await update in boundedFinalUpdates(
+                        for: source.path,
+                        timeLimit: 30,
+                        excludingPaths: exclusions
+                    ) {
+                        guard !Task.isCancelled else {
+                            return ScanResult(items: [], unreadableItemCount: 0)
+                        }
+                        if update.isComplete { finalUpdate = update }
+                    }
+                    guard let finalUpdate else {
+                        return ScanResult(items: [], unreadableItemCount: 1)
+                    }
+                    let items: [CacheCleanupItem] = finalUpdate.entrySizes.compactMap { entry in
+                        let (path, size) = entry
+                        let name = URL(fileURLWithPath: path).lastPathComponent
+                        guard size > 0,
+                              !name.hasPrefix("."),
+                              source.category != .userCaches
+                                || UserCacheProcessGuard.permits(path, using: userCacheProcessGuard) else {
+                            return nil
+                        }
+                        return CacheCleanupItem(path: path, category: source.category, sizeBytes: size)
+                    }
+                    return ScanResult(
+                        items: items,
+                        unreadableItemCount: finalUpdate.unreadableItemCount
+                    )
                 }
-                return ScanResult(
-                    items: items,
-                    unreadableItemCount: finalUpdate.unreadableItemCount
-                )
-            }
-        })
+            },
+            phase: .userFiles,
+            discoveredItemCount: discoveredItems.count,
+            startedAt: startedAt,
+            progress: progress
+        )
         append(sourceResults, to: &discoveredItems, unreadableItemCount: &unreadableItemCount)
 
-        progress?(.browsers)
-        let browserResults = await runScanJobs([
-            ScanJob {
+        let browserJobs = [
+            ScanJob(.diaProfileCaches) {
                 guard diaIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
                 return ScanResult(await scanDiaProfileCaches())
             },
-            ScanJob {
+            ScanJob(.chromeProfileCaches) {
                 guard chromeIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
                 return ScanResult(await scanChromeProfileCaches())
             },
-            ScanJob {
+            ScanJob(.firefoxProfileCaches) {
                 guard firefoxIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
                 return ScanResult(await scanFirefoxProfileCaches())
             },
-            ScanJob {
+            ScanJob(.braveProfileCaches) {
                 guard braveIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
                 return ScanResult(await scanBraveProfileCaches())
             },
-            ScanJob {
+            ScanJob(.arcProfileCaches) {
                 guard arcIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
                 return ScanResult(await scanArcProfileCaches())
             },
-            ScanJob {
+            ScanJob(.vivaldiProfileCaches) {
                 guard vivaldiIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
                 return ScanResult(await scanVivaldiProfileCaches())
             },
-            ScanJob {
+            ScanJob(.qqBrowserProfileCaches) {
                 guard qqBrowserIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
                 return ScanResult(await scanQQBrowserProfileCaches())
             },
-            ScanJob { ScanResult(await scanPuppeteerCaches()) },
-            ScanJob {
+            ScanJob(.puppeteerCaches) {
+                ScanResult(await scanPuppeteerCaches())
+            },
+            ScanJob(.heliumProfileCaches) {
                 let processGuard = UserCacheProcessGuard.capture()
                 guard UserCacheProcessGuard.permits(owner: heliumOwner, using: processGuard) else {
                     return ScanResult(items: [], unreadableItemCount: 0)
                 }
                 return ScanResult(await scanHeliumProfileCaches())
             },
-            ScanJob { ScanResult(await scanBrowserServiceWorkerCaches()) },
-            ScanJob { ScanResult(await scanBrowserOldVersions()) },
-            ScanJob { ScanResult(await scanEdgeUpdaterOldVersions()) },
-            ScanJob { ScanResult(await scanGoogleUpdaterCaches()) }
-        ])
+            ScanJob(.browserServiceWorkerCaches) {
+                ScanResult(await scanBrowserServiceWorkerCaches())
+            },
+            ScanJob(.browserOldVersions) {
+                ScanResult(await scanBrowserOldVersions())
+            },
+            ScanJob(.edgeUpdaterOldVersions) {
+                ScanResult(await scanEdgeUpdaterOldVersions())
+            },
+            ScanJob(.googleUpdaterCaches) {
+                ScanResult(await scanGoogleUpdaterCaches())
+            }
+        ]
+        let browserResults = await runScanJobs(
+            browserJobs,
+            phase: .browsers,
+            discoveredItemCount: discoveredItems.count,
+            startedAt: startedAt,
+            progress: progress
+        )
         append(browserResults, to: &discoveredItems, unreadableItemCount: &unreadableItemCount)
 
-        progress?(.applications)
-        let applicationResults = await runScanJobs([
-            ScanJob { ScanResult(await scanSandboxedAppCaches(processGuard: userCacheProcessGuard)) },
-            ScanJob {
+        let applicationJobs = [
+            ScanJob(.sandboxedAppCaches) {
+                ScanResult(await scanSandboxedAppCaches(processGuard: userCacheProcessGuard))
+            },
+            ScanJob(.utmCaches) {
                 guard utmIsInactive() else { return ScanResult(items: [], unreadableItemCount: 0) }
                 return ScanResult(await scanUTMCaches())
             },
-            ScanJob { ScanResult(await scanSharedContainerLogs()) },
-            ScanJob { ScanResult(await scanSharedContainerCaches(processGuard: userCacheProcessGuard)) },
-            ScanJob { ScanResult(await scanApplicationSupportCaches()) },
-            ScanJob { ScanResult(await scanVirtualizationTemporaryData()) },
-            ScanJob { ScanResult(scanIncompleteDownloads()) },
-            ScanJob { ScanResult(scanOldMailAttachments(referenceDate: Date())) },
-            ScanJob { ScanResult(scanRecentItems()) },
-            ScanJob { ScanResult(scanFinderMetadata()) },
-            ScanJob { ScanResult(scanExternalVolumeMetadata()) },
-            ScanJob { ScanResult(await scanExternalVolumeTemporaryData()) },
-            ScanJob { ScanResult(scanOldCrashReports(referenceDate: Date())) },
-            ScanJob { ScanResult(await scanMessagesPreviewCaches()) },
-            ScanJob { ScanResult(await scanIdentityAndSuggestionCaches()) },
-            ScanJob { ScanResult(await scanCalendarCache()) },
-            ScanJob { ScanResult(await scanAddressBookPhotoCaches()) },
-            ScanJob { ScanResult(await scanHandoffClipboard(referenceDate: Date())) },
-            ScanJob { ScanResult(scanCachedDeviceFirmware()) }
-        ])
+            ScanJob(.sharedContainerLogs) {
+                ScanResult(await scanSharedContainerLogs())
+            },
+            ScanJob(.sharedContainerCaches) {
+                ScanResult(await scanSharedContainerCaches(processGuard: userCacheProcessGuard))
+            },
+            ScanJob(.applicationSupportCaches) {
+                ScanResult(await scanApplicationSupportCaches())
+            },
+            ScanJob(.virtualizationTemporaryData) {
+                ScanResult(await scanVirtualizationTemporaryData())
+            },
+            ScanJob(.incompleteDownloads) {
+                ScanResult(scanIncompleteDownloads())
+            },
+            ScanJob(.oldMailAttachments) {
+                ScanResult(scanOldMailAttachments(referenceDate: Date()))
+            },
+            ScanJob(.recentItems) {
+                ScanResult(scanRecentItems())
+            },
+            ScanJob(.finderMetadata) {
+                ScanResult(scanFinderMetadata())
+            },
+            ScanJob(.externalVolumeMetadata) {
+                ScanResult(scanExternalVolumeMetadata())
+            },
+            ScanJob(.externalVolumeTemporaryData) {
+                ScanResult(await scanExternalVolumeTemporaryData())
+            },
+            ScanJob(.oldCrashReports) {
+                ScanResult(scanOldCrashReports(referenceDate: Date()))
+            },
+            ScanJob(.messagesPreviewCaches) {
+                ScanResult(await scanMessagesPreviewCaches())
+            },
+            ScanJob(.identityAndSuggestionCaches) {
+                ScanResult(await scanIdentityAndSuggestionCaches())
+            },
+            ScanJob(.calendarCache) {
+                ScanResult(await scanCalendarCache())
+            },
+            ScanJob(.addressBookPhotoCaches) {
+                ScanResult(await scanAddressBookPhotoCaches())
+            },
+            ScanJob(.handoffClipboard) {
+                ScanResult(await scanHandoffClipboard(referenceDate: Date()))
+            },
+            ScanJob(.cachedDeviceFirmware) {
+                ScanResult(scanCachedDeviceFirmware())
+            }
+        ]
+        let applicationResults = await runScanJobs(
+            applicationJobs,
+            phase: .applications,
+            discoveredItemCount: discoveredItems.count,
+            startedAt: startedAt,
+            progress: progress
+        )
         append(applicationResults, to: &discoveredItems, unreadableItemCount: &unreadableItemCount)
 
-        progress?(.developerTools)
-        let developerResults = await runScanJobs([
-            ScanJob { ScanResult(await scanNodePackageCaches()) },
-            ScanJob { ScanResult(await scanPythonPackageCaches()) },
-            ScanJob { ScanResult(await scanDeveloperToolCaches()) },
-            ScanJob { ScanResult(await scanMiseCache(root: resolvedMiseCacheRoot)) },
-            ScanJob { ScanResult(await scanRustCaches()) },
-            ScanJob { ScanResult(await scanGoCaches()) },
-            ScanJob { ScanResult(await scanClangModuleCache()) },
-            ScanJob { ScanResult(await scanXcodeBuildCaches()) },
-            ScanJob { ScanResult(await scanSimulatorCaches()) },
-            ScanJob { ScanResult(await scanXcodeDeviceSupport()) },
-            ScanJob { ScanResult(await scanGradleCaches()) },
-            ScanJob { ScanResult(await scanJetBrainsToolboxOldVersions()) },
-            ScanJob { ScanResult(await scanDeveloperToolOldVersions()) },
-            ScanJob { ScanResult(await scanObsoleteEditorExtensions()) },
-            ScanJob { ScanResult(scanDeveloperBackupFiles()) }
-        ])
+        let developerJobs = [
+            ScanJob(.nodePackageCaches) {
+                ScanResult(await scanNodePackageCaches())
+            },
+            ScanJob(.pythonPackageCaches) {
+                ScanResult(await scanPythonPackageCaches())
+            },
+            ScanJob(.developerToolCaches) {
+                ScanResult(await scanDeveloperToolCaches())
+            },
+            ScanJob(.miseCache) {
+                ScanResult(await scanMiseCache(root: resolvedMiseCacheRoot))
+            },
+            ScanJob(.rustCargoCache) {
+                ScanResult(await scanRustCaches())
+            },
+            ScanJob(.goBuildCache) {
+                ScanResult(await scanGoCaches())
+            },
+            ScanJob(.clangModuleCache) {
+                ScanResult(await scanClangModuleCache())
+            },
+            ScanJob(.xcodeBuildCaches) {
+                ScanResult(await scanXcodeBuildCaches())
+            },
+            ScanJob(.simulatorCaches) {
+                ScanResult(await scanSimulatorCaches())
+            },
+            ScanJob(.xcodeDeviceSupport) {
+                ScanResult(await scanXcodeDeviceSupport())
+            },
+            ScanJob(.gradleCaches) {
+                ScanResult(await scanGradleCaches())
+            },
+            ScanJob(.jetBrainsToolboxOldVersions) {
+                ScanResult(await scanJetBrainsToolboxOldVersions())
+            },
+            ScanJob(.developerToolOldVersions) {
+                ScanResult(await scanDeveloperToolOldVersions())
+            },
+            ScanJob(.obsoleteEditorExtensions) {
+                ScanResult(await scanObsoleteEditorExtensions())
+            },
+            ScanJob(titleKey: "Developer backup files") {
+                ScanResult(scanDeveloperBackupFiles())
+            }
+        ]
+        let developerResults = await runScanJobs(
+            developerJobs,
+            phase: .developerTools,
+            discoveredItemCount: discoveredItems.count,
+            startedAt: startedAt,
+            progress: progress
+        )
         append(developerResults, to: &discoveredItems, unreadableItemCount: &unreadableItemCount)
 
-        progress?(.finishing)
+        reportProgress(
+            phase: .finishing,
+            totalTaskCount: 1,
+            discoveredItemCount: discoveredItems.count,
+            startedAt: startedAt,
+            to: progress
+        )
         var uniqueItemsByPath: [String: CacheCleanupItem] = [:]
         for item in discoveredItems {
             uniqueItemsByPath[item.path] = item
@@ -444,6 +601,15 @@ nonisolated enum CacheCleanupService {
             let (sum, overflow) = total.addingReportingOverflow(item.sizeBytes)
             return overflow ? UInt64.max : sum
         }
+
+        reportProgress(
+            phase: .finishing,
+            completedTaskCount: 1,
+            totalTaskCount: 1,
+            discoveredItemCount: items.count,
+            startedAt: startedAt,
+            to: progress
+        )
 
         return CacheCleanupSnapshot(
             items: items,
@@ -512,35 +678,91 @@ nonisolated enum CacheCleanupService {
         )
     }
 
+    private static func reportProgress(
+        phase: CacheCleanupScanPhase,
+        completedTaskCount: Int = 0,
+        totalTaskCount: Int = 0,
+        activeTaskTitleKeys: [String] = [],
+        discoveredItemCount: Int,
+        startedAt: Date,
+        to progress: ProgressHandler?
+    ) {
+        progress?(CacheCleanupScanProgress(
+            phase: phase,
+            completedTaskCount: completedTaskCount,
+            totalTaskCount: totalTaskCount,
+            activeTaskTitleKeys: activeTaskTitleKeys,
+            discoveredItemCount: discoveredItemCount,
+            startedAt: startedAt,
+            timeLimit: totalScanTimeLimit
+        ))
+    }
+
     private static func runScanJobs(
         _ jobs: [ScanJob],
+        phase: CacheCleanupScanPhase,
+        discoveredItemCount: Int,
+        startedAt: Date,
+        progress: ProgressHandler?,
         maxConcurrent: Int = 4
     ) async -> [ScanResult] {
         guard !jobs.isEmpty, scanBudgetAllowsWork else {
+            reportProgress(
+                phase: phase,
+                totalTaskCount: jobs.count,
+                discoveredItemCount: discoveredItemCount,
+                startedAt: startedAt,
+                to: progress
+            )
             return []
         }
         return await withTaskGroup(of: (Int, ScanResult).self) { group in
             var results = Array<ScanResult?>(repeating: nil, count: jobs.count)
             var nextIndex = 0
+            var completedTaskCount = 0
+            var phaseDiscoveredItemCount = 0
+            var activeJobIndices: Set<Int> = []
             let initialCount = min(maxConcurrent, jobs.count)
+
+            func publishProgress() {
+                let activeTaskTitleKeys = activeJobIndices
+                    .sorted()
+                    .map { jobs[$0].titleKey }
+                reportProgress(
+                    phase: phase,
+                    completedTaskCount: completedTaskCount,
+                    totalTaskCount: jobs.count,
+                    activeTaskTitleKeys: activeTaskTitleKeys,
+                    discoveredItemCount: discoveredItemCount + phaseDiscoveredItemCount,
+                    startedAt: startedAt,
+                    to: progress
+                )
+            }
 
             while nextIndex < initialCount {
                 let index = nextIndex
+                activeJobIndices.insert(index)
                 group.addTask(priority: .utility) {
                     (index, await jobs[index].operation())
                 }
                 nextIndex += 1
             }
+            publishProgress()
 
             while let (index, result) = await group.next() {
                 results[index] = result
+                activeJobIndices.remove(index)
+                completedTaskCount += 1
+                phaseDiscoveredItemCount += result.items.count
                 if nextIndex < jobs.count, scanBudgetAllowsWork {
                     let index = nextIndex
+                    activeJobIndices.insert(index)
                     group.addTask(priority: .utility) {
                         (index, await jobs[index].operation())
                     }
                     nextIndex += 1
                 }
+                publishProgress()
             }
             return results.compactMap { $0 }
         }

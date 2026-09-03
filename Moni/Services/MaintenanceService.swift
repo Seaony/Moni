@@ -41,6 +41,7 @@ nonisolated struct FinderMaintenanceSnapshot: Sendable {
     let cachePaths: [String]
     let staleSavedStatePaths: [String]
     let unreadableItemCount: Int
+    let unreadablePaths: [String]
 }
 
 nonisolated struct FinderRefreshResult: Sendable {
@@ -52,12 +53,14 @@ nonisolated struct FinderRefreshResult: Sendable {
 nonisolated struct BrokenPreferenceSnapshot: Sendable {
     let paths: [String]
     let unreadableItemCount: Int
+    let unreadablePaths: [String]
 }
 
 nonisolated struct MaintenanceFileRepairSnapshot: Sendable {
     let brokenSharedFileListPaths: [String]
     let brokenLaunchAgentPaths: [String]
     let unreadableItemCount: Int
+    let unreadablePaths: [String]
 }
 
 nonisolated enum MaintenanceService {
@@ -65,6 +68,7 @@ nonisolated enum MaintenanceService {
         let cachePaths: [String]
         let savedStatePaths: [String]
         let unreadableItemCount: Int
+        let unreadablePaths: [String]
     }
 
     static let tasks: [MaintenanceTaskDefinition] = [
@@ -245,7 +249,8 @@ nonisolated enum MaintenanceService {
         return FinderMaintenanceSnapshot(
             cachePaths: scan.cachePaths.filter(eligiblePaths.contains).sorted(by: localizedPathOrder),
             staleSavedStatePaths: scan.savedStatePaths.filter(eligiblePaths.contains).sorted(by: localizedPathOrder),
-            unreadableItemCount: scan.unreadableItemCount
+            unreadableItemCount: scan.unreadableItemCount,
+            unreadablePaths: scan.unreadablePaths
         )
     }
 
@@ -264,12 +269,14 @@ nonisolated enum MaintenanceService {
         )
         var savedStatePaths: [String] = []
         var unreadableItemCount = 0
+        var unreadablePaths: [String] = []
         if let enumerator = fileManager.enumerator(
             at: savedStateRoot,
             includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey],
             options: [],
-            errorHandler: { _, _ in
+            errorHandler: { url, _ in
                 unreadableItemCount += 1
+                unreadablePaths.append(url.standardizedFileURL.path)
                 return true
             }
         ) {
@@ -292,17 +299,20 @@ nonisolated enum MaintenanceService {
                     enumerator.skipDescendants()
                 } catch {
                     unreadableItemCount += 1
+                    unreadablePaths.append(url.standardizedFileURL.path)
                     enumerator.skipDescendants()
                 }
             }
         } else if fileManager.fileExists(atPath: savedStateRoot.path) {
             unreadableItemCount += 1
+            unreadablePaths.append(savedStateRoot.standardizedFileURL.path)
         }
 
         return FinderMaintenanceScan(
             cachePaths: cachePaths,
             savedStatePaths: savedStatePaths,
-            unreadableItemCount: unreadableItemCount
+            unreadableItemCount: unreadableItemCount,
+            unreadablePaths: unreadablePaths.sorted(by: localizedPathOrder)
         )
     }
 
@@ -331,7 +341,8 @@ nonisolated enum MaintenanceService {
         let eligiblePaths = await CleanupService.shared.eligiblePaths(scan.paths)
         return BrokenPreferenceSnapshot(
             paths: scan.paths.filter(eligiblePaths.contains).sorted(by: localizedPathOrder),
-            unreadableItemCount: scan.unreadableItemCount
+            unreadableItemCount: scan.unreadableItemCount,
+            unreadablePaths: scan.unreadablePaths
         )
     }
 
@@ -348,7 +359,8 @@ nonisolated enum MaintenanceService {
             brokenLaunchAgentPaths: scan.brokenLaunchAgentPaths
                 .filter(eligiblePaths.contains)
                 .sorted(by: localizedPathOrder),
-            unreadableItemCount: scan.unreadableItemCount
+            unreadableItemCount: scan.unreadableItemCount,
+            unreadablePaths: scan.unreadablePaths
         )
     }
 
@@ -413,6 +425,7 @@ nonisolated enum MaintenanceService {
             .appendingPathComponent("Library/Preferences", isDirectory: true)
         var candidates: [URL] = []
         var unreadableItemCount = 0
+        var unreadablePaths: [String] = []
 
         do {
             let topLevel = try fileManager.contentsOfDirectory(
@@ -426,6 +439,7 @@ nonisolated enum MaintenanceService {
         } catch {
             if fileManager.fileExists(atPath: preferencesURL.path) {
                 unreadableItemCount += 1
+                unreadablePaths.append(preferencesURL.standardizedFileURL.path)
             }
         }
 
@@ -434,8 +448,9 @@ nonisolated enum MaintenanceService {
             at: byHostURL,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles],
-            errorHandler: { _, _ in
+            errorHandler: { url, _ in
                 unreadableItemCount += 1
+                unreadablePaths.append(url.standardizedFileURL.path)
                 return true
             }
         ) {
@@ -447,6 +462,7 @@ nonisolated enum MaintenanceService {
             }
         } else if fileManager.fileExists(atPath: byHostURL.path) {
             unreadableItemCount += 1
+            unreadablePaths.append(byHostURL.standardizedFileURL.path)
         }
 
         var brokenPaths: [String] = []
@@ -454,6 +470,7 @@ nonisolated enum MaintenanceService {
             guard !Task.isCancelled else { break }
             guard fileManager.isReadableFile(atPath: url.path) else {
                 unreadableItemCount += 1
+                unreadablePaths.append(url.standardizedFileURL.path)
                 continue
             }
             if !run("/usr/bin/plutil", arguments: ["-lint", url.path]) {
@@ -463,7 +480,8 @@ nonisolated enum MaintenanceService {
 
         return BrokenPreferenceSnapshot(
             paths: brokenPaths,
-            unreadableItemCount: unreadableItemCount
+            unreadableItemCount: unreadableItemCount,
+            unreadablePaths: unreadablePaths.sorted(by: localizedPathOrder)
         )
     }
 
@@ -491,13 +509,15 @@ nonisolated enum MaintenanceService {
         var sharedFileLists: [String] = []
         var launchAgents: [String] = []
         var unreadableItemCount = 0
+        var unreadablePaths: [String] = []
 
         if let enumerator = fileManager.enumerator(
             at: sharedFileListRoot,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles],
-            errorHandler: { _, _ in
+            errorHandler: { url, _ in
                 unreadableItemCount += 1
+                unreadablePaths.append(url.standardizedFileURL.path)
                 return true
             }
         ) {
@@ -508,6 +528,7 @@ nonisolated enum MaintenanceService {
                       isRegularNonSymlink(url) else { continue }
                 guard fileManager.isReadableFile(atPath: url.path) else {
                     unreadableItemCount += 1
+                    unreadablePaths.append(url.standardizedFileURL.path)
                     continue
                 }
                 if !run("/usr/bin/plutil", arguments: ["-lint", url.path]) {
@@ -516,6 +537,7 @@ nonisolated enum MaintenanceService {
             }
         } else if fileManager.fileExists(atPath: sharedFileListRoot.path) {
             unreadableItemCount += 1
+            unreadablePaths.append(sharedFileListRoot.standardizedFileURL.path)
         }
 
         let launchAgentRoot = home.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
@@ -529,6 +551,7 @@ nonisolated enum MaintenanceService {
                 guard !Task.isCancelled else { break }
                 guard fileManager.isReadableFile(atPath: url.path) else {
                     unreadableItemCount += 1
+                    unreadablePaths.append(url.standardizedFileURL.path)
                     continue
                 }
                 guard let executablePath = launchAgentExecutablePath(in: url) else { continue }
@@ -540,13 +563,15 @@ nonisolated enum MaintenanceService {
         } catch {
             if fileManager.fileExists(atPath: launchAgentRoot.path) {
                 unreadableItemCount += 1
+                unreadablePaths.append(launchAgentRoot.standardizedFileURL.path)
             }
         }
 
         return MaintenanceFileRepairSnapshot(
             brokenSharedFileListPaths: sharedFileLists,
             brokenLaunchAgentPaths: launchAgents,
-            unreadableItemCount: unreadableItemCount
+            unreadableItemCount: unreadableItemCount,
+            unreadablePaths: unreadablePaths.sorted(by: localizedPathOrder)
         )
     }
 

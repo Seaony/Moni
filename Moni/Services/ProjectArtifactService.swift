@@ -133,6 +133,8 @@ nonisolated struct ProjectArtifactCleanupPlan: Identifiable, Sendable {
 }
 
 nonisolated enum ProjectArtifactService {
+    typealias ProgressHandler = @Sendable (CleanerScanProgress) -> Void
+
     private struct ScanCandidate: Sendable {
         let path: String
         let searchRootPath: String
@@ -187,9 +189,24 @@ nonisolated enum ProjectArtifactService {
         ".git", "Library", ".Trash", "Applications"
     ]
 
-    static func scan(referenceDate: Date = Date()) async -> ProjectArtifactSnapshot {
+    static func scan(
+        referenceDate: Date = Date(),
+        progress: ProgressHandler? = nil
+    ) async -> ProjectArtifactSnapshot {
+        let startedAt = Date()
+        reportProgress(
+            titleKey: "Discovering project locations…",
+            stepNumber: 1,
+            discoveredItemCount: 0,
+            startedAt: startedAt,
+            to: progress
+        )
         let worker = Task.detached(priority: .utility) {
-            scanSynchronously(referenceDate: referenceDate)
+            scanSynchronously(
+                referenceDate: referenceDate,
+                startedAt: startedAt,
+                progress: progress
+            )
         }
         let rawSnapshot = await withTaskCancellationHandler {
             await worker.value
@@ -200,12 +217,30 @@ nonisolated enum ProjectArtifactService {
             return ProjectArtifactSnapshot(searchRootPaths: [], items: [], failedRootPaths: [])
         }
 
+        reportProgress(
+            titleKey: "Finishing project scan…",
+            stepNumber: 4,
+            totalTaskCount: 1,
+            discoveredItemCount: rawSnapshot.items.count,
+            startedAt: startedAt,
+            to: progress
+        )
         let eligiblePaths = await CleanupService.shared.eligiblePaths(rawSnapshot.items.map(\.path))
-        return ProjectArtifactSnapshot(
+        let snapshot = ProjectArtifactSnapshot(
             searchRootPaths: rawSnapshot.searchRootPaths,
             items: rawSnapshot.items.filter { eligiblePaths.contains($0.path) },
             failedRootPaths: rawSnapshot.failedRootPaths
         )
+        reportProgress(
+            titleKey: "Finishing project scan…",
+            stepNumber: 4,
+            completedTaskCount: 1,
+            totalTaskCount: 1,
+            discoveredItemCount: snapshot.items.count,
+            startedAt: startedAt,
+            to: progress
+        )
+        return snapshot
     }
 
     static func previewCleanup(items: [ProjectArtifactItem]) async -> ProjectArtifactCleanupPlan {
@@ -315,10 +350,24 @@ nonisolated enum ProjectArtifactService {
         return (allowedPaths, rejectedItems)
     }
 
-    private static func scanSynchronously(referenceDate: Date) -> ProjectArtifactSnapshot {
+    private static func scanSynchronously(
+        referenceDate: Date,
+        startedAt: Date,
+        progress: ProgressHandler?
+    ) -> ProjectArtifactSnapshot {
         let roots = discoverSearchRoots()
+        reportProgress(
+            titleKey: "Discovering project locations…",
+            stepNumber: 1,
+            completedTaskCount: 1,
+            totalTaskCount: 1,
+            discoveredItemCount: 0,
+            startedAt: startedAt,
+            to: progress
+        )
         var candidates: [ScanCandidate] = []
         var failedRoots: [String] = []
+        var scannedRootCount = 0
         let rootScanDeadline = Date().addingTimeInterval(rootScanTimeLimit)
 
         for (index, root) in roots.enumerated() {
@@ -329,21 +378,51 @@ nonisolated enum ProjectArtifactService {
                 failedRoots.append(contentsOf: roots[index...])
                 break
             }
+            reportProgress(
+                titleKey: "Scanning project locations…",
+                stepNumber: 2,
+                completedTaskCount: scannedRootCount,
+                totalTaskCount: roots.count,
+                currentTasks: [.plain(root)],
+                discoveredItemCount: candidates.count,
+                startedAt: startedAt,
+                to: progress
+            )
             let result = scanRoot(root, deadline: rootScanDeadline)
             candidates.append(contentsOf: result.candidates)
+            scannedRootCount += 1
             if result.failed {
                 failedRoots.append(root)
             }
         }
+        reportProgress(
+            titleKey: "Scanning project locations…",
+            stepNumber: 2,
+            completedTaskCount: scannedRootCount,
+            totalTaskCount: roots.count,
+            discoveredItemCount: candidates.count,
+            startedAt: startedAt,
+            to: progress
+        )
 
         let filteredCandidates = filterNestedCandidates(candidates)
         let failedRootSet = Set(failedRoots)
         let detailDeadline = Date().addingTimeInterval(artifactScanTimeLimit)
         var items: [ProjectArtifactItem] = []
-        for candidate in filteredCandidates {
+        for (index, candidate) in filteredCandidates.enumerated() {
             guard !Task.isCancelled else {
                 return ProjectArtifactSnapshot(searchRootPaths: roots, items: [], failedRootPaths: [])
             }
+            reportProgress(
+                titleKey: "Inspecting project artifacts…",
+                stepNumber: 3,
+                completedTaskCount: index,
+                totalTaskCount: filteredCandidates.count,
+                currentTasks: [.plain(candidate.path)],
+                discoveredItemCount: items.count,
+                startedAt: startedAt,
+                to: progress
+            )
             guard isSafeArtifact(candidate.path, under: candidate.searchRootPath),
                   !isProtectedArtifact(candidate.path),
                   let projectRoot = projectRoot(for: candidate.path) else {
@@ -364,6 +443,15 @@ nonisolated enum ProjectArtifactService {
                 isCloudSynced: isCloudSynced(candidate.path)
             ))
         }
+        reportProgress(
+            titleKey: "Inspecting project artifacts…",
+            stepNumber: 3,
+            completedTaskCount: filteredCandidates.count,
+            totalTaskCount: filteredCandidates.count,
+            discoveredItemCount: items.count,
+            startedAt: startedAt,
+            to: progress
+        )
 
         items.sort {
             if $0.projectRootPath != $1.projectRootPath {
@@ -379,6 +467,30 @@ nonisolated enum ProjectArtifactService {
             items: items,
             failedRootPaths: failedRoots.sorted(by: localizedPathOrder)
         )
+    }
+
+    private static func reportProgress(
+        titleKey: String,
+        stepNumber: Int,
+        completedTaskCount: Int = 0,
+        totalTaskCount: Int = 0,
+        currentTasks: [CleanerScanTaskLabel] = [],
+        discoveredItemCount: Int,
+        startedAt: Date,
+        to progress: ProgressHandler?
+    ) {
+        progress?(CleanerScanProgress(
+            titleKey: titleKey,
+            stepNumber: stepNumber,
+            stepCount: 4,
+            completedTaskCount: completedTaskCount,
+            totalTaskCount: totalTaskCount,
+            currentTasks: currentTasks,
+            discoveredItemCount: discoveredItemCount,
+            discoveredItemLabelKey: "%@ artifacts found",
+            startedAt: startedAt,
+            timeLimit: nil
+        ))
     }
 
     private static func discoverSearchRoots() -> [String] {

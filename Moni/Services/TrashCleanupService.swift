@@ -31,19 +31,47 @@ nonisolated struct TrashCleanupPlan: Identifiable, Sendable {
 }
 
 nonisolated enum TrashCleanupService {
-    static func scan() async -> TrashCleanupSnapshot {
+    typealias ProgressHandler = @Sendable (CleanerScanProgress) -> Void
+
+    static func scan(progress: ProgressHandler? = nil) async -> TrashCleanupSnapshot {
+        let startedAt = Date()
         let roots = trashRoots()
         var items: [TrashCleanupItem] = []
         var unreadableItemCount = 0
-        for root in roots {
+        for (index, root) in roots.enumerated() {
             guard !Task.isCancelled else {
                 return TrashCleanupSnapshot(items: [], unreadableItemCount: 0, rootIdentities: roots)
             }
-            let result = await scan(root: root)
+            reportProgress(
+                titleKey: "Scanning Trash locations…",
+                stepNumber: 1,
+                completedTaskCount: index,
+                totalTaskCount: roots.count,
+                currentTasks: [.localized(root.locationName)],
+                discoveredItemCount: items.count,
+                startedAt: startedAt,
+                to: progress
+            )
+            let result = await scan(
+                root: root,
+                rootIndex: index,
+                rootCount: roots.count,
+                previouslyDiscoveredItemCount: items.count,
+                startedAt: startedAt,
+                progress: progress
+            )
             items.append(contentsOf: result.items)
             unreadableItemCount += result.unreadableItemCount
         }
 
+        reportProgress(
+            titleKey: "Finishing Trash scan…",
+            stepNumber: 2,
+            totalTaskCount: 1,
+            discoveredItemCount: items.count,
+            startedAt: startedAt,
+            to: progress
+        )
         let eligiblePaths = await CleanupService.shared.eligiblePaths(items.map(\.path))
         items = items
             .filter { eligiblePaths.contains($0.path) }
@@ -54,11 +82,44 @@ nonisolated enum TrashCleanupService {
                 if $0.sizeBytes != $1.sizeBytes { return $0.sizeBytes > $1.sizeBytes }
                 return $0.path.localizedStandardCompare($1.path) == .orderedAscending
             }
+        reportProgress(
+            titleKey: "Finishing Trash scan…",
+            stepNumber: 2,
+            completedTaskCount: 1,
+            totalTaskCount: 1,
+            discoveredItemCount: items.count,
+            startedAt: startedAt,
+            to: progress
+        )
         return TrashCleanupSnapshot(
             items: items,
             unreadableItemCount: unreadableItemCount,
             rootIdentities: roots
         )
+    }
+
+    private static func reportProgress(
+        titleKey: String,
+        stepNumber: Int,
+        completedTaskCount: Int = 0,
+        totalTaskCount: Int = 0,
+        currentTasks: [CleanerScanTaskLabel] = [],
+        discoveredItemCount: Int,
+        startedAt: Date,
+        to progress: ProgressHandler?
+    ) {
+        progress?(CleanerScanProgress(
+            titleKey: titleKey,
+            stepNumber: stepNumber,
+            stepCount: 2,
+            completedTaskCount: completedTaskCount,
+            totalTaskCount: totalTaskCount,
+            currentTasks: currentTasks,
+            discoveredItemCount: discoveredItemCount,
+            discoveredItemLabelKey: "%@ Trash items found",
+            startedAt: startedAt,
+            timeLimit: nil
+        ))
     }
 
     static func previewCleanup(
@@ -99,13 +160,33 @@ nonisolated enum TrashCleanupService {
         )
     }
 
-    private static func scan(root: TrashCleanupRootIdentity) async -> (
+    private static func scan(
+        root: TrashCleanupRootIdentity,
+        rootIndex: Int,
+        rootCount: Int,
+        previouslyDiscoveredItemCount: Int,
+        startedAt: Date,
+        progress: ProgressHandler?
+    ) async -> (
         items: [TrashCleanupItem],
         unreadableItemCount: Int
     ) {
         var finalUpdate: DiskAnalysisUpdate?
         for await update in DiskAnalyzer.updates(for: root.path) {
             guard !Task.isCancelled else { return ([], 0) }
+            let currentTask: CleanerScanTaskLabel = update.currentPath.map {
+                .plain($0)
+            } ?? .localized(root.locationName)
+            reportProgress(
+                titleKey: "Scanning Trash locations…",
+                stepNumber: 1,
+                completedTaskCount: rootIndex,
+                totalTaskCount: rootCount,
+                currentTasks: [currentTask],
+                discoveredItemCount: previouslyDiscoveredItemCount + update.entrySizes.count,
+                startedAt: startedAt,
+                to: progress
+            )
             if update.isComplete { finalUpdate = update }
         }
         guard let finalUpdate else { return ([], 1) }

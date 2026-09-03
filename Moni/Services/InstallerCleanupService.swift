@@ -68,6 +68,8 @@ nonisolated struct InstallerCleanupPlan: Identifiable, Sendable {
 }
 
 nonisolated enum InstallerCleanupService {
+    typealias ProgressHandler = @Sendable (CleanerScanProgress) -> Void
+
     private struct SearchRoot: Sendable {
         let path: String
         let source: InstallerSource
@@ -92,9 +94,10 @@ nonisolated enum InstallerCleanupService {
     private static let scanTimeLimit: TimeInterval = 30
     private static let cleanupPlanLifetime: TimeInterval = 5 * 60
 
-    static func scan() async -> InstallerCleanupSnapshot {
+    static func scan(progress: ProgressHandler? = nil) async -> InstallerCleanupSnapshot {
+        let startedAt = Date()
         let worker = Task.detached(priority: .utility) {
-            scanSynchronously()
+            scanSynchronously(startedAt: startedAt, progress: progress)
         }
         let rawResult = await withTaskCancellationHandler {
             await worker.value
@@ -104,12 +107,30 @@ nonisolated enum InstallerCleanupService {
         guard !Task.isCancelled else {
             return InstallerCleanupSnapshot(items: [], unreadableItemCount: 0, isComplete: false)
         }
+        reportProgress(
+            titleKey: "Finishing installer scan…",
+            stepNumber: 2,
+            totalTaskCount: 1,
+            discoveredItemCount: rawResult.items.count,
+            startedAt: startedAt,
+            to: progress
+        )
         let eligiblePaths = await CleanupService.shared.eligiblePaths(rawResult.items.map(\.path))
-        return InstallerCleanupSnapshot(
+        let snapshot = InstallerCleanupSnapshot(
             items: rawResult.items.filter { eligiblePaths.contains($0.path) },
             unreadableItemCount: rawResult.unreadableItemCount,
             isComplete: rawResult.isComplete
         )
+        reportProgress(
+            titleKey: "Finishing installer scan…",
+            stepNumber: 2,
+            completedTaskCount: 1,
+            totalTaskCount: 1,
+            discoveredItemCount: snapshot.items.count,
+            startedAt: startedAt,
+            to: progress
+        )
+        return snapshot
     }
 
     static func previewCleanup(items: [InstallerCleanupItem]) async -> InstallerCleanupPlan {
@@ -387,7 +408,10 @@ nonisolated enum InstallerCleanupService {
     end run
     """#
 
-    private static func scanSynchronously() -> ScanResult {
+    private static func scanSynchronously(
+        startedAt: Date,
+        progress: ProgressHandler?
+    ) -> ScanResult {
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser.standardizedFileURL.path
         let roots = [
@@ -414,14 +438,26 @@ nonisolated enum InstallerCleanupService {
         var itemsByPath: [String: InstallerCleanupItem] = [:]
         var unreadableItemCount = 0
         var isComplete = true
+        var completedLocationCount = 0
+        let totalLocationCount = roots.count + 1
         let deadline = Date().addingTimeInterval(scanTimeLimit)
 
+        reportProgress(
+            titleKey: "Scanning installer locations…",
+            stepNumber: 1,
+            totalTaskCount: totalLocationCount,
+            currentTasks: [.localized(InstallerSource.applications.titleKey)],
+            discoveredItemCount: 0,
+            startedAt: startedAt,
+            to: progress
+        )
         let macOSInstallers = scanMacOSInstallers(referenceDate: Date(), deadline: deadline)
         unreadableItemCount += macOSInstallers.unreadableItemCount
         isComplete = isComplete && macOSInstallers.isComplete
         for item in macOSInstallers.items {
             itemsByPath[item.path] = item
         }
+        completedLocationCount += 1
 
         for root in roots {
             guard !Task.isCancelled else {
@@ -432,6 +468,17 @@ nonisolated enum InstallerCleanupService {
                 isComplete = false
                 break
             }
+            reportProgress(
+                titleKey: "Scanning installer locations…",
+                stepNumber: 1,
+                completedTaskCount: completedLocationCount,
+                totalTaskCount: totalLocationCount,
+                currentTasks: [.plain(root.path)],
+                discoveredItemCount: itemsByPath.count,
+                startedAt: startedAt,
+                to: progress
+            )
+            defer { completedLocationCount += 1 }
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
                   isDirectory.boolValue else {
@@ -505,6 +552,15 @@ nonisolated enum InstallerCleanupService {
                 )
             }
         }
+        reportProgress(
+            titleKey: "Scanning installer locations…",
+            stepNumber: 1,
+            completedTaskCount: completedLocationCount,
+            totalTaskCount: totalLocationCount,
+            discoveredItemCount: itemsByPath.count,
+            startedAt: startedAt,
+            to: progress
+        )
 
         let items = itemsByPath.values.sorted {
             if $0.source != $1.source {
@@ -520,6 +576,30 @@ nonisolated enum InstallerCleanupService {
             unreadableItemCount: unreadableItemCount,
             isComplete: isComplete
         )
+    }
+
+    private static func reportProgress(
+        titleKey: String,
+        stepNumber: Int,
+        completedTaskCount: Int = 0,
+        totalTaskCount: Int = 0,
+        currentTasks: [CleanerScanTaskLabel] = [],
+        discoveredItemCount: Int,
+        startedAt: Date,
+        to progress: ProgressHandler?
+    ) {
+        progress?(CleanerScanProgress(
+            titleKey: titleKey,
+            stepNumber: stepNumber,
+            stepCount: 2,
+            completedTaskCount: completedTaskCount,
+            totalTaskCount: totalTaskCount,
+            currentTasks: currentTasks,
+            discoveredItemCount: discoveredItemCount,
+            discoveredItemLabelKey: "%@ installer files found",
+            startedAt: startedAt,
+            timeLimit: scanTimeLimit
+        ))
     }
 
     private static func scanMacOSInstallers(referenceDate: Date, deadline: Date) -> ScanResult {

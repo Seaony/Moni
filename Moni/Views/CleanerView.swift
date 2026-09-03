@@ -5,7 +5,7 @@ import SwiftUI
 final class CacheCleanupScanner: ObservableObject {
     @Published private(set) var snapshot: CacheCleanupSnapshot?
     @Published private(set) var isScanning = false
-    @Published private(set) var phase = CacheCleanupScanPhase.preparing
+    @Published private(set) var progress: CacheCleanupScanProgress?
     @Published private(set) var completedScanID = 0
     @Published private(set) var completedScanSelectAll = true
 
@@ -16,13 +16,13 @@ final class CacheCleanupScanner: ObservableObject {
         guard force || snapshot == nil else { return }
 
         isScanning = true
-        phase = .preparing
-        let (phases, continuation) = AsyncStream<CacheCleanupScanPhase>.makeStream(
+        progress = nil
+        let (progressUpdates, continuation) = AsyncStream<CacheCleanupScanProgress>.makeStream(
             bufferingPolicy: .bufferingNewest(1)
         )
         let worker = Task.detached(priority: .utility) {
-            let snapshot = await CacheCleanupService.scan { phase in
-                continuation.yield(phase)
+            let snapshot = await CacheCleanupService.scan { progress in
+                continuation.yield(progress)
             }
             continuation.finish()
             return snapshot
@@ -30,8 +30,8 @@ final class CacheCleanupScanner: ObservableObject {
         self.worker = worker
 
         Task { [weak self] in
-            for await phase in phases {
-                self?.phase = phase
+            for await progress in progressUpdates {
+                self?.progress = progress
             }
             let snapshot = await worker.value
             guard let self, self.worker != nil else { return }
@@ -86,6 +86,7 @@ private struct CacheCleanerView: View {
     @EnvironmentObject private var scanner: CacheCleanupScanner
     @State private var items: [CacheCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
+    @State private var expandedCategories: Set<CacheCleanupCategory> = []
     @State private var unreadableItemCount = 0
     @State private var isScanComplete = true
     @State private var isCleaning = false
@@ -98,13 +99,7 @@ private struct CacheCleanerView: View {
             summary
 
             if scanner.isScanning {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    Text(MoniLocalization.string(scanner.phase.titleKey))
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                scanProgressView
             } else if items.isEmpty, !isScanComplete {
                 ContentUnavailableView(
                     "Scan incomplete",
@@ -212,6 +207,28 @@ private struct CacheCleanerView: View {
         }
     }
 
+    private var scanProgressView: some View {
+        Group {
+            if let progress = scanner.progress {
+                CleanerScanProgressView(progress: CleanerScanProgress(
+                    titleKey: progress.phase.titleKey,
+                    stepNumber: progress.phase.stepNumber,
+                    stepCount: CacheCleanupScanPhase.stepCount,
+                    completedTaskCount: progress.completedTaskCount,
+                    totalTaskCount: progress.totalTaskCount,
+                    currentTasks: progress.activeTaskTitleKeys.map { .localized($0) },
+                    discoveredItemCount: progress.discoveredItemCount,
+                    discoveredItemLabelKey: "%@ candidates found",
+                    startedAt: progress.startedAt,
+                    timeLimit: progress.timeLimit
+                ))
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
     private func summaryCard(_ title: String, _ value: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(MoniLocalization.string(title))
@@ -231,64 +248,79 @@ private struct CacheCleanerView: View {
 
     private func categoryPanel(_ category: CacheCleanupCategory, items categoryItems: [CacheCleanupItem]) -> some View {
         VStack(spacing: 0) {
-            Button {
-                toggle(categoryItems)
-            } label: {
-                HStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Button {
+                    toggle(categoryItems)
+                } label: {
                     Image(systemName: categorySelectionSymbol(categoryItems))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(MoniPalette.blue)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(MoniLocalization.string(category.titleKey))
-                            .font(.system(size: 13.5, weight: .bold))
-                        Text(MoniLocalization.format("%@ items", categoryItems.count.formatted()))
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                    }
-                    Spacer(minLength: 10)
-                    Text(cleanupBytes(categoryItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }))
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                        .frame(width: 28, height: 28)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
 
-            Divider().padding(.horizontal, 12)
-
-            ForEach(categoryItems) { item in
                 Button {
-                    toggle(item.path)
+                    toggleExpansion(of: category)
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
-                            .frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(URL(fileURLWithPath: item.path).lastPathComponent)
-                                .font(.system(size: 12.5, weight: .medium))
-                                .lineLimit(1)
-                            Text(URL(fileURLWithPath: item.path).deletingLastPathComponent().path)
+                            Text(MoniLocalization.string(category.titleKey))
+                                .font(.system(size: 13.5, weight: .bold))
+                            Text(MoniLocalization.format("%@ items", categoryItems.count.formatted()))
                                 .font(.system(size: 10.5))
                                 .foregroundStyle(MoniPalette.foregroundTertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
                         }
                         Spacer(minLength: 10)
-                        Text(cleanupBytes(item.sizeBytes))
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text(cleanupBytes(categoryItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }))
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
                             .foregroundStyle(MoniPalette.foregroundSecondary)
+                        Image(systemName: expandedCategories.contains(category) ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .frame(width: 12)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                    .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+
+            if expandedCategories.contains(category) {
+                Divider().padding(.horizontal, 12)
+
+                ForEach(categoryItems) { item in
+                    Button {
+                        toggle(item.path)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
+                                .frame(width: 20)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(URL(fileURLWithPath: item.path).lastPathComponent)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .lineLimit(1)
+                                Text(URL(fileURLWithPath: item.path).deletingLastPathComponent().path)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer(minLength: 10)
+                            Text(cleanupBytes(item.sizeBytes))
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .background(MoniPalette.card)
@@ -344,8 +376,17 @@ private struct CacheCleanerView: View {
         }
     }
 
+    private func toggleExpansion(of category: CacheCleanupCategory) {
+        if expandedCategories.contains(category) {
+            expandedCategories.remove(category)
+        } else {
+            expandedCategories.insert(category)
+        }
+    }
+
     private func apply(_ snapshot: CacheCleanupSnapshot, selectAll: Bool) {
         items = snapshot.items
+        expandedCategories = []
         unreadableItemCount = snapshot.unreadableItemCount
         isScanComplete = snapshot.isComplete
         selectedPaths = selectAll ? Set(snapshot.items.map(\.path)) : []

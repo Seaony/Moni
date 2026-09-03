@@ -42,21 +42,99 @@ private struct LoginItemsReview: Identifiable {
     let items: [BrokenLoginItem]
 }
 
+private enum MaintenanceSuite: String, Identifiable, Equatable {
+    case optimization
+    case cleanup
+
+    var id: String { rawValue }
+
+    var titleKey: String {
+        switch self {
+        case .optimization: "System Optimization"
+        case .cleanup: "System Cleanup"
+        }
+    }
+
+    var descriptionKey: String {
+        switch self {
+        case .optimization:
+            "Run Finder, network, database, and macOS service maintenance in one pass."
+        case .cleanup:
+            "Run supported developer-tool, package-manager, Time Machine, and system cleanup in one pass."
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .optimization: "wand.and.stars"
+        case .cleanup: "sparkles"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .optimization: MoniPalette.blue
+        case .cleanup: MoniPalette.green
+        }
+    }
+}
+
+private struct PendingMaintenanceSuite: Identifiable {
+    let id = UUID()
+    let suite: MaintenanceSuite
+    let filePlan: CleanupPlan?
+    let systemCleanupPlan: SystemCleanupPlan?
+    let timeMachinePlan: TimeMachineBackupCleanupPlan?
+    let systemCleanupUnreadableItemCount: Int
+    let taskDefinitions: [MaintenanceTaskDefinition]
+}
+
+private struct MaintenanceSuiteReport: Identifiable {
+    let id = UUID()
+    let suite: MaintenanceSuite
+    let messages: [String]
+}
+
+private struct MaintenanceScanIssueSummary: Identifiable {
+    let id: String
+    let titleKey: String
+    let detailKey: String
+    let count: Int
+    let paths: [String]
+}
+
 struct MaintenanceView: View {
     let refreshSystem: () -> Void
+    private static let cleanupTaskIDs: Set<String> = [
+        "tart_cache_prune",
+        "conda_cache_cleanup",
+        "nix_garbage_collection",
+        "pnpm_store_prune",
+        "npm_cache_cleanup",
+        "node_tool_cache_cleanup",
+        "python_package_cache_cleanup",
+        "github_cli_cache_cleanup",
+        "xcode_unavailable_simulators",
+        "homebrew_cleanup",
+        "time_machine_snapshots",
+        "deep_system_cleanup"
+    ]
     @State private var snapshot = FinderMaintenanceSnapshot(
         cachePaths: [],
         staleSavedStatePaths: [],
-        unreadableItemCount: 0
+        unreadableItemCount: 0,
+        unreadablePaths: []
     )
     @State private var isScanning = false
     @State private var isRunning = false
     @State private var brokenPreferencePaths: [String] = []
     @State private var preferenceUnreadableItemCount = 0
+    @State private var preferenceUnreadablePaths: [String] = []
     @State private var fileRepairSnapshot = MaintenanceFileRepairSnapshot(
         brokenSharedFileListPaths: [],
         brokenLaunchAgentPaths: [],
-        unreadableItemCount: 0
+        unreadableItemCount: 0,
+        unreadablePaths: []
     )
     @State private var settingsSnapshot = MaintenanceSettingsSnapshot(
         dsStoreKeysToEnable: [],
@@ -191,6 +269,12 @@ struct MaintenanceView: View {
     @State private var confirmsXcodeSimulatorCleanup = false
     @State private var confirmsHomebrewCleanup = false
     @State private var resultMessage: String?
+    @State private var pendingSuite: PendingMaintenanceSuite?
+    @State private var suiteReport: MaintenanceSuiteReport?
+    @State private var isPreparingSuite = false
+    @State private var isRunningSuite = false
+    @State private var suiteProgressTitle: String?
+    @State private var isShowingScanIssues = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -198,434 +282,39 @@ struct MaintenanceView: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 12) {
-                    HStack(spacing: 12) {
-                        maintenanceCard(
-                            title: "Finder Cache Refresh",
-                            description: "Refresh Quick Look thumbnails and icon services caches.",
-                            symbol: "photo.stack",
-                            count: snapshot.cachePaths.count,
-                            buttonTitle: "Review Refresh"
-                        ) {
-                            Task { await prepare(.finderCache, paths: snapshot.cachePaths) }
-                        }
-
-                        maintenanceCard(
-                            title: "App State Cleanup",
-                            description: "Move saved application states older than 30 days to Trash.",
-                            symbol: "clock.arrow.circlepath",
-                            count: snapshot.staleSavedStatePaths.count,
-                            buttonTitle: "Review Cleanup"
-                        ) {
-                            Task { await prepare(.savedApplicationStates, paths: snapshot.staleSavedStatePaths) }
-                        }
+                    HStack(alignment: .top, spacing: 12) {
+                        suiteCard(.optimization)
+                        suiteCard(.cleanup)
                     }
 
-                    maintenanceCard(
-                        title: "Broken Config Repair",
-                        description: "Find malformed third-party preference files and move them to Trash.",
-                        symbol: "wrench.and.screwdriver",
-                        count: brokenPreferencePaths.count,
-                        buttonTitle: "Review Repair"
-                    ) {
-                        Task { await prepare(.brokenPreferences, paths: brokenPreferencePaths) }
+                    if isPreparingSuite || isRunningSuite {
+                        suiteProgressCard
                     }
-
-                    HStack(spacing: 12) {
-                        maintenanceCard(
-                            title: "Shared File Lists",
-                            description: "Find malformed Finder favorites and shared file lists.",
-                            symbol: "list.bullet.rectangle",
-                            count: fileRepairSnapshot.brokenSharedFileListPaths.count,
-                            buttonTitle: "Review Repair"
-                        ) {
-                            Task {
-                                await prepare(
-                                    .sharedFileLists,
-                                    paths: fileRepairSnapshot.brokenSharedFileListPaths
-                                )
-                            }
-                        }
-
-                        maintenanceCard(
-                            title: "Launch Agents Cleanup",
-                            description: "Unload user LaunchAgents whose executable no longer exists.",
-                            symbol: "bolt.badge.xmark",
-                            count: fileRepairSnapshot.brokenLaunchAgentPaths.count,
-                            buttonTitle: "Review Cleanup"
-                        ) {
-                            Task {
-                                await prepare(
-                                    .launchAgents,
-                                    paths: fileRepairSnapshot.brokenLaunchAgentPaths
-                                )
-                            }
-                        }
-                    }
-
-                    commandCard(
-                        title: "DNS & Spotlight Check",
-                        description: "Refresh DNS cache and verify Spotlight status.",
-                        symbol: "checkmark.shield",
-                        status: systemMaintenanceStatus,
-                        buttonTitle: "Review Check",
-                        isAvailable: systemMaintenanceSnapshot.spotlightStatus != .unavailable
-                    ) {
-                        confirmsSystemMaintenance = true
-                    }
-
-                    commandCard(
-                        title: "Network Cache Refresh",
-                        description: "Flush the DNS cache and restart mDNSResponder.",
-                        symbol: "network",
-                        status: "Administrator access",
-                        buttonTitle: "Review Refresh",
-                        isAvailable: true
-                    ) {
-                        confirmsNetworkCacheRefresh = true
-                    }
-
-                    commandCard(
-                        title: "Network Stack Refresh",
-                        description: "Flush routing and ARP caches to resolve network issues.",
-                        symbol: "point.3.connected.trianglepath.dotted",
-                        status: networkStackStatus,
-                        buttonTitle: networkStackButtonTitle,
-                        isAvailable: networkStackIsAvailable,
-                        isActionEnabled: networkStackState == .needsRefresh
-                    ) {
-                        confirmsNetworkStackRefresh = true
-                    }
-
-                    commandCard(
-                        title: "Permission Repair",
-                        description: "Reset permissions for the current user home directory.",
-                        symbol: "person.badge.key",
-                        status: permissionRepairStatus,
-                        buttonTitle: permissionRepairButtonTitle,
-                        isAvailable: permissionRepairState != .unavailable,
-                        isActionEnabled: permissionRepairState == .needsRepair
-                    ) {
-                        confirmsPermissionRepair = true
-                    }
-
-                    commandCard(
-                        title: "Spotlight Optimization",
-                        description: "Inspect Spotlight and rebuild the startup volume index only when needed.",
-                        symbol: "magnifyingglass.circle",
-                        status: spotlightOptimizationStatus,
-                        buttonTitle: spotlightOptimizationButtonTitle,
-                        isAvailable: spotlightOptimizationIsAvailable,
-                        isActionEnabled: spotlightOptimizationState == .slow
-                    ) {
-                        confirmsSpotlightOptimization = true
-                    }
-
-                    commandCard(
-                        title: "Periodic Maintenance",
-                        description: "Run macOS daily, weekly, and monthly maintenance scripts when stale.",
-                        symbol: "calendar.badge.clock",
-                        status: periodicMaintenanceStatus,
-                        buttonTitle: periodicMaintenanceButtonTitle,
-                        isAvailable: periodicMaintenanceSnapshot.state != .unavailable
-                            && periodicMaintenanceSnapshot.state != .failed,
-                        isActionEnabled: periodicMaintenanceSnapshot.state == .stale
-                            || periodicMaintenanceSnapshot.state == .missingLog
-                    ) {
-                        confirmsPeriodicMaintenance = true
-                    }
-
-                    commandCard(
-                        title: "Tart Cache Pruning",
-                        description: "Prune Tart cache entries older than 30 days using Tart's own maintenance command.",
-                        symbol: "shippingbox",
-                        status: tartCacheStatus,
-                        buttonTitle: tartCacheButtonTitle,
-                        isAvailable: tartCacheSnapshot.state != .unavailable
-                            && tartCacheSnapshot.state != .failed,
-                        isActionEnabled: tartCacheSnapshot.state == .ready
-                    ) {
-                        confirmsTartCachePrune = true
-                    }
-
-                    commandCard(
-                        title: "Conda Cache Cleanup",
-                        description: "Remove Conda index, tarball, and log caches using Conda's own cleanup command.",
-                        symbol: "shippingbox.and.arrow.backward",
-                        status: condaCacheStatus,
-                        buttonTitle: condaCacheButtonTitle,
-                        isAvailable: condaCacheSnapshot.state == .ready
-                            || condaCacheSnapshot.state == .protected,
-                        isActionEnabled: condaCacheSnapshot.state == .ready
-                    ) {
-                        confirmsCondaCacheCleanup = true
-                    }
-
-                    commandCard(
-                        title: "Nix Garbage Collection",
-                        description: "Remove Nix generations and unreachable store paths older than 30 days.",
-                        symbol: "arrow.trianglehead.2.clockwise.rotate.90",
-                        status: nixGarbageCollectionStatus,
-                        buttonTitle: nixGarbageCollectionButtonTitle,
-                        isAvailable: nixGarbageCollectionState == .ready
-                            || nixGarbageCollectionState == .protected,
-                        isActionEnabled: nixGarbageCollectionState == .ready
-                    ) {
-                        confirmsNixGarbageCollection = true
-                    }
-
-                    commandCard(
-                        title: "pnpm Store Pruning",
-                        description: "Prune unreferenced packages from every installed pnpm store.",
-                        symbol: "shippingbox.circle",
-                        status: pnpmStoreStatus,
-                        buttonTitle: pnpmStoreButtonTitle,
-                        isAvailable: pnpmStoreSnapshot.state != .unavailable
-                            && pnpmStoreSnapshot.state != .failed,
-                        isActionEnabled: pnpmStoreSnapshot.state == .ready
-                    ) {
-                        confirmsPnpmStorePrune = true
-                    }
-
-                    commandCard(
-                        title: "npm Cache Cleanup",
-                        description: "Clear npm's configured package cache using npm's own maintenance command.",
-                        symbol: "shippingbox.fill",
-                        status: npmCacheStatus,
-                        buttonTitle: npmCacheButtonTitle,
-                        isAvailable: npmCacheSnapshot.state != .unavailable
-                            && npmCacheSnapshot.state != .failed,
-                        isActionEnabled: npmCacheSnapshot.state == .ready
-                    ) {
-                        confirmsNpmCacheCleanup = true
-                    }
-
-                    commandCard(
-                        title: "Corepack & Bun Caches",
-                        description: "Clear Corepack and Bun package caches using each tool's own maintenance command.",
-                        symbol: "shippingbox.and.arrow.backward.fill",
-                        status: nodeToolCacheStatus,
-                        buttonTitle: nodeToolCacheButtonTitle,
-                        isAvailable: nodeToolCacheSnapshot.state != .unavailable
-                            && nodeToolCacheSnapshot.state != .failed,
-                        isActionEnabled: nodeToolCacheSnapshot.state == .ready
-                    ) {
-                        confirmsNodeToolCacheCleanup = true
-                    }
-
-                    commandCard(
-                        title: "Python Package Caches",
-                        description: "Purge pip downloads and prune unused uv cache entries using their own commands.",
-                        symbol: "chevron.left.forwardslash.chevron.right",
-                        status: pythonPackageCacheStatus,
-                        buttonTitle: pythonPackageCacheButtonTitle,
-                        isAvailable: pythonPackageCacheSnapshot.state != .unavailable
-                            && pythonPackageCacheSnapshot.state != .failed,
-                        isActionEnabled: pythonPackageCacheSnapshot.state == .ready
-                    ) {
-                        confirmsPythonPackageCacheCleanup = true
-                    }
-
-                    commandCard(
-                        title: "GitHub CLI Cache",
-                        description: "Clear GitHub CLI cache data using gh's own maintenance command.",
-                        symbol: "terminal",
-                        status: githubCLICacheStatus,
-                        buttonTitle: githubCLICacheButtonTitle,
-                        isAvailable: githubCLICacheSnapshot.state != .unavailable
-                            && githubCLICacheSnapshot.state != .failed,
-                        isActionEnabled: githubCLICacheSnapshot.state == .ready
-                    ) {
-                        confirmsGitHubCLICacheCleanup = true
-                    }
-
-                    commandCard(
-                        title: "Unavailable Simulators",
-                        description: "Remove simulator devices unsupported by the selected Xcode using simctl.",
-                        symbol: "rectangle.stack.badge.minus",
-                        status: xcodeSimulatorStatus,
-                        buttonTitle: xcodeSimulatorButtonTitle,
-                        isAvailable: xcodeSimulatorSnapshot.state != .unavailable
-                            && xcodeSimulatorSnapshot.state != .failed,
-                        isActionEnabled: xcodeSimulatorSnapshot.state == .ready
-                    ) {
-                        confirmsXcodeSimulatorCleanup = true
-                    }
-
-                    commandCard(
-                        title: "Homebrew Cleanup",
-                        description: "Remove Homebrew downloads and stale versions older than 30 days without running autoremove.",
-                        symbol: "mug",
-                        status: homebrewStatus,
-                        buttonTitle: homebrewButtonTitle,
-                        isAvailable: homebrewSnapshot.state != .unavailable
-                            && homebrewSnapshot.state != .failed,
-                        isActionEnabled: homebrewSnapshot.state == .ready
-                    ) {
-                        confirmsHomebrewCleanup = true
-                    }
-
-                    commandCard(
-                        title: "Time Machine",
-                        description: "Report local snapshots and review incomplete backups for removal with tmutil.",
-                        symbol: "clock.arrow.trianglehead.counterclockwise.rotate.90",
-                        status: timeMachineSnapshotStatus,
-                        buttonTitle: timeMachineCleanupButtonTitle,
-                        isAvailable: timeMachineSnapshotReport.state != .unavailable
-                            && timeMachineSnapshotReport.state != .failed,
-                        isActionEnabled: !timeMachineSnapshotReport.incompleteBackups.isEmpty
-                    ) {
-                        Task { await prepareTimeMachineCleanup() }
-                    }
-
-                    commandCard(
-                        title: "System Cleanup",
-                        description: "Scan old system caches and logs before approving cleanup.",
-                        symbol: "externaldrive.badge.minus",
-                        status: systemCleanupStatus,
-                        buttonTitle: systemCleanupButtonTitle,
-                        isAvailable: systemCleanupSnapshot.state != .unavailable,
-                        isActionEnabled: systemCleanupSnapshot.state != .unavailable
-                    ) {
-                        Task {
-                            if systemCleanupSnapshot.state == .ready {
-                                await prepareSystemCleanup()
-                            } else {
-                                await scanSystemCleanup()
-                            }
-                        }
-                    }
-
-                    commandCard(
-                        title: "LaunchServices Repair",
-                        description: "Rebuild file associations and the Open With menu.",
-                        symbol: "doc.badge.gearshape",
-                        status: settingsSnapshot.launchServicesAvailable ? "Available" : "Unavailable",
-                        buttonTitle: "Review Repair",
-                        isAvailable: settingsSnapshot.launchServicesAvailable
-                    ) {
-                        confirmsLaunchServicesRepair = true
-                    }
-
-                    commandCard(
-                        title: "Prevent Finder .DS_Store",
-                        description: "Stop Finder from writing .DS_Store files on network and USB volumes.",
-                        symbol: "externaldrive.badge.xmark",
-                        status: dsStoreStatus,
-                        buttonTitle: settingsSnapshot.dsStoreKeysToEnable.isEmpty ? "Enabled" : "Review Enable",
-                        isAvailable: true,
-                        isActionEnabled: !settingsSnapshot.dsStoreKeysToEnable.isEmpty
-                    ) {
-                        confirmsDSStorePrevention = true
-                    }
-
-                    commandCard(
-                        title: "Legacy Overrides",
-                        description: "Restore macOS defaults for hidden App Nap and disk image verification settings.",
-                        symbol: "slider.horizontal.3",
-                        status: legacyOverrideStatus,
-                        buttonTitle: settingsSnapshot.legacyOverrides.isEmpty ? "No overrides" : "Review Repair",
-                        isAvailable: true,
-                        isActionEnabled: !settingsSnapshot.legacyOverrides.isEmpty
-                    ) {
-                        legacyOverrideReview = LegacyOverrideReview(
-                            overrides: settingsSnapshot.legacyOverrides
-                        )
-                    }
-
-                    commandCard(
-                        title: "Quarantine Database Cleanup",
-                        description: "Clear Gatekeeper download history without changing file quarantine flags.",
-                        symbol: "lock.doc",
-                        status: quarantineStatus,
-                        buttonTitle: quarantineSnapshot.entryCount > 0 ? "Review Cleanup" : "No history",
-                        isAvailable: quarantineSnapshot.state == .ready,
-                        isActionEnabled: quarantineSnapshot.entryCount > 0
-                    ) {
-                        confirmsQuarantineCleanup = true
-                    }
-
-                    commandCard(
-                        title: "Disk Health",
-                        description: "Verify the startup filesystem without modifying or repairing it.",
-                        symbol: "internaldrive",
-                        status: diskVerificationStatus,
-                        buttonTitle: "Review Verify",
-                        isAvailable: MaintenanceDiagnosticsService.diskVerificationIsAvailable
-                    ) {
-                        confirmsDiskVerification = true
-                    }
-
-                    commandCard(
-                        title: "Database Optimization",
-                        description: "Compact supported Mail, Safari, and Messages databases while their apps are closed.",
-                        symbol: "cylinder.split.1x2",
-                        status: databaseMaintenanceStatus,
-                        buttonTitle: "Review Optimization",
-                        isAvailable: databaseMaintenanceIsAvailable,
-                        isActionEnabled: !databaseSnapshot.items.isEmpty
-                    ) {
-                        databaseReview = DatabaseMaintenanceReview(items: databaseSnapshot.items)
-                    }
-
-                    commandCard(
-                        title: "Spotlight Orphan Rules",
-                        description: "Remove Spotlight search rules that reference applications no longer installed.",
-                        symbol: "magnifyingglass",
-                        status: spotlightRulesStatus,
-                        buttonTitle: spotlightRulesSnapshot.orphanedRules.isEmpty
-                            ? "No orphan rules"
-                            : "Review Repair",
-                        isAvailable: spotlightRulesSnapshot.state == .ready,
-                        isActionEnabled: !spotlightRulesSnapshot.orphanedRules.isEmpty
-                    ) {
-                        spotlightRulesReview = SpotlightRulesReview(
-                            rules: spotlightRulesSnapshot.orphanedRules
-                        )
-                    }
-
-                    commandCard(
-                        title: "Login Items",
-                        description: "Find login items whose referenced application or executable no longer exists.",
-                        symbol: "rectangle.stack.badge.person.crop",
-                        status: loginItemsStatus,
-                        buttonTitle: loginItemsSnapshot.brokenItems.isEmpty ? "Healthy" : "Review Audit",
-                        isAvailable: loginItemsSnapshot.state == .ready,
-                        isActionEnabled: !loginItemsSnapshot.brokenItems.isEmpty
-                    ) {
-                        loginItemsReview = LoginItemsReview(items: loginItemsSnapshot.brokenItems)
-                    }
-
-                    commandCard(
-                        title: "Notifications",
-                        description: "Remove old delivered notifications to reduce notification database size.",
-                        symbol: "bell.badge",
-                        status: notificationStatus,
-                        buttonTitle: notificationSnapshot.state == .ready ? "Review Cleanup" : "Healthy",
-                        isAvailable: notificationSnapshot.state == .ready
-                            || notificationSnapshot.state == .healthy,
-                        isActionEnabled: notificationSnapshot.state == .ready
-                    ) {
-                        confirmsNotificationCleanup = true
-                    }
-
-                    commandCard(
-                        title: "Usage Data",
-                        description: "Remove old local usage-tracking records from supported system databases.",
-                        symbol: "chart.bar.xaxis",
-                        status: coreDuetStatus,
-                        buttonTitle: coreDuetSnapshot.state == .ready ? "Review Cleanup" : "Healthy",
-                        isAvailable: coreDuetSnapshot.state == .ready
-                            || coreDuetSnapshot.state == .healthy,
-                        isActionEnabled: coreDuetSnapshot.state == .ready
-                    ) {
-                        confirmsCoreDuetCleanup = true
-                    }
-
-                    catalogSummary
                 }
             }
         }
         .task { await scan() }
+        .sheet(item: $pendingSuite) { plan in
+            MaintenanceSuiteConfirmationView(
+                plan: plan,
+                onCancel: { pendingSuite = nil },
+                onConfirm: { includeIncompleteBackups in
+                    pendingSuite = nil
+                    Task {
+                        await executeSuite(
+                            plan,
+                            includeIncompleteBackups: includeIncompleteBackups
+                        )
+                    }
+                }
+            )
+        }
+        .sheet(item: $suiteReport) { report in
+            MaintenanceSuiteReportView(
+                report: report,
+                onClose: { suiteReport = nil }
+            )
+        }
         .sheet(item: $pendingAction) { pending in
             MaintenanceConfirmationView(
                 pending: pending,
@@ -1015,7 +704,7 @@ struct MaintenanceView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Maintenance")
                     .font(.system(size: 20, weight: .bold))
-                Text("Review each action before Moni changes files or refreshes a system service.")
+                Text("Run system optimization or cleanup as one reviewed batch.")
                     .font(.system(size: 12.5))
                     .foregroundStyle(MoniPalette.foregroundTertiary)
             }
@@ -1023,21 +712,49 @@ struct MaintenanceView: View {
             Spacer(minLength: 12)
 
             if unreadableItemCount > 0 {
-                Label(
-                    MoniLocalization.format("%@ unreadable", unreadableItemCount.formatted()),
-                    systemImage: "exclamationmark.triangle"
-                )
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(MoniPalette.orange)
+                Button {
+                    isShowingScanIssues.toggle()
+                } label: {
+                    Label(
+                        MoniLocalization.format(
+                            "%@ checks incomplete",
+                            unreadableItemCount.formatted()
+                        ),
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(MoniPalette.orange)
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $isShowingScanIssues, arrowEdge: .bottom) {
+                    scanIssuesPopover
+                }
+            }
+
+            if let suiteProgressTitle {
+                Label(MoniLocalization.string(suiteProgressTitle), systemImage: "hourglass")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
             }
 
             Button {
                 Task { await scan() }
             } label: {
-                Label(MoniLocalization.string("Rescan"), systemImage: "arrow.clockwise")
+                if isScanning {
+                    HStack(spacing: 7) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Checking Status…")
+                    }
+                } else {
+                    Label(MoniLocalization.string("Recheck Status"), systemImage: "arrow.clockwise")
+                }
             }
             .buttonStyle(.bordered)
-            .disabled(isScanning || isRunning)
+            .disabled(isScanning || isRunning || isPreparingSuite || isRunningSuite)
+            .help(MoniLocalization.string(
+                "Rechecks Finder, preferences, system services, developer tools, package managers, and Time Machine status."
+            ))
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -1046,6 +763,186 @@ struct MaintenanceView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+        }
+    }
+
+    private func suiteCard(_ suite: MaintenanceSuite) -> some View {
+        let definitions = taskDefinitions(for: suite)
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: suite.symbol)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(suite.color)
+                    .frame(width: 36, height: 36)
+                    .background(suite.color.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(MoniLocalization.string(suite.titleKey))
+                        .font(.system(size: 16, weight: .bold))
+                    Text(MoniLocalization.string(suite.descriptionKey))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            HStack {
+                Text(MoniLocalization.format(
+                    "%@ automatic tasks",
+                    definitions.count.formatted()
+                ))
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(MoniPalette.foregroundSecondary)
+
+                Spacer(minLength: 12)
+
+                Button {
+                    Task { await prepareSuite(suite) }
+                } label: {
+                    Label(
+                        MoniLocalization.string("Review and Run"),
+                        systemImage: "play.fill"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(suite.color)
+                .disabled(isScanning || isRunning || isPreparingSuite || isRunningSuite)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+        .background(MoniPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+        }
+        .transition(MoniMotion.itemTransition)
+    }
+
+    private var suiteProgressCard: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.small)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(MoniLocalization.string(
+                    isPreparingSuite ? "Preparing batch review…" : "Running maintenance batch…"
+                ))
+                    .font(.system(size: 13.5, weight: .semibold))
+                if let suiteProgressTitle {
+                    Text(MoniLocalization.string(suiteProgressTitle))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                }
+            }
+            Spacer()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MoniPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+        }
+    }
+
+    private var scanIssuesPopover: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Incomplete checks")
+                    .font(.system(size: 15, weight: .bold))
+                Text("These are inspection failures, not maintenance tasks that failed.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(scanIssueSummaries) { summary in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(MoniLocalization.string(summary.titleKey))
+                                .font(.system(size: 12, weight: .semibold))
+                            Spacer(minLength: 12)
+                            Text(summary.count.formatted())
+                                .font(.system(size: 11.5, weight: .bold))
+                                .foregroundStyle(MoniPalette.orange)
+                        }
+                        Text(MoniLocalization.string(summary.detailKey))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ForEach(
+                            Array(summary.paths.prefix(4).enumerated()),
+                            id: \.offset
+                        ) { _, path in
+                            Text(path)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                        }
+                        if summary.paths.count < summary.count {
+                            Text("The scanner did not report a specific path for this check.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
+                        }
+                    }
+                    .padding(10)
+                    .background(MoniPalette.insetSecondary)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+            }
+
+            Text("Items that could not be inspected are skipped and will not be changed.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(MoniPalette.foregroundSecondary)
+        }
+        .padding(16)
+        .frame(width: 420)
+    }
+
+    private var scanIssueSummaries: [MaintenanceScanIssueSummary] {
+        [
+            MaintenanceScanIssueSummary(
+                id: "saved-states",
+                titleKey: "Saved application states",
+                detailKey: "Checks ~/Library/Saved Application State for state folders older than 30 days.",
+                count: snapshot.unreadableItemCount,
+                paths: snapshot.unreadablePaths
+            ),
+            MaintenanceScanIssueSummary(
+                id: "preferences",
+                titleKey: "Third-party preferences",
+                detailKey: "Checks third-party property lists in ~/Library/Preferences and ByHost.",
+                count: preferenceUnreadableItemCount,
+                paths: preferenceUnreadablePaths
+            ),
+            MaintenanceScanIssueSummary(
+                id: "finder-repairs",
+                titleKey: "Finder lists and LaunchAgents",
+                detailKey: "Checks Finder shared-file lists and user LaunchAgents for damaged or missing references.",
+                count: fileRepairSnapshot.unreadableItemCount,
+                paths: fileRepairSnapshot.unreadablePaths
+            ),
+            MaintenanceScanIssueSummary(
+                id: "time-machine",
+                titleKey: "Time Machine backups",
+                detailKey: "Checks local and mounted Time Machine locations for incomplete backups.",
+                count: timeMachineSnapshotReport.unreadableItemCount,
+                paths: []
+            )
+        ].filter { $0.count > 0 }
+    }
+
+    private func taskDefinitions(for suite: MaintenanceSuite) -> [MaintenanceTaskDefinition] {
+        MaintenanceService.tasks.filter { definition in
+            let isCleanup = Self.cleanupTaskIDs.contains(definition.id)
+            return suite == .cleanup ? isCleanup : !isCleanup
         }
     }
 
@@ -1209,7 +1106,7 @@ struct MaintenanceView: View {
 
     private var resultMessageBinding: Binding<Bool> {
         Binding(
-            get: { resultMessage != nil },
+            get: { !isRunningSuite && resultMessage != nil },
             set: { if !$0 { resultMessage = nil } }
         )
     }
@@ -1218,7 +1115,7 @@ struct MaintenanceView: View {
         snapshot.unreadableItemCount
             + preferenceUnreadableItemCount
             + fileRepairSnapshot.unreadableItemCount
-            + systemCleanupSnapshot.unreadableItemCount
+            + timeMachineSnapshotReport.unreadableItemCount
     }
 
     private var dsStoreStatus: String {
@@ -2041,6 +1938,341 @@ struct MaintenanceView: View {
         resultMessage = parts.joined(separator: " ")
     }
 
+    private func prepareSuite(_ suite: MaintenanceSuite) async {
+        guard !isPreparingSuite, !isRunningSuite else { return }
+        isPreparingSuite = true
+        suiteProgressTitle = suite.titleKey
+        defer {
+            isPreparingSuite = false
+            suiteProgressTitle = nil
+        }
+
+        switch suite {
+        case .optimization:
+            let paths = snapshot.cachePaths
+                + snapshot.staleSavedStatePaths
+                + brokenPreferencePaths
+                + fileRepairSnapshot.brokenSharedFileListPaths
+                + fileRepairSnapshot.brokenLaunchAgentPaths
+            let filePlan = await CleanupService.shared.preview(
+                paths: paths,
+                scope: .maintenance
+            )
+            pendingSuite = PendingMaintenanceSuite(
+                suite: suite,
+                filePlan: filePlan,
+                systemCleanupPlan: nil,
+                timeMachinePlan: nil,
+                systemCleanupUnreadableItemCount: 0,
+                taskDefinitions: taskDefinitions(for: suite)
+            )
+
+        case .cleanup:
+            suiteProgressTitle = "Scanning system cleanup items…"
+            let cleanupSnapshot = await SystemCleanupService.scan()
+            systemCleanupSnapshot = cleanupSnapshot
+            let systemPlan: SystemCleanupPlan?
+            if cleanupSnapshot.state == .ready {
+                systemPlan = await SystemCleanupService.previewCleanup(
+                    items: cleanupSnapshot.items,
+                    activePowerLogNotice: cleanupSnapshot.activePowerLogNotice
+                )
+            } else {
+                systemPlan = nil
+            }
+
+            let timeMachinePlan: TimeMachineBackupCleanupPlan?
+            if timeMachineSnapshotReport.incompleteBackups.isEmpty {
+                timeMachinePlan = nil
+            } else {
+                timeMachinePlan = await TimeMachineSnapshotService.previewCleanup(
+                    items: timeMachineSnapshotReport.incompleteBackups
+                )
+            }
+            pendingSuite = PendingMaintenanceSuite(
+                suite: suite,
+                filePlan: nil,
+                systemCleanupPlan: systemPlan,
+                timeMachinePlan: timeMachinePlan,
+                systemCleanupUnreadableItemCount: cleanupSnapshot.unreadableItemCount,
+                taskDefinitions: taskDefinitions(for: suite)
+            )
+        }
+    }
+
+    private func executeSuite(
+        _ plan: PendingMaintenanceSuite,
+        includeIncompleteBackups: Bool
+    ) async {
+        guard !isRunningSuite else { return }
+        isRunningSuite = true
+        resultMessage = nil
+        var messages: [String] = []
+
+        switch plan.suite {
+        case .optimization:
+            await executeOptimizationSuite(plan, messages: &messages)
+        case .cleanup:
+            await executeCleanupSuite(
+                plan,
+                includeIncompleteBackups: includeIncompleteBackups,
+                messages: &messages
+            )
+        }
+
+        suiteProgressTitle = "Refreshing maintenance status…"
+        await scan()
+        refreshSystem()
+        isRunningSuite = false
+        suiteProgressTitle = nil
+        resultMessage = nil
+        suiteReport = MaintenanceSuiteReport(
+            suite: plan.suite,
+            messages: messages.isEmpty
+                ? [MoniLocalization.string("No maintenance actions were needed.")]
+                : messages
+        )
+    }
+
+    private func executeOptimizationSuite(
+        _ plan: PendingMaintenanceSuite,
+        messages: inout [String]
+    ) async {
+        if let filePlan = plan.filePlan {
+            suiteProgressTitle = "Finder and preference maintenance"
+            await MaintenanceService.unloadUserLaunchAgents(filePlan.candidates)
+            let result = await CleanupService.shared.execute(filePlan)
+            let finderRefresh = await MaintenanceService.refreshFinderServices()
+            var parts: [String] = []
+            if !result.trashedPaths.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "Moved %@ items to Trash.",
+                    result.trashedPaths.count.formatted()
+                ))
+            }
+            if !result.rejectedItems.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "%@ items were protected or changed.",
+                    result.rejectedItems.count.formatted()
+                ))
+            }
+            if !result.failedPaths.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "%@ items could not be moved.",
+                    result.failedPaths.count.formatted()
+                ))
+            }
+            if finderRefresh.unavailable {
+                parts.append(MoniLocalization.string("Finder refresh service is unavailable."))
+            } else if finderRefresh.quickLookCacheRefreshed && finderRefresh.iconServicesRefreshed {
+                parts.append(MoniLocalization.string("Quick Look and icon services were refreshed."))
+            } else {
+                parts.append(MoniLocalization.string("One or more Finder services could not be refreshed."))
+            }
+            messages.append(parts.joined(separator: " "))
+        }
+
+        if let message = await runSuiteStep("DNS & Spotlight Check", action: runSystemMaintenance) {
+            messages.append(message)
+        }
+        messages.append(MoniLocalization.string(
+            "Network cache refresh was included in the DNS and Spotlight task."
+        ))
+
+        if !databaseSnapshot.items.filter({ $0.state == .ready }).isEmpty {
+            if let message = await runSuiteStep("Database Optimization", action: {
+                await optimizeDatabases(databaseSnapshot.items)
+            }) {
+                messages.append(message)
+            }
+        }
+        if settingsSnapshot.launchServicesAvailable,
+           let message = await runSuiteStep("LaunchServices Repair", action: rebuildLaunchServices) {
+            messages.append(message)
+        }
+        if !settingsSnapshot.dsStoreKeysToEnable.isEmpty,
+           let message = await runSuiteStep("Prevent Finder .DS_Store", action: enableDSStorePrevention) {
+            messages.append(message)
+        }
+        if !settingsSnapshot.legacyOverrides.isEmpty {
+            if let message = await runSuiteStep("Legacy Overrides", action: {
+                await removeLegacyOverrides(settingsSnapshot.legacyOverrides)
+            }) {
+                messages.append(message)
+            }
+        }
+        if case .needsRefresh = networkStackState,
+           let message = await runSuiteStep("Network Stack Refresh", action: refreshNetworkStack) {
+            messages.append(message)
+        }
+        if case .needsRepair = permissionRepairState,
+           let message = await runSuiteStep("Permission Repair", action: repairUserPermissions) {
+            messages.append(message)
+        }
+        if case .slow = spotlightOptimizationState,
+           let message = await runSuiteStep("Spotlight Optimization", action: optimizeSpotlight) {
+            messages.append(message)
+        }
+        if periodicMaintenanceSnapshot.state == .stale
+            || periodicMaintenanceSnapshot.state == .missingLog,
+           let message = await runSuiteStep("Periodic Maintenance", action: runPeriodicMaintenance) {
+            messages.append(message)
+        }
+        if !spotlightRulesSnapshot.orphanedRules.isEmpty {
+            if let message = await runSuiteStep("Spotlight Orphan Rules", action: {
+                await removeSpotlightRules(spotlightRulesSnapshot.orphanedRules)
+            }) {
+                messages.append(message)
+            }
+        }
+        if quarantineSnapshot.state == .ready, quarantineSnapshot.entryCount > 0,
+           let message = await runSuiteStep("Quarantine Database Cleanup", action: clearQuarantineHistory) {
+            messages.append(message)
+        }
+        if notificationSnapshot.state == .ready,
+           let message = await runSuiteStep("Notifications", action: cleanNotifications) {
+            messages.append(message)
+        }
+        if coreDuetSnapshot.state == .ready,
+           let message = await runSuiteStep("Usage Data", action: cleanCoreDuetData) {
+            messages.append(message)
+        }
+
+        if loginItemsSnapshot.state == .ready {
+            messages.append(loginItemsSnapshot.brokenItems.isEmpty
+                ? MoniLocalization.string("Login item audit found no broken entries.")
+                : MoniLocalization.format(
+                    "Login item audit found %@ entries for manual review.",
+                    loginItemsSnapshot.brokenItems.count.formatted()
+                ))
+        }
+
+        if MaintenanceDiagnosticsService.diskVerificationIsAvailable {
+            suiteProgressTitle = "Disk Health"
+            let result = await MaintenanceDiagnosticsService.verifyStartupVolume()
+            switch result.outcome {
+            case .healthy:
+                messages.append(MoniLocalization.string("The startup volume appears healthy."))
+            case .attention:
+                messages.append(MoniLocalization.string("The startup volume needs attention."))
+            case .failed:
+                messages.append(MoniLocalization.string("The startup volume could not be verified."))
+            case .unavailable:
+                messages.append(MoniLocalization.string("Startup volume verification is unavailable."))
+            }
+        }
+    }
+
+    private func executeCleanupSuite(
+        _ plan: PendingMaintenanceSuite,
+        includeIncompleteBackups: Bool,
+        messages: inout [String]
+    ) async {
+        if let systemPlan = plan.systemCleanupPlan {
+            suiteProgressTitle = "System Cleanup"
+            let result = await SystemCleanupService.executeCleanup(systemPlan)
+            var parts: [String] = []
+            if !result.trashedPaths.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "Moved %@ system files to Trash.",
+                    result.trashedPaths.count.formatted()
+                ))
+            }
+            if !result.rejectedItems.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "%@ system files were protected or changed.",
+                    result.rejectedItems.count.formatted()
+                ))
+            }
+            if !result.failedPaths.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "%@ system files could not be moved.",
+                    result.failedPaths.count.formatted()
+                ))
+            }
+            if !parts.isEmpty { messages.append(parts.joined(separator: " ")) }
+        }
+
+        if includeIncompleteBackups, let timeMachinePlan = plan.timeMachinePlan {
+            suiteProgressTitle = "Time Machine"
+            let result = await TimeMachineSnapshotService.executeCleanup(timeMachinePlan)
+            var parts: [String] = []
+            if !result.removedPaths.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "Removed %@ incomplete backups.",
+                    result.removedPaths.count.formatted()
+                ))
+            }
+            if !result.rejectedItems.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "%@ backups were protected or changed.",
+                    result.rejectedItems.count.formatted()
+                ))
+            }
+            if !result.failedPaths.isEmpty {
+                parts.append(MoniLocalization.format(
+                    "%@ backups could not be removed.",
+                    result.failedPaths.count.formatted()
+                ))
+            }
+            if !parts.isEmpty { messages.append(parts.joined(separator: " ")) }
+        } else if plan.timeMachinePlan != nil {
+            messages.append(MoniLocalization.string(
+                "Incomplete Time Machine backups were kept because permanent removal was not selected."
+            ))
+        }
+
+        let cleanupSteps: [(String, () async -> Void)] = [
+            ("Tart Cache Pruning", pruneTartCaches),
+            ("Conda Cache Cleanup", cleanCondaCaches),
+            ("pnpm Store Pruning", prunePnpmStores),
+            ("npm Cache Cleanup", cleanNpmCache),
+            ("Corepack & Bun Caches", cleanNodeToolCaches),
+            ("Python Package Caches", cleanPythonPackageCaches),
+            ("GitHub CLI Cache", cleanGitHubCLICache),
+            ("Unavailable Simulators", cleanUnavailableSimulators),
+            ("Homebrew Cleanup", cleanHomebrewFiles)
+        ]
+        for (title, action) in cleanupSteps {
+            if cleanupTaskIsReady(title) {
+                if let message = await runSuiteStep(title, action: action) {
+                    messages.append(message)
+                }
+            }
+        }
+        if nixGarbageCollectionState == .ready,
+           let message = await runSuiteStep("Nix Garbage Collection", action: collectNixGarbage) {
+            messages.append(message)
+        }
+    }
+
+    private func cleanupTaskIsReady(_ title: String) -> Bool {
+        switch title {
+        case "Tart Cache Pruning": tartCacheSnapshot.state == .ready
+        case "Conda Cache Cleanup": condaCacheSnapshot.state == .ready
+        case "pnpm Store Pruning": pnpmStoreSnapshot.state == .ready
+        case "npm Cache Cleanup": npmCacheSnapshot.state == .ready
+        case "Corepack & Bun Caches": nodeToolCacheSnapshot.state == .ready
+        case "Python Package Caches": pythonPackageCacheSnapshot.state == .ready
+        case "GitHub CLI Cache": githubCLICacheSnapshot.state == .ready
+        case "Unavailable Simulators": xcodeSimulatorSnapshot.state == .ready
+        case "Homebrew Cleanup": homebrewSnapshot.state == .ready
+        default: false
+        }
+    }
+
+    private func runSuiteStep(
+        _ title: String,
+        action: () async -> Void
+    ) async -> String? {
+        suiteProgressTitle = title
+        resultMessage = nil
+        await action()
+        let message = resultMessage
+        resultMessage = nil
+        return message
+    }
+
     private func scan() async {
         isScanning = true
         async let finderResult = MaintenanceService.scanFinderMaintenance()
@@ -2081,6 +2313,7 @@ struct MaintenanceView: View {
         snapshot = finder
         brokenPreferencePaths = preferences.paths
         preferenceUnreadableItemCount = preferences.unreadableItemCount
+        preferenceUnreadablePaths = preferences.unreadablePaths
         fileRepairSnapshot = repairs
         settingsSnapshot = settings
         quarantineSnapshot = quarantine
@@ -2747,6 +2980,175 @@ struct MaintenanceView: View {
         case .failed:
             resultMessage = MoniLocalization.string("Unavailable simulator cleanup did not complete successfully.")
         }
+    }
+}
+
+private struct MaintenanceSuiteConfirmationView: View {
+    let plan: PendingMaintenanceSuite
+    let onCancel: () -> Void
+    let onConfirm: (Bool) -> Void
+    @State private var includeIncompleteBackups = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(MoniLocalization.format(
+                    "Run %@?",
+                    MoniLocalization.string(plan.suite.titleKey)
+                ))
+                .font(.system(size: 18, weight: .bold))
+                Text(MoniLocalization.string(confirmationDescriptionKey))
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(plan.taskDefinitions) { definition in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: definition.symbol)
+                                .foregroundStyle(plan.suite.color)
+                                .frame(width: 20)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(MoniLocalization.string(definition.titleKey))
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                Text(MoniLocalization.string(definition.descriptionKey))
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MoniPalette.insetSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+                .padding(1)
+            }
+            .frame(maxHeight: 330)
+
+            if let timeMachinePlan = plan.timeMachinePlan,
+               !timeMachinePlan.cleanupPlan.candidates.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Toggle(isOn: $includeIncompleteBackups) {
+                        Text(MoniLocalization.format(
+                            "Permanently remove %@ incomplete Time Machine backups",
+                            timeMachinePlan.cleanupPlan.candidates.count.formatted()
+                        ))
+                        .font(.system(size: 11.5, weight: .semibold))
+                    }
+                    Text("This option is off by default. Selected backups are deleted permanently instead of being moved to Trash.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(MoniPalette.orange)
+                }
+                .padding(12)
+                .background(MoniPalette.orange.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+
+            if plan.systemCleanupUnreadableItemCount > 0 {
+                Label(
+                    MoniLocalization.format(
+                        "%@ system cleanup locations could not be inspected and will be skipped.",
+                        plan.systemCleanupUnreadableItemCount.formatted()
+                    ),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(MoniPalette.orange)
+            }
+
+            Label(
+                MoniLocalization.format(
+                    "%@ tasks may request macOS administrator approval. Unavailable tasks and tasks blocked by running apps will be skipped.",
+                    administratorTaskCount.formatted()
+                ),
+                systemImage: "lock.shield"
+            )
+            .font(.system(size: 11.5))
+            .foregroundStyle(MoniPalette.foregroundSecondary)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button {
+                    onConfirm(includeIncompleteBackups)
+                } label: {
+                    Text(MoniLocalization.string("Run All"))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(plan.suite.color)
+            }
+        }
+        .padding(20)
+        .frame(width: 680)
+    }
+
+    private var confirmationDescriptionKey: String {
+        switch plan.suite {
+        case .optimization:
+            "Moni will run the optimization tasks below in sequence. Files selected for repair are moved to Trash."
+        case .cleanup:
+            "Moni will run the supported cleanup tasks below in sequence. Package-manager caches may be removed permanently by their own tools."
+        }
+    }
+
+    private var administratorTaskCount: Int {
+        plan.taskDefinitions.reduce(into: 0) { count, definition in
+            if case .administrator = definition.authorization {
+                count += 1
+            }
+        }
+    }
+}
+
+private struct MaintenanceSuiteReportView: View {
+    let report: MaintenanceSuiteReport
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(MoniLocalization.format(
+                    "%@ complete",
+                    MoniLocalization.string(report.suite.titleKey)
+                ))
+                .font(.system(size: 18, weight: .bold))
+                Text("Completed actions and checks are summarized below.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(report.messages.enumerated()), id: \.offset) { _, message in
+                        Label {
+                            Text(message)
+                                .font(.system(size: 11.5))
+                                .textSelection(.enabled)
+                        } icon: {
+                            Image(systemName: "checkmark.circle")
+                                .foregroundStyle(MoniPalette.green)
+                        }
+                        .padding(11)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MoniPalette.insetSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+                .padding(1)
+            }
+            .frame(maxHeight: 360)
+
+            HStack {
+                Spacer()
+                Button("Close", action: onClose)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 640)
     }
 }
 

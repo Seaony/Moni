@@ -5,9 +5,11 @@ struct InstallerCleanerView: View {
     private static let relativeDateFormatter = RelativeDateTimeFormatter()
     @State private var items: [InstallerCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
+    @State private var expandedSources: Set<InstallerSource> = []
     @State private var unreadableItemCount = 0
     @State private var isScanComplete = true
     @State private var isScanning = false
+    @State private var scanProgress: CleanerScanProgress?
     @State private var isCleaning = false
     @State private var pendingPlan: InstallerCleanupPlan?
     @State private var cleanupMessage: String?
@@ -18,13 +20,12 @@ struct InstallerCleanerView: View {
             summary
 
             if isScanning {
-                VStack(spacing: 10) {
+                if let scanProgress {
+                    CleanerScanProgressView(progress: scanProgress)
+                } else {
                     ProgressView()
-                    Text("Scanning for installer files…")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if items.isEmpty, !isScanComplete {
                 ContentUnavailableView(
                     "Scan incomplete",
@@ -144,76 +145,91 @@ struct InstallerCleanerView: View {
 
     private func sourcePanel(_ source: InstallerSource, items sourceItems: [InstallerCleanupItem]) -> some View {
         VStack(spacing: 0) {
-            Button {
-                toggle(sourceItems)
-            } label: {
-                HStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Button {
+                    toggle(sourceItems)
+                } label: {
                     Image(systemName: selectionSymbol(sourceItems))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(MoniPalette.blue)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(MoniLocalization.string(source.titleKey))
-                            .font(.system(size: 13.5, weight: .bold))
-                        Text(MoniLocalization.format("%@ items", sourceItems.count.formatted()))
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                    }
-                    Spacer(minLength: 10)
-                    Text(installerBytes(sourceItems.reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }))
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                        .frame(width: 28, height: 28)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
 
-            Divider().padding(.horizontal, 12)
-
-            ForEach(sourceItems) { item in
                 Button {
-                    toggle(item.path)
+                    toggleExpansion(of: source)
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
-                            .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.name)
-                                .font(.system(size: 12.5, weight: .medium))
-                                .lineLimit(1)
-                            HStack(spacing: 6) {
-                                Text(item.path)
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Text(item.kind.rawValue)
-                                    .font(.system(size: 9.5, weight: .bold))
-                                    .foregroundStyle(MoniPalette.purple)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(MoniPalette.purple.opacity(0.12))
-                                    .clipShape(Capsule())
-                                Text(relativeDate(item.modifiedDate))
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                            }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(MoniLocalization.string(source.titleKey))
+                                .font(.system(size: 13.5, weight: .bold))
+                            Text(MoniLocalization.format("%@ items", sourceItems.count.formatted()))
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(MoniPalette.foregroundTertiary)
                         }
                         Spacer(minLength: 10)
-                        Text(installerBytes(item.sizeBytes))
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text(installerBytes(sourceItems.reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }))
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
                             .foregroundStyle(MoniPalette.foregroundSecondary)
+                        Image(systemName: expandedSources.contains(source) ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .frame(width: 12)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                    .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+
+            if expandedSources.contains(source) {
+                Divider().padding(.horizontal, 12)
+
+                ForEach(sourceItems) { item in
+                    Button {
+                        toggle(item.path)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
+                                .frame(width: 20)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.name)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .lineLimit(1)
+                                HStack(spacing: 6) {
+                                    Text(item.path)
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Text(item.kind.rawValue)
+                                        .font(.system(size: 9.5, weight: .bold))
+                                        .foregroundStyle(MoniPalette.purple)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(MoniPalette.purple.opacity(0.12))
+                                        .clipShape(Capsule())
+                                    Text(relativeDate(item.modifiedDate))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                                }
+                            }
+                            Spacer(minLength: 10)
+                            Text(installerBytes(item.sizeBytes))
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(MoniPalette.foregroundSecondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .background(MoniPalette.card)
@@ -268,17 +284,45 @@ struct InstallerCleanerView: View {
         }
     }
 
+    private func toggleExpansion(of source: InstallerSource) {
+        if expandedSources.contains(source) {
+            expandedSources.remove(source)
+        } else {
+            expandedSources.insert(source)
+        }
+    }
+
     private func scan() async {
         isScanning = true
-        let snapshot = await InstallerCleanupService.scan()
+        scanProgress = nil
+        let (progressUpdates, continuation) = AsyncStream<CleanerScanProgress>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        let worker = Task.detached(priority: .utility) {
+            let snapshot = await InstallerCleanupService.scan { progress in
+                continuation.yield(progress)
+            }
+            continuation.finish()
+            return snapshot
+        }
+        let snapshot = await withTaskCancellationHandler {
+            for await progress in progressUpdates {
+                scanProgress = progress
+            }
+            return await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
         guard !Task.isCancelled else {
             isScanning = false
             return
         }
         items = snapshot.items
+        expandedSources = []
         unreadableItemCount = snapshot.unreadableItemCount
         isScanComplete = snapshot.isComplete
         selectedPaths = []
+        scanProgress = nil
         isScanning = false
     }
 
