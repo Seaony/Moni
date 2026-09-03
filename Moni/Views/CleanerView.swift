@@ -44,11 +44,293 @@ final class CacheCleanupScanner: ObservableObject {
     }
 }
 
-private enum CleanerMode: String, CaseIterable {
+enum CleanerMode: String, CaseIterable {
     case caches
     case projects
     case installers
     case trash
+
+    var titleKey: String {
+        switch self {
+        case .caches: "Caches & Logs"
+        case .projects: "Project Artifacts"
+        case .installers: "Installers"
+        case .trash: "Trash"
+        }
+    }
+}
+
+struct CleanerBreakdownSegment: Identifiable {
+    let id: String
+    let title: String
+    let value: UInt64
+    let color: Color
+}
+
+struct CleanerResultsCard<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(MoniPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+        }
+    }
+}
+
+struct CleanerSelectionHeader: View {
+    let symbol: String
+    let selectedCount: Int
+    let totalCount: Int
+    let onToggleAll: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onToggleAll) {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(MoniPalette.blue)
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onToggleAll) {
+                Text(MoniLocalization.format(
+                    "%@ of %@ selected",
+                    selectedCount.formatted(),
+                    totalCount.formatted()
+                ))
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Text(MoniLocalization.string("Items"))
+                .frame(width: 132, alignment: .leading)
+            Text(MoniLocalization.string("Size"))
+                .frame(width: 86, alignment: .trailing)
+            Color.clear.frame(width: 26)
+        }
+        .font(.system(size: 11.5))
+        .foregroundStyle(MoniPalette.foregroundQuaternary)
+        .padding(.horizontal, 16)
+        .frame(height: 35)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(MoniPalette.panelLine)
+                .frame(height: 1)
+        }
+    }
+}
+
+struct CleanerPageHeader: View {
+    @Binding var mode: CleanerMode
+    let descriptionKey: String
+    let selectedSize: String
+    let totalSize: String
+    let countTitleKey: String
+    let count: String
+    let status: String
+    let statusColor: Color
+    let selectedItemCount: Int
+    let isScanning: Bool
+    let isBusy: Bool
+    let reviewSystemImage: String
+    let breakdown: [CleanerBreakdownSegment]
+    let onRescan: () -> Void
+    let onReview: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Cleaner")
+                        .font(.system(size: 17, weight: .bold))
+                    Text(MoniLocalization.string(descriptionKey))
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                }
+
+                Spacer(minLength: 12)
+
+                HStack(spacing: 8) {
+                    Button(action: onRescan) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 13, weight: .medium))
+                                .rotationEffect(.degrees(isScanning ? 360 : 0))
+                                .animation(
+                                    isScanning
+                                        ? .linear(duration: 0.8).repeatForever(autoreverses: false)
+                                        : nil,
+                                    value: isScanning
+                                )
+                            Text(MoniLocalization.string(isScanning ? "Scanning…" : "Rescan"))
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundStyle(
+                            isScanning || isBusy
+                                ? MoniPalette.disabledActionForeground
+                                : MoniPalette.secondaryActionForeground
+                        )
+                        .padding(.horizontal, 13)
+                        .frame(height: 32)
+                        .background(MoniPalette.secondaryAction)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(MoniPressButtonStyle(scale: 0.98))
+                    .disabled(isScanning || isBusy)
+
+                    Button(action: onReview) {
+                        HStack(spacing: 7) {
+                            Image(systemName: reviewSystemImage)
+                                .font(.system(size: 13, weight: .medium))
+                            Text(reviewButtonTitle)
+                                .font(.system(size: 13, weight: .bold))
+                        }
+                        .foregroundStyle(canReview ? Color.white : MoniPalette.disabledActionForeground)
+                        .padding(.horizontal, 15)
+                        .frame(height: 32)
+                        .background(canReview ? MoniPalette.red : MoniPalette.secondaryAction)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(MoniPressButtonStyle(scale: 0.98))
+                    .disabled(!canReview)
+                }
+            }
+
+            HStack(spacing: 16) {
+                HStack(spacing: 2) {
+                    ForEach(CleanerMode.allCases, id: \.self) { candidate in
+                        Button {
+                            mode = candidate
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(MoniLocalization.string(candidate.titleKey))
+                                    .lineLimit(1)
+                                Text(candidate == mode ? count : "—")
+                                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(
+                                        candidate == mode
+                                            ? Color.white.opacity(0.22)
+                                            : MoniPalette.track
+                                    )
+                                    .clipShape(Capsule())
+                            }
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(candidate == mode ? Color.white : MoniPalette.foregroundTertiary)
+                            .padding(.horizontal, 12)
+                            .frame(height: 28)
+                            .background(candidate == mode ? MoniPalette.blue : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+                    }
+                }
+                .padding(3)
+                .background(MoniPalette.control)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                Spacer(minLength: 4)
+
+                HStack(spacing: 22) {
+                    cleanerMetric("Selected", selectedSize, color: MoniPalette.green)
+                    cleanerMetric("This page", totalSize, color: MoniPalette.foreground)
+                    cleanerMetric(countTitleKey, count, color: MoniPalette.foreground)
+                    cleanerMetric("Last scan", status, color: statusColor)
+                }
+            }
+
+            if !breakdown.isEmpty {
+                breakdownBar
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(MoniPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+        }
+    }
+
+    private func cleanerMetric(_ titleKey: String, _ value: String, color: Color) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(MoniLocalization.string(titleKey))
+                .font(.system(size: 11.5))
+                .foregroundStyle(MoniPalette.foregroundTertiary)
+            Text(value)
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+    }
+
+    private var canReview: Bool {
+        selectedItemCount > 0 && !isScanning && !isBusy
+    }
+
+    private var reviewButtonTitle: String {
+        guard canReview else {
+            return MoniLocalization.string("No items selected")
+        }
+        return MoniLocalization.format(
+            mode == .trash ? "Delete Permanently · %@" : "Move to Trash · %@",
+            selectedSize
+        )
+    }
+
+    private var breakdownBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            GeometryReader { geometry in
+                let spacing = CGFloat(max(0, breakdown.count - 1)) * 1.5
+                let availableWidth = max(0, geometry.size.width - spacing)
+                let total = max(1, breakdown.reduce(UInt64(0)) { $0 + $1.value })
+                HStack(spacing: 1.5) {
+                    ForEach(breakdown) { segment in
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(segment.color)
+                            .frame(width: max(3, availableWidth * CGFloat(segment.value) / CGFloat(total)))
+                    }
+                }
+                .clipShape(Capsule())
+            }
+            .frame(height: 9)
+
+            HStack(spacing: 16) {
+                ForEach(breakdown.prefix(6)) { segment in
+                    HStack(spacing: 6) {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(segment.color)
+                            .frame(width: 7, height: 7)
+                        Text(segment.title)
+                            .lineLimit(1)
+                        Text(cleanupBytes(segment.value))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                }
+            }
+        }
+    }
 }
 
 struct CleanerView: View {
@@ -56,33 +338,26 @@ struct CleanerView: View {
     @State private var mode = CleanerMode.caches
 
     var body: some View {
-        VStack(spacing: 12) {
-            Picker("", selection: $mode) {
-                Text(MoniLocalization.string("Caches & Logs")).tag(CleanerMode.caches)
-                Text(MoniLocalization.string("Project Artifacts")).tag(CleanerMode.projects)
-                Text(MoniLocalization.string("Installers")).tag(CleanerMode.installers)
-                Text(MoniLocalization.string("Trash")).tag(CleanerMode.trash)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 520)
-
+        Group {
             switch mode {
             case .caches:
-                CacheCleanerView(refreshSystem: refreshSystem)
+                CacheCleanerView(mode: $mode, refreshSystem: refreshSystem)
             case .projects:
-                ProjectArtifactCleanerView(refreshSystem: refreshSystem)
+                ProjectArtifactCleanerView(mode: $mode, refreshSystem: refreshSystem)
             case .installers:
-                InstallerCleanerView(refreshSystem: refreshSystem)
+                InstallerCleanerView(mode: $mode, refreshSystem: refreshSystem)
             case .trash:
-                TrashCleanerView(refreshSystem: refreshSystem)
+                TrashCleanerView(mode: $mode, refreshSystem: refreshSystem)
             }
         }
+        .padding(.horizontal, -2)
     }
 }
 
 private struct CacheCleanerView: View {
+    @Binding var mode: CleanerMode
     let refreshSystem: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var scanner: CacheCleanupScanner
     @State private var items: [CacheCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
@@ -94,35 +369,43 @@ private struct CacheCleanerView: View {
     @State private var cleanupMessage: String?
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             header
-            summary
 
-            if scanner.isScanning {
-                scanProgressView
-            } else if items.isEmpty, !isScanComplete {
-                ContentUnavailableView(
-                    "Scan incomplete",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text("The scan reached its time limit. Rescan to check the remaining locations.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if items.isEmpty {
-                ContentUnavailableView(
-                    "No cleanable items",
-                    systemImage: "sparkles",
-                    description: Text("No cleanable cache or log files were found.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(spacing: 10) {
-                        ForEach(CacheCleanupCategory.allCases, id: \.self) { category in
-                            let categoryItems = items.filter { $0.category == category }
-                            if !categoryItems.isEmpty {
-                                categoryPanel(category, items: categoryItems)
+            CleanerResultsCard {
+                if scanner.isScanning {
+                    scanProgressView
+                } else if items.isEmpty, !isScanComplete {
+                    ContentUnavailableView(
+                        "Scan incomplete",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("The scan reached its time limit. Rescan to check the remaining locations.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if items.isEmpty {
+                    ContentUnavailableView(
+                        "No cleanable items",
+                        systemImage: "sparkles",
+                        description: Text("No cleanable cache or log files were found.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    CleanerSelectionHeader(
+                        symbol: selectionSymbol,
+                        selectedCount: selectedPaths.count,
+                        totalCount: items.count,
+                        onToggleAll: toggleAll
+                    )
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(CacheCleanupCategory.allCases, id: \.self) { category in
+                                let categoryItems = items.filter { $0.category == category }
+                                if !categoryItems.isEmpty {
+                                    categoryPanel(category, items: categoryItems)
+                                }
                             }
                         }
+                        .padding(6)
                     }
                 }
             }
@@ -155,56 +438,29 @@ private struct CacheCleanerView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Cleaner")
-                    .font(.system(size: 20, weight: .bold))
-                Text("Review rebuildable user caches and logs before moving them to Trash.")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(MoniPalette.foregroundTertiary)
-            }
-
-            Spacer(minLength: 12)
-
-            Button {
+        CleanerPageHeader(
+            mode: $mode,
+            descriptionKey: "Review rebuildable user caches and logs before moving them to Trash.",
+            selectedSize: cleanupBytes(selectedSize),
+            totalSize: cleanupBytes(totalSize),
+            countTitleKey: "Categories",
+            count: activeCategoryCount.formatted(),
+            status: scanStatus,
+            statusColor: scanner.isScanning
+                ? MoniPalette.blue
+                : unreadableItemCount > 0 ? MoniPalette.orange : MoniPalette.foregroundSecondary,
+            selectedItemCount: selectedPaths.count,
+            isScanning: scanner.isScanning,
+            isBusy: isCleaning,
+            reviewSystemImage: "trash",
+            breakdown: categoryBreakdown,
+            onRescan: {
                 scanner.start(force: true, selectAll: true)
-            } label: {
-                Label(MoniLocalization.string("Rescan"), systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(.bordered)
-            .disabled(scanner.isScanning || isCleaning)
-
-            Button {
+            },
+            onReview: {
                 Task { await prepareCleanup() }
-            } label: {
-                Label(
-                    MoniLocalization.format("Review %@ items", selectedPaths.count.formatted()),
-                    systemImage: "trash"
-                )
             }
-            .buttonStyle(.borderedProminent)
-            .tint(MoniPalette.red)
-            .disabled(selectedPaths.isEmpty || scanner.isScanning || isCleaning)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
-        .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
-        }
-    }
-
-    private var summary: some View {
-        HStack(spacing: 10) {
-            summaryCard("Reclaimable", cleanupBytes(totalSize), color: MoniPalette.green)
-            summaryCard("Selected", cleanupBytes(selectedSize), color: MoniPalette.blue)
-            summaryCard("Categories", activeCategoryCount.formatted(), color: MoniPalette.orange)
-            if unreadableItemCount > 0 {
-                summaryCard("Unreadable", unreadableItemCount.formatted(), color: MoniPalette.red)
-            }
-        }
+        )
     }
 
     private var scanProgressView: some View {
@@ -229,21 +485,26 @@ private struct CacheCleanerView: View {
         }
     }
 
-    private func summaryCard(_ title: String, _ value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(MoniLocalization.string(title))
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(MoniPalette.foregroundTertiary)
-            Text(value)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
-                .foregroundStyle(color)
-                .lineLimit(1)
+    private var categoryBreakdown: [CleanerBreakdownSegment] {
+        let colors = [MoniPalette.blue, MoniPalette.green, MoniPalette.orange, MoniPalette.purple, MoniPalette.cyan, MoniPalette.yellow]
+        return CacheCleanupCategory.allCases.enumerated().compactMap { index, category in
+            let size = items.lazy.filter { $0.category == category }.reduce(UInt64(0)) { $0 + $1.sizeBytes }
+            guard size > 0 else { return nil }
+            return CleanerBreakdownSegment(
+                id: category.rawValue,
+                title: MoniLocalization.string(category.titleKey),
+                value: size,
+                color: colors[index % colors.count]
+            )
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MoniPalette.insetSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var scanStatus: String {
+        if scanner.isScanning { return MoniLocalization.string("Scanning…") }
+        if unreadableItemCount > 0 {
+            return MoniLocalization.format("%@ unreadable", unreadableItemCount.formatted())
+        }
+        return MoniLocalization.string("Ready")
     }
 
     private func categoryPanel(_ category: CacheCleanupCategory, items categoryItems: [CacheCleanupItem]) -> some View {
@@ -274,61 +535,60 @@ private struct CacheCleanerView: View {
                         Text(cleanupBytes(categoryItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }))
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                             .foregroundStyle(MoniPalette.foregroundSecondary)
-                        Image(systemName: expandedCategories.contains(category) ? "chevron.down" : "chevron.right")
+                        Image(systemName: "chevron.right")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(MoniPalette.foregroundTertiary)
                             .frame(width: 12)
+                            .rotationEffect(.degrees(expandedCategories.contains(category) ? 90 : 0))
                     }
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 10)
+            .frame(height: 48)
 
             if expandedCategories.contains(category) {
-                Divider().padding(.horizontal, 12)
+                VStack(spacing: 0) {
+                    Divider().padding(.leading, 48)
 
-                ForEach(categoryItems) { item in
-                    Button {
-                        toggle(item.path)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 13.5, weight: .semibold))
-                                .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
-                                .frame(width: 20)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(URL(fileURLWithPath: item.path).lastPathComponent)
-                                    .font(.system(size: 12.5, weight: .medium))
-                                    .lineLimit(1)
-                                Text(URL(fileURLWithPath: item.path).deletingLastPathComponent().path)
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                    ForEach(categoryItems) { item in
+                        Button {
+                            toggle(item.path)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(URL(fileURLWithPath: item.path).lastPathComponent)
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .lineLimit(1)
+                                    Text(URL(fileURLWithPath: item.path).deletingLastPathComponent().path)
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer(minLength: 10)
+                                Text(cleanupBytes(item.sizeBytes))
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(MoniPalette.foregroundSecondary)
                             }
-                            Spacer(minLength: 10)
-                            Text(cleanupBytes(item.sizeBytes))
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundStyle(MoniPalette.foregroundSecondary)
+                            .padding(.horizontal, 10)
+                            .frame(height: 44)
+                            .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+                .transition(reduceMotion ? .identity : MoniMotion.disclosureTransition)
             }
         }
-        .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
-        }
+        .contentShape(Rectangle())
     }
 
     private var totalSize: UInt64 {
@@ -359,6 +619,20 @@ private struct CacheCleanerView: View {
         return "square"
     }
 
+    private var selectionSymbol: String {
+        if selectedPaths.count == items.count { return "checkmark.square.fill" }
+        if !selectedPaths.isEmpty { return "minus.square.fill" }
+        return "square"
+    }
+
+    private func toggleAll() {
+        if selectedPaths.count == items.count {
+            selectedPaths.removeAll()
+        } else {
+            selectedPaths = Set(items.map(\.path))
+        }
+    }
+
     private func toggle(_ path: String) {
         if selectedPaths.contains(path) {
             selectedPaths.remove(path)
@@ -377,10 +651,12 @@ private struct CacheCleanerView: View {
     }
 
     private func toggleExpansion(of category: CacheCleanupCategory) {
-        if expandedCategories.contains(category) {
-            expandedCategories.remove(category)
-        } else {
-            expandedCategories.insert(category)
+        withAnimation(reduceMotion ? nil : MoniMotion.disclosure) {
+            if expandedCategories.contains(category) {
+                expandedCategories.remove(category)
+            } else {
+                expandedCategories.insert(category)
+            }
         }
     }
 

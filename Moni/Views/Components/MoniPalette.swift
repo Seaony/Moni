@@ -11,6 +11,9 @@ enum MoniPalette {
     static let control = adaptive(light: rgb(0xEAEAEF), dark: rgb(0x1C1C1F))
     static let controlHover = adaptive(light: rgb(0xE0E0E6), dark: rgb(0x26262A))
     static let controlSelected = adaptive(light: rgb(0xD6D6DD), dark: rgb(0x3A3A3F))
+    static let secondaryAction = adaptive(light: rgb(0xE0E0E6), dark: rgb(0x242424))
+    static let secondaryActionForeground = adaptive(light: rgb(0x3A3A3F), dark: rgb(0xC9C9CE))
+    static let disabledActionForeground = adaptive(light: rgb(0x8E8E93), dark: rgb(0x636366))
 
     static let foreground = adaptive(light: rgb(0x16161A), dark: rgb(0xFFFFFF))
     static let foregroundSecondary = adaptive(

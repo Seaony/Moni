@@ -65,10 +65,7 @@ private enum MaintenanceSuite: String, Identifiable, Equatable {
     }
 
     var symbol: String {
-        switch self {
-        case .optimization: "wand.and.stars"
-        case .cleanup: "sparkles"
-        }
+        "sparkles"
     }
 
     var color: Color {
@@ -89,18 +86,16 @@ private struct PendingMaintenanceSuite: Identifiable {
     let taskDefinitions: [MaintenanceTaskDefinition]
 }
 
-private struct MaintenanceSuiteReport: Identifiable {
+private struct PendingMaintenanceRunAll: Identifiable {
     let id = UUID()
-    let suite: MaintenanceSuite
-    let messages: [String]
+    let optimization: PendingMaintenanceSuite
+    let cleanup: PendingMaintenanceSuite
 }
 
-private struct MaintenanceScanIssueSummary: Identifiable {
-    let id: String
+private struct MaintenanceSuiteReport: Identifiable {
+    let id = UUID()
     let titleKey: String
-    let detailKey: String
-    let count: Int
-    let paths: [String]
+    let messages: [String]
 }
 
 struct MaintenanceView: View {
@@ -270,29 +265,23 @@ struct MaintenanceView: View {
     @State private var confirmsHomebrewCleanup = false
     @State private var resultMessage: String?
     @State private var pendingSuite: PendingMaintenanceSuite?
+    @State private var pendingRunAll: PendingMaintenanceRunAll?
     @State private var suiteReport: MaintenanceSuiteReport?
     @State private var isPreparingSuite = false
     @State private var isRunningSuite = false
     @State private var suiteProgressTitle: String?
-    @State private var isShowingScanIssues = false
+    @State private var activeSuite: MaintenanceSuite?
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             header
 
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 12) {
-                    HStack(alignment: .top, spacing: 12) {
-                        suiteCard(.optimization)
-                        suiteCard(.cleanup)
-                    }
-
-                    if isPreparingSuite || isRunningSuite {
-                        suiteProgressCard
-                    }
-                }
+            HStack(alignment: .top, spacing: 10) {
+                suiteCard(.optimization)
+                suiteCard(.cleanup)
             }
         }
+        .padding(.horizontal, -2)
         .task { await scan() }
         .sheet(item: $pendingSuite) { plan in
             MaintenanceSuiteConfirmationView(
@@ -302,6 +291,21 @@ struct MaintenanceView: View {
                     pendingSuite = nil
                     Task {
                         await executeSuite(
+                            plan,
+                            includeIncompleteBackups: includeIncompleteBackups
+                        )
+                    }
+                }
+            )
+        }
+        .sheet(item: $pendingRunAll) { plan in
+            MaintenanceRunAllConfirmationView(
+                plan: plan,
+                onCancel: { pendingRunAll = nil },
+                onConfirm: { includeIncompleteBackups in
+                    pendingRunAll = nil
+                    Task {
+                        await executeRunAll(
                             plan,
                             includeIncompleteBackups: includeIncompleteBackups
                         )
@@ -700,243 +704,201 @@ struct MaintenanceView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Maintenance")
-                    .font(.system(size: 20, weight: .bold))
-                Text("Run system optimization or cleanup as one reviewed batch.")
+                    .font(.system(size: 17, weight: .bold))
+                Text(MoniLocalization.format(
+                    "%@ tasks, available as two reviewed maintenance groups.",
+                    MaintenanceService.tasks.count.formatted()
+                ))
                     .font(.system(size: 12.5))
                     .foregroundStyle(MoniPalette.foregroundTertiary)
             }
 
             Spacer(minLength: 12)
 
-            if unreadableItemCount > 0 {
+            HStack(spacing: 18) {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(MoniLocalization.string("Last maintenance"))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                    Text(MoniLocalization.string("Not recorded"))
+                        .font(.system(size: 14, weight: .bold))
+                }
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(MoniLocalization.string("This month reclaimed"))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                    Text("—")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(MoniPalette.green)
+                }
+
                 Button {
-                    isShowingScanIssues.toggle()
+                    Task { await prepareRunAll() }
                 } label: {
-                    Label(
-                        MoniLocalization.format(
-                            "%@ checks incomplete",
-                            unreadableItemCount.formatted()
-                        ),
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(MoniPalette.orange)
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $isShowingScanIssues, arrowEdge: .bottom) {
-                    scanIssuesPopover
-                }
-            }
-
-            if let suiteProgressTitle {
-                Label(MoniLocalization.string(suiteProgressTitle), systemImage: "hourglass")
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(MoniPalette.foregroundSecondary)
-            }
-
-            Button {
-                Task { await scan() }
-            } label: {
-                if isScanning {
                     HStack(spacing: 7) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Checking Status…")
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 10, weight: .bold))
+                        Text(MoniLocalization.string("Run All"))
+                            .font(.system(size: 13, weight: .bold))
                     }
-                } else {
-                    Label(MoniLocalization.string("Recheck Status"), systemImage: "arrow.clockwise")
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 15)
+                    .frame(height: 32)
+                    .background(MoniPalette.blue)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(MoniPressButtonStyle(scale: 0.98))
+                .disabled(isScanning || isRunning || isPreparingSuite || isRunningSuite)
             }
-            .buttonStyle(.bordered)
-            .disabled(isScanning || isRunning || isPreparingSuite || isRunningSuite)
-            .help(MoniLocalization.string(
-                "Rechecks Finder, preferences, system services, developer tools, package managers, and Time Machine status."
-            ))
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
         }
     }
 
     private func suiteCard(_ suite: MaintenanceSuite) -> some View {
         let definitions = taskDefinitions(for: suite)
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: suite.symbol)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(suite.color)
-                    .frame(width: 36, height: 36)
-                    .background(suite.color.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        return VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 11) {
+                    Image(systemName: suite.symbol)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(suite.color)
+                        .frame(width: 34, height: 34)
+                        .background(suite.color.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .strokeBorder(suite.color.opacity(0.2), lineWidth: 1)
+                        }
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(MoniLocalization.string(suite.titleKey))
-                        .font(.system(size: 16, weight: .bold))
-                    Text(MoniLocalization.string(suite.descriptionKey))
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(MoniLocalization.string(suite.titleKey))
+                            .font(.system(size: 15, weight: .bold))
+                        Text(MoniLocalization.string(suite.descriptionKey))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        Task { await prepareSuite(suite) }
+                    } label: {
+                        Text(MoniLocalization.string("Review and Run"))
+                            .font(.system(size: 12.5, weight: .bold))
+                            .foregroundStyle(Color.white)
+                            .padding(.horizontal, 14)
+                            .frame(height: 30)
+                            .background(suite.color)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(MoniPressButtonStyle(scale: 0.98))
+                    .disabled(isScanning || isRunning || isPreparingSuite || isRunningSuite)
+                }
+
+                HStack(spacing: 10) {
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(MoniPalette.track)
+                            if activeSuite == suite, isPreparingSuite || isRunningSuite {
+                                Capsule()
+                                    .fill(suite.color)
+                                    .frame(width: geometry.size.width)
+                            }
+                        }
+                    }
+                    .frame(height: 5)
+
+                    Text(MoniLocalization.string(
+                        activeSuite == suite && (isPreparingSuite || isRunningSuite)
+                            ? (suiteProgressTitle ?? "Running…")
+                            : "Pending"
+                    ))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(
+                        activeSuite == suite && (isPreparingSuite || isRunningSuite)
+                            ? suite.color
+                            : MoniPalette.foregroundTertiary
+                    )
+                    .lineLimit(1)
+                    .frame(width: 64, alignment: .trailing)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 12)
 
-            Spacer(minLength: 6)
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: 2) {
+                    ForEach(definitions) { definition in
+                        HStack(spacing: 10) {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(suite.color)
+                                .frame(width: 17, height: 17)
+                                .overlay {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundStyle(Color.white)
+                                }
+                            Text(MoniLocalization.string(definition.titleKey))
+                                .font(.system(size: 12.5, weight: .regular))
+                                .foregroundStyle(MoniPalette.foreground.opacity(0.9))
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Text(MoniLocalization.string(
+                                activeSuite == suite && isRunningSuite ? "Running…" : "Pending"
+                            ))
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(
+                                    activeSuite == suite && isRunningSuite
+                                        ? suite.color
+                                        : MoniPalette.foregroundTertiary
+                                )
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: 36)
+                    }
+                }
+                .padding(8)
+            }
+
+            Divider()
 
             HStack {
                 Text(MoniLocalization.format(
-                    "%@ automatic tasks",
+                    "%@ automatic tasks · %@ selected",
+                    definitions.count.formatted(),
                     definitions.count.formatted()
                 ))
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(MoniPalette.foregroundSecondary)
-
-                Spacer(minLength: 12)
-
-                Button {
-                    Task { await prepareSuite(suite) }
-                } label: {
-                    Label(
-                        MoniLocalization.string("Review and Run"),
-                        systemImage: "play.fill"
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(suite.color)
-                .disabled(isScanning || isRunning || isPreparingSuite || isRunningSuite)
+                Spacer()
+                Text(MoniLocalization.string("Last —"))
             }
+            .font(.system(size: 11.5))
+            .foregroundStyle(MoniPalette.foregroundTertiary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
         }
         .transition(MoniMotion.itemTransition)
-    }
-
-    private var suiteProgressCard: some View {
-        HStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.small)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(MoniLocalization.string(
-                    isPreparingSuite ? "Preparing batch review…" : "Running maintenance batch…"
-                ))
-                    .font(.system(size: 13.5, weight: .semibold))
-                if let suiteProgressTitle {
-                    Text(MoniLocalization.string(suiteProgressTitle))
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                }
-            }
-            Spacer()
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
-        }
-    }
-
-    private var scanIssuesPopover: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Incomplete checks")
-                    .font(.system(size: 15, weight: .bold))
-                Text("These are inspection failures, not maintenance tasks that failed.")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(MoniPalette.foregroundTertiary)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(scanIssueSummaries) { summary in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text(MoniLocalization.string(summary.titleKey))
-                                .font(.system(size: 12, weight: .semibold))
-                            Spacer(minLength: 12)
-                            Text(summary.count.formatted())
-                                .font(.system(size: 11.5, weight: .bold))
-                                .foregroundStyle(MoniPalette.orange)
-                        }
-                        Text(MoniLocalization.string(summary.detailKey))
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        ForEach(
-                            Array(summary.paths.prefix(4).enumerated()),
-                            id: \.offset
-                        ) { _, path in
-                            Text(path)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(MoniPalette.foregroundSecondary)
-                                .lineLimit(2)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                        }
-                        if summary.paths.count < summary.count {
-                            Text("The scanner did not report a specific path for this check.")
-                                .font(.system(size: 10))
-                                .foregroundStyle(MoniPalette.foregroundSecondary)
-                        }
-                    }
-                    .padding(10)
-                    .background(MoniPalette.insetSecondary)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-            }
-
-            Text("Items that could not be inspected are skipped and will not be changed.")
-                .font(.system(size: 10.5))
-                .foregroundStyle(MoniPalette.foregroundSecondary)
-        }
-        .padding(16)
-        .frame(width: 420)
-    }
-
-    private var scanIssueSummaries: [MaintenanceScanIssueSummary] {
-        [
-            MaintenanceScanIssueSummary(
-                id: "saved-states",
-                titleKey: "Saved application states",
-                detailKey: "Checks ~/Library/Saved Application State for state folders older than 30 days.",
-                count: snapshot.unreadableItemCount,
-                paths: snapshot.unreadablePaths
-            ),
-            MaintenanceScanIssueSummary(
-                id: "preferences",
-                titleKey: "Third-party preferences",
-                detailKey: "Checks third-party property lists in ~/Library/Preferences and ByHost.",
-                count: preferenceUnreadableItemCount,
-                paths: preferenceUnreadablePaths
-            ),
-            MaintenanceScanIssueSummary(
-                id: "finder-repairs",
-                titleKey: "Finder lists and LaunchAgents",
-                detailKey: "Checks Finder shared-file lists and user LaunchAgents for damaged or missing references.",
-                count: fileRepairSnapshot.unreadableItemCount,
-                paths: fileRepairSnapshot.unreadablePaths
-            ),
-            MaintenanceScanIssueSummary(
-                id: "time-machine",
-                titleKey: "Time Machine backups",
-                detailKey: "Checks local and mounted Time Machine locations for incomplete backups.",
-                count: timeMachineSnapshotReport.unreadableItemCount,
-                paths: []
-            )
-        ].filter { $0.count > 0 }
     }
 
     private func taskDefinitions(for suite: MaintenanceSuite) -> [MaintenanceTaskDefinition] {
@@ -1109,13 +1071,6 @@ struct MaintenanceView: View {
             get: { !isRunningSuite && resultMessage != nil },
             set: { if !$0 { resultMessage = nil } }
         )
-    }
-
-    private var unreadableItemCount: Int {
-        snapshot.unreadableItemCount
-            + preferenceUnreadableItemCount
-            + fileRepairSnapshot.unreadableItemCount
-            + timeMachineSnapshotReport.unreadableItemCount
     }
 
     private var dsStoreStatus: String {
@@ -1941,12 +1896,41 @@ struct MaintenanceView: View {
     private func prepareSuite(_ suite: MaintenanceSuite) async {
         guard !isPreparingSuite, !isRunningSuite else { return }
         isPreparingSuite = true
+        activeSuite = suite
         suiteProgressTitle = suite.titleKey
         defer {
             isPreparingSuite = false
+            activeSuite = nil
             suiteProgressTitle = nil
         }
 
+        pendingSuite = await makeSuitePlan(suite)
+    }
+
+    private func prepareRunAll() async {
+        guard !isPreparingSuite, !isRunningSuite else { return }
+        isPreparingSuite = true
+        defer {
+            isPreparingSuite = false
+            activeSuite = nil
+            suiteProgressTitle = nil
+        }
+
+        activeSuite = .optimization
+        suiteProgressTitle = MaintenanceSuite.optimization.titleKey
+        let optimization = await makeSuitePlan(.optimization)
+
+        activeSuite = .cleanup
+        suiteProgressTitle = MaintenanceSuite.cleanup.titleKey
+        let cleanup = await makeSuitePlan(.cleanup)
+
+        pendingRunAll = PendingMaintenanceRunAll(
+            optimization: optimization,
+            cleanup: cleanup
+        )
+    }
+
+    private func makeSuitePlan(_ suite: MaintenanceSuite) async -> PendingMaintenanceSuite {
         switch suite {
         case .optimization:
             let paths = snapshot.cachePaths
@@ -1958,7 +1942,7 @@ struct MaintenanceView: View {
                 paths: paths,
                 scope: .maintenance
             )
-            pendingSuite = PendingMaintenanceSuite(
+            return PendingMaintenanceSuite(
                 suite: suite,
                 filePlan: filePlan,
                 systemCleanupPlan: nil,
@@ -1989,7 +1973,7 @@ struct MaintenanceView: View {
                     items: timeMachineSnapshotReport.incompleteBackups
                 )
             }
-            pendingSuite = PendingMaintenanceSuite(
+            return PendingMaintenanceSuite(
                 suite: suite,
                 filePlan: nil,
                 systemCleanupPlan: systemPlan,
@@ -2006,6 +1990,7 @@ struct MaintenanceView: View {
     ) async {
         guard !isRunningSuite else { return }
         isRunningSuite = true
+        activeSuite = plan.suite
         resultMessage = nil
         var messages: [String] = []
 
@@ -2024,10 +2009,45 @@ struct MaintenanceView: View {
         await scan()
         refreshSystem()
         isRunningSuite = false
+        activeSuite = nil
         suiteProgressTitle = nil
         resultMessage = nil
         suiteReport = MaintenanceSuiteReport(
-            suite: plan.suite,
+            titleKey: plan.suite.titleKey,
+            messages: messages.isEmpty
+                ? [MoniLocalization.string("No maintenance actions were needed.")]
+                : messages
+        )
+    }
+
+    private func executeRunAll(
+        _ plan: PendingMaintenanceRunAll,
+        includeIncompleteBackups: Bool
+    ) async {
+        guard !isRunningSuite else { return }
+        isRunningSuite = true
+        resultMessage = nil
+        var messages: [String] = []
+
+        activeSuite = .optimization
+        await executeOptimizationSuite(plan.optimization, messages: &messages)
+
+        activeSuite = .cleanup
+        await executeCleanupSuite(
+            plan.cleanup,
+            includeIncompleteBackups: includeIncompleteBackups,
+            messages: &messages
+        )
+
+        suiteProgressTitle = "Refreshing maintenance status…"
+        await scan()
+        refreshSystem()
+        isRunningSuite = false
+        activeSuite = nil
+        suiteProgressTitle = nil
+        resultMessage = nil
+        suiteReport = MaintenanceSuiteReport(
+            titleKey: "Maintenance",
             messages: messages.isEmpty
                 ? [MoniLocalization.string("No maintenance actions were needed.")]
                 : messages
@@ -3103,6 +3123,121 @@ private struct MaintenanceSuiteConfirmationView: View {
     }
 }
 
+private struct MaintenanceRunAllConfirmationView: View {
+    let plan: PendingMaintenanceRunAll
+    let onCancel: () -> Void
+    let onConfirm: (Bool) -> Void
+    @State private var includeIncompleteBackups = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Run all maintenance?")
+                    .font(.system(size: 18, weight: .bold))
+                Text("Moni will run system optimization first, followed by system cleanup.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            VStack(spacing: 10) {
+                suiteSummary(plan.optimization)
+                suiteSummary(plan.cleanup)
+            }
+
+            if let timeMachinePlan = plan.cleanup.timeMachinePlan,
+               !timeMachinePlan.cleanupPlan.candidates.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Toggle(isOn: $includeIncompleteBackups) {
+                        Text(MoniLocalization.format(
+                            "Permanently remove %@ incomplete Time Machine backups",
+                            timeMachinePlan.cleanupPlan.candidates.count.formatted()
+                        ))
+                        .font(.system(size: 11.5, weight: .semibold))
+                    }
+                    Text("This option is off by default. Selected backups are deleted permanently instead of being moved to Trash.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(MoniPalette.orange)
+                }
+                .padding(12)
+                .background(MoniPalette.orange.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+
+            if plan.cleanup.systemCleanupUnreadableItemCount > 0 {
+                Label(
+                    MoniLocalization.format(
+                        "%@ system cleanup locations could not be inspected and will be skipped.",
+                        plan.cleanup.systemCleanupUnreadableItemCount.formatted()
+                    ),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(MoniPalette.orange)
+            }
+
+            Label(
+                MoniLocalization.format(
+                    "%@ tasks may request macOS administrator approval. Unavailable tasks and tasks blocked by running apps will be skipped.",
+                    administratorTaskCount.formatted()
+                ),
+                systemImage: "lock.shield"
+            )
+            .font(.system(size: 11.5))
+            .foregroundStyle(MoniPalette.foregroundSecondary)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button {
+                    onConfirm(includeIncompleteBackups)
+                } label: {
+                    Text(MoniLocalization.string("Run All"))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(MoniPalette.blue)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+
+    private func suiteSummary(_ suitePlan: PendingMaintenanceSuite) -> some View {
+        HStack(spacing: 11) {
+            Image(systemName: suitePlan.suite.symbol)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(suitePlan.suite.color)
+                .frame(width: 34, height: 34)
+                .background(suitePlan.suite.color.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(MoniLocalization.string(suitePlan.suite.titleKey))
+                    .font(.system(size: 13.5, weight: .bold))
+                Text(MoniLocalization.format(
+                    "%@ automatic tasks",
+                    suitePlan.taskDefinitions.count.formatted()
+                ))
+                .font(.system(size: 11.5))
+                .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            Spacer()
+        }
+        .padding(12)
+        .background(MoniPalette.insetSecondary)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var administratorTaskCount: Int {
+        (plan.optimization.taskDefinitions + plan.cleanup.taskDefinitions)
+            .reduce(into: 0) { count, definition in
+                if case .administrator = definition.authorization {
+                    count += 1
+                }
+            }
+    }
+}
+
 private struct MaintenanceSuiteReportView: View {
     let report: MaintenanceSuiteReport
     let onClose: () -> Void
@@ -3112,7 +3247,7 @@ private struct MaintenanceSuiteReportView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(MoniLocalization.format(
                     "%@ complete",
-                    MoniLocalization.string(report.suite.titleKey)
+                    MoniLocalization.string(report.titleKey)
                 ))
                 .font(.system(size: 18, weight: .bold))
                 Text("Completed actions and checks are summarized below.")

@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct ProjectArtifactCleanerView: View {
+    @Binding var mode: CleanerMode
     let refreshSystem: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var items: [ProjectArtifactItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var expandedProjectPaths: Set<String> = []
@@ -13,37 +15,45 @@ struct ProjectArtifactCleanerView: View {
     @State private var cleanupMessage: String?
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             header
-            summary
 
-            if isScanning {
-                if let scanProgress {
-                    CleanerScanProgressView(progress: scanProgress)
+            CleanerResultsCard {
+                if isScanning {
+                    if let scanProgress {
+                        CleanerScanProgressView(progress: scanProgress)
+                    } else {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else if items.isEmpty, failedRootCount > 0 {
+                    ContentUnavailableView(
+                        "Scan incomplete",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("Some project locations could not be fully scanned. Rescan to try again.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if items.isEmpty {
+                    ContentUnavailableView(
+                        "No project artifacts",
+                        systemImage: "hammer",
+                        description: Text("No rebuildable project dependencies or build output were found.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            } else if items.isEmpty, failedRootCount > 0 {
-                ContentUnavailableView(
-                    "Scan incomplete",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text("Some project locations could not be fully scanned. Rescan to try again.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if items.isEmpty {
-                ContentUnavailableView(
-                    "No project artifacts",
-                    systemImage: "hammer",
-                    description: Text("No rebuildable project dependencies or build output were found.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(spacing: 10) {
-                        ForEach(projectGroups, id: \.path) { group in
-                            projectPanel(path: group.path, items: group.items)
+                    CleanerSelectionHeader(
+                        symbol: selectionSymbol,
+                        selectedCount: selectedPaths.count,
+                        totalCount: items.count,
+                        onToggleAll: toggleAll
+                    )
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(projectGroups, id: \.path) { group in
+                                projectPanel(path: group.path, items: group.items)
+                            }
                         }
+                        .padding(6)
                     }
                 }
             }
@@ -69,76 +79,54 @@ struct ProjectArtifactCleanerView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Project Artifacts")
-                    .font(.system(size: 20, weight: .bold))
-                Text("Review rebuildable dependencies and build output before moving them to Trash.")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(MoniPalette.foregroundTertiary)
-            }
-
-            Spacer(minLength: 12)
-
-            Button {
+        CleanerPageHeader(
+            mode: $mode,
+            descriptionKey: "Review rebuildable dependencies and build output before moving them to Trash.",
+            selectedSize: artifactBytes(selectedKnownSize),
+            totalSize: artifactBytes(totalKnownSize),
+            countTitleKey: "Projects",
+            count: projectGroups.count.formatted(),
+            status: scanStatus,
+            statusColor: isScanning
+                ? MoniPalette.blue
+                : failedRootCount > 0 || unknownSizeCount > 0 ? MoniPalette.orange : MoniPalette.foregroundSecondary,
+            selectedItemCount: selectedPaths.count,
+            isScanning: isScanning,
+            isBusy: isCleaning,
+            reviewSystemImage: "trash",
+            breakdown: projectBreakdown,
+            onRescan: {
                 Task { await scan(useDefaultSelection: true) }
-            } label: {
-                Label(MoniLocalization.string("Rescan"), systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(.bordered)
-            .disabled(isScanning || isCleaning)
-
-            Button {
+            },
+            onReview: {
                 Task { await prepareCleanup() }
-            } label: {
-                Label(
-                    MoniLocalization.format("Review %@ items", selectedPaths.count.formatted()),
-                    systemImage: "trash"
-                )
             }
-            .buttonStyle(.borderedProminent)
-            .tint(MoniPalette.red)
-            .disabled(selectedPaths.isEmpty || isScanning || isCleaning)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
-        .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+        )
+    }
+
+    private var projectBreakdown: [CleanerBreakdownSegment] {
+        let colors = [MoniPalette.blue, MoniPalette.green, MoniPalette.orange, MoniPalette.purple, MoniPalette.cyan, MoniPalette.yellow]
+        return projectGroups.prefix(6).enumerated().compactMap { index, group in
+            let size = group.items.compactMap(\.sizeBytes).reduce(UInt64(0), addingWithoutOverflow)
+            guard size > 0 else { return nil }
+            return CleanerBreakdownSegment(
+                id: group.path,
+                title: URL(fileURLWithPath: group.path).lastPathComponent,
+                value: size,
+                color: colors[index % colors.count]
+            )
         }
     }
 
-    private var summary: some View {
-        HStack(spacing: 10) {
-            summaryCard("Reclaimable", artifactBytes(totalKnownSize), color: MoniPalette.green)
-            summaryCard("Selected", artifactBytes(selectedKnownSize), color: MoniPalette.blue)
-            summaryCard("Projects", projectGroups.count.formatted(), color: MoniPalette.orange)
-            if unknownSizeCount > 0 {
-                summaryCard("Unknown size", unknownSizeCount.formatted(), color: MoniPalette.yellow)
-            }
-            if failedRootCount > 0 {
-                summaryCard("Unavailable roots", failedRootCount.formatted(), color: MoniPalette.red)
-            }
+    private var scanStatus: String {
+        if isScanning { return MoniLocalization.string("Scanning…") }
+        if failedRootCount > 0 {
+            return MoniLocalization.format("%@ checks incomplete", failedRootCount.formatted())
         }
-    }
-
-    private func summaryCard(_ title: String, _ value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(MoniLocalization.string(title))
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(MoniPalette.foregroundTertiary)
-            Text(value)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
-                .foregroundStyle(color)
-                .lineLimit(1)
+        if unknownSizeCount > 0 {
+            return "\(unknownSizeCount.formatted()) \(MoniLocalization.string("Unknown size"))"
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MoniPalette.insetSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        return MoniLocalization.string("Ready")
     }
 
     private func projectPanel(path: String, items projectItems: [ProjectArtifactItem]) -> some View {
@@ -172,64 +160,63 @@ struct ProjectArtifactCleanerView: View {
                         Text(groupSizeLabel(projectItems))
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                             .foregroundStyle(MoniPalette.foregroundSecondary)
-                        Image(systemName: expandedProjectPaths.contains(path) ? "chevron.down" : "chevron.right")
+                        Image(systemName: "chevron.right")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(MoniPalette.foregroundTertiary)
                             .frame(width: 12)
+                            .rotationEffect(.degrees(expandedProjectPaths.contains(path) ? 90 : 0))
                     }
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 10)
+            .frame(height: 48)
 
             if expandedProjectPaths.contains(path) {
-                Divider().padding(.horizontal, 12)
+                VStack(spacing: 0) {
+                    Divider().padding(.leading, 48)
 
-                ForEach(projectItems) { item in
-                    Button {
-                        toggle(item.path)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 13.5, weight: .semibold))
-                                .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
-                                .frame(width: 20)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(item.name)
-                                    .font(.system(size: 12.5, weight: .medium))
-                                    .lineLimit(1)
-                                HStack(spacing: 6) {
-                                    Text(item.path)
-                                        .font(.system(size: 10.5))
-                                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                    ForEach(projectItems) { item in
+                        Button {
+                            toggle(item.path)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.name)
+                                        .font(.system(size: 12.5, weight: .medium))
                                         .lineLimit(1)
-                                        .truncationMode(.middle)
-                                    activityLabel(item)
+                                    HStack(spacing: 6) {
+                                        Text(item.path)
+                                            .font(.system(size: 10.5))
+                                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        activityLabel(item)
+                                    }
                                 }
+                                Spacer(minLength: 10)
+                                Text(item.sizeBytes.map(artifactBytes) ?? MoniLocalization.string("Unknown"))
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(MoniPalette.foregroundSecondary)
                             }
-                            Spacer(minLength: 10)
-                            Text(item.sizeBytes.map(artifactBytes) ?? MoniLocalization.string("Unknown"))
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundStyle(MoniPalette.foregroundSecondary)
+                            .padding(.horizontal, 10)
+                            .frame(height: 44)
+                            .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+                .transition(reduceMotion ? .identity : MoniMotion.disclosureTransition)
             }
         }
-        .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
-        }
+        .contentShape(Rectangle())
     }
 
     private func activityLabel(_ item: ProjectArtifactItem) -> some View {
@@ -294,6 +281,20 @@ struct ProjectArtifactCleanerView: View {
         return "square"
     }
 
+    private var selectionSymbol: String {
+        if selectedPaths.count == items.count { return "checkmark.square.fill" }
+        if !selectedPaths.isEmpty { return "minus.square.fill" }
+        return "square"
+    }
+
+    private func toggleAll() {
+        if selectedPaths.count == items.count {
+            selectedPaths.removeAll()
+        } else {
+            selectedPaths = Set(items.map(\.path))
+        }
+    }
+
     private func groupSizeLabel(_ projectItems: [ProjectArtifactItem]) -> String {
         let knownSize = projectItems.compactMap(\.sizeBytes).reduce(0, addingWithoutOverflow)
         return projectItems.contains { $0.sizeBytes == nil }
@@ -319,10 +320,12 @@ struct ProjectArtifactCleanerView: View {
     }
 
     private func toggleExpansion(of path: String) {
-        if expandedProjectPaths.contains(path) {
-            expandedProjectPaths.remove(path)
-        } else {
-            expandedProjectPaths.insert(path)
+        withAnimation(reduceMotion ? nil : MoniMotion.disclosure) {
+            if expandedProjectPaths.contains(path) {
+                expandedProjectPaths.remove(path)
+            } else {
+                expandedProjectPaths.insert(path)
+            }
         }
     }
 

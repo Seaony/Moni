@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct TrashCleanerView: View {
+    @Binding var mode: CleanerMode
     let refreshSystem: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var items: [TrashCleanupItem] = []
     @State private var selectedPaths: Set<String> = []
     @State private var expandedRootPaths: Set<String> = []
@@ -14,33 +16,41 @@ struct TrashCleanerView: View {
     @State private var cleanupMessage: String?
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             header
-            summary
 
-            if isScanning {
-                if let scanProgress {
-                    CleanerScanProgressView(progress: scanProgress)
+            CleanerResultsCard {
+                if isScanning {
+                    if let scanProgress {
+                        CleanerScanProgressView(progress: scanProgress)
+                    } else {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else if items.isEmpty {
+                    ContentUnavailableView(
+                        "Trash is empty",
+                        systemImage: "trash",
+                        description: Text("No removable items were found in the current user or mounted external volume Trash folders.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            } else if items.isEmpty {
-                ContentUnavailableView(
-                    "Trash is empty",
-                    systemImage: "trash",
-                    description: Text("No removable items were found in the current user or mounted external volume Trash folders.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(spacing: 10) {
-                        ForEach(trashRootPaths, id: \.self) { rootPath in
-                            rootPanel(
-                                rootPath: rootPath,
-                                items: items.filter { $0.trashRootPath == rootPath }
-                            )
+                    CleanerSelectionHeader(
+                        symbol: selectionSymbol,
+                        selectedCount: selectedPaths.count,
+                        totalCount: items.count,
+                        onToggleAll: toggleAll
+                    )
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(trashRootPaths, id: \.self) { rootPath in
+                                rootPanel(
+                                    rootPath: rootPath,
+                                    items: items.filter { $0.trashRootPath == rootPath }
+                                )
+                            }
                         }
+                        .padding(6)
                     }
                 }
             }
@@ -64,73 +74,52 @@ struct TrashCleanerView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Trash")
-                    .font(.system(size: 20, weight: .bold))
-                Text("Review Trash items before deleting them permanently. This action cannot be undone.")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(MoniPalette.foregroundTertiary)
-            }
-
-            Spacer(minLength: 12)
-
-            Button {
+        CleanerPageHeader(
+            mode: $mode,
+            descriptionKey: "Review Trash items before deleting them permanently. This action cannot be undone.",
+            selectedSize: trashBytes(selectedSize),
+            totalSize: trashBytes(totalSize),
+            countTitleKey: "Items",
+            count: items.count.formatted(),
+            status: scanStatus,
+            statusColor: isScanning
+                ? MoniPalette.blue
+                : unreadableItemCount > 0 ? MoniPalette.orange : MoniPalette.foregroundSecondary,
+            selectedItemCount: selectedPaths.count,
+            isScanning: isScanning,
+            isBusy: isCleaning,
+            reviewSystemImage: "trash.slash",
+            breakdown: trashBreakdown,
+            onRescan: {
                 Task { await scan() }
-            } label: {
-                Label(MoniLocalization.string("Rescan"), systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(.bordered)
-            .disabled(isScanning || isCleaning)
-
-            Button {
+            },
+            onReview: {
                 Task { await prepareCleanup() }
-            } label: {
-                Label(
-                    MoniLocalization.format("Review %@ items", selectedPaths.count.formatted()),
-                    systemImage: "trash.slash"
-                )
             }
-            .buttonStyle(.borderedProminent)
-            .tint(MoniPalette.red)
-            .disabled(selectedPaths.isEmpty || isScanning || isCleaning)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
-        .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+        )
+    }
+
+    private var trashBreakdown: [CleanerBreakdownSegment] {
+        let colors = [MoniPalette.blue, MoniPalette.green, MoniPalette.orange, MoniPalette.purple, MoniPalette.cyan, MoniPalette.yellow]
+        return trashRootPaths.prefix(6).enumerated().compactMap { index, rootPath in
+            let rootItems = items.lazy.filter { $0.trashRootPath == rootPath }
+            let size = rootItems.reduce(UInt64(0)) { addingWithoutOverflow($0, $1.sizeBytes) }
+            guard size > 0 else { return nil }
+            return CleanerBreakdownSegment(
+                id: rootPath,
+                title: rootItems.first?.locationName ?? rootPath,
+                value: size,
+                color: colors[index % colors.count]
+            )
         }
     }
 
-    private var summary: some View {
-        HStack(spacing: 10) {
-            summaryCard("Reclaimable", trashBytes(totalSize), color: MoniPalette.green)
-            summaryCard("Selected", trashBytes(selectedSize), color: MoniPalette.blue)
-            summaryCard("Items", items.count.formatted(), color: MoniPalette.orange)
-            if unreadableItemCount > 0 {
-                summaryCard("Unreadable", unreadableItemCount.formatted(), color: MoniPalette.red)
-            }
+    private var scanStatus: String {
+        if isScanning { return MoniLocalization.string("Scanning…") }
+        if unreadableItemCount > 0 {
+            return MoniLocalization.format("%@ unreadable", unreadableItemCount.formatted())
         }
-    }
-
-    private func summaryCard(_ title: String, _ value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(MoniLocalization.string(title))
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(MoniPalette.foregroundTertiary)
-            Text(value)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
-                .foregroundStyle(color)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MoniPalette.insetSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        return MoniLocalization.string("Ready")
     }
 
     private func rootPanel(rootPath: String, items rootItems: [TrashCleanupItem]) -> some View {
@@ -156,61 +145,60 @@ struct TrashCleanerView: View {
                         Text(trashBytes(rootItems.reduce(0) { addingWithoutOverflow($0, $1.sizeBytes) }))
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                             .foregroundStyle(MoniPalette.foregroundSecondary)
-                        Image(systemName: expandedRootPaths.contains(rootPath) ? "chevron.down" : "chevron.right")
+                        Image(systemName: "chevron.right")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(MoniPalette.foregroundTertiary)
                             .frame(width: 12)
+                            .rotationEffect(.degrees(expandedRootPaths.contains(rootPath) ? 90 : 0))
                     }
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 10)
+            .frame(height: 48)
 
             if expandedRootPaths.contains(rootPath) {
-                Divider().padding(.horizontal, 12)
+                VStack(spacing: 0) {
+                    Divider().padding(.leading, 48)
 
-                ForEach(rootItems) { item in
-                    Button {
-                        toggle(item.path)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 13.5, weight: .semibold))
-                                .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
-                                .frame(width: 20)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(URL(fileURLWithPath: item.path).lastPathComponent)
-                                    .font(.system(size: 12.5, weight: .medium))
-                                    .lineLimit(1)
-                                Text(item.path)
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                    ForEach(rootItems) { item in
+                        Button {
+                            toggle(item.path)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .foregroundStyle(selectedPaths.contains(item.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(URL(fileURLWithPath: item.path).lastPathComponent)
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .lineLimit(1)
+                                    Text(item.path)
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer(minLength: 10)
+                                Text(trashBytes(item.sizeBytes))
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(MoniPalette.foregroundSecondary)
                             }
-                            Spacer(minLength: 10)
-                            Text(trashBytes(item.sizeBytes))
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundStyle(MoniPalette.foregroundSecondary)
+                            .padding(.horizontal, 10)
+                            .frame(height: 44)
+                            .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .background(selectedPaths.contains(item.path) ? MoniPalette.selection.opacity(0.55) : Color.clear)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+                .transition(reduceMotion ? .identity : MoniMotion.disclosureTransition)
             }
         }
-        .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
-        }
+        .contentShape(Rectangle())
     }
 
     private var totalSize: UInt64 {
@@ -235,6 +223,20 @@ struct TrashCleanerView: View {
         if selectedCount == paths.count { return "checkmark.square.fill" }
         if selectedCount > 0 { return "minus.square.fill" }
         return "square"
+    }
+
+    private var selectionSymbol: String {
+        if selectedPaths.count == items.count { return "checkmark.square.fill" }
+        if !selectedPaths.isEmpty { return "minus.square.fill" }
+        return "square"
+    }
+
+    private func toggleAll() {
+        if selectedPaths.count == items.count {
+            selectedPaths.removeAll()
+        } else {
+            selectedPaths = Set(items.map(\.path))
+        }
     }
 
     private var cleanupMessageBinding: Binding<Bool> {
@@ -262,10 +264,12 @@ struct TrashCleanerView: View {
     }
 
     private func toggleExpansion(of rootPath: String) {
-        if expandedRootPaths.contains(rootPath) {
-            expandedRootPaths.remove(rootPath)
-        } else {
-            expandedRootPaths.insert(rootPath)
+        withAnimation(reduceMotion ? nil : MoniMotion.disclosure) {
+            if expandedRootPaths.contains(rootPath) {
+                expandedRootPaths.remove(rootPath)
+            } else {
+                expandedRootPaths.insert(rootPath)
+            }
         }
     }
 

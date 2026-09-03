@@ -4,6 +4,7 @@ enum MoniMotion {
     static let press = Animation.easeOut(duration: 0.12)
     static let data = Animation.easeOut(duration: 0.24)
     static let standard = Animation.spring(response: 0.32, dampingFraction: 0.86)
+    static let disclosure = Animation.spring(response: 0.3, dampingFraction: 0.9)
     static let navigation = Animation.spring(response: 0.38, dampingFraction: 0.9)
     static let dashboardReflow = Animation.interactiveSpring(
         response: 0.5,
@@ -21,6 +22,9 @@ enum MoniMotion {
     )
     static let itemTransition = AnyTransition.opacity.combined(
         with: .scale(scale: 0.96, anchor: .center)
+    )
+    static let disclosureTransition = AnyTransition.opacity.combined(
+        with: .scale(scale: 0.985, anchor: .top)
     )
 }
 

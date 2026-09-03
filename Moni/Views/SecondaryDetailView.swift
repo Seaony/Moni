@@ -821,16 +821,81 @@ private struct DockerDetailView: View {
     }
 }
 
+private enum DiskBrowserPalette {
+    static let surface = adaptive(light: 0xFFFFFF, dark: 0x161616)
+    static let surfaceHover = adaptive(light: 0xF4F4F7, dark: 0x1F1F1F)
+    static let border = adaptive(light: 0xD9D9DE, dark: 0x242424)
+    static let selectedSurface = adaptive(light: 0xE4EFFF, dark: 0x16233A)
+    static let selectedBorder = adaptive(light: 0x86B9F3, dark: 0x2C4A75)
+    static let toolbarLine = adaptive(light: 0xD9D9DE, dark: 0x212121)
+    static let headerLine = adaptive(light: 0xE0E0E4, dark: 0x1E1E1E)
+    static let control = adaptive(light: 0xF1F1F4, dark: 0x1F1F1F)
+    static let controlBorder = adaptive(light: 0xD2D2D8, dark: 0x2C2C2C)
+    static let segment = adaptive(light: 0xECECF0, dark: 0x1C1C1C)
+    static let track = adaptive(light: 0xD9D9DE, dark: 0x2A2A2A)
+    static let primary = adaptive(light: 0x16161A, dark: 0xFFFFFF)
+    static let secondary = adaptive(light: 0x48484A, dark: 0xE5E5EA)
+    static let tertiary = adaptive(light: 0x636366, dark: 0x8E8E93)
+    static let muted = adaptive(light: 0x8E8E93, dark: 0x636366)
+    static let disabled = adaptive(light: 0xAEAEB2, dark: 0x4A4A4D)
+
+    private static func adaptive(light: UInt32, dark: UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(
+                srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255,
+                alpha: 1
+            )
+        })
+    }
+}
+
+private struct DiskBrowserHoverSurface: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    let background: Color
+    let hoverBackground: Color
+    let border: Color
+    let hoverBorder: Color
+    let cornerRadius: CGFloat
+    var lineWidth: CGFloat = 1
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background(shape.fill(isHovered ? hoverBackground : background))
+            .overlay {
+                shape.strokeBorder(isHovered ? hoverBorder : border, lineWidth: lineWidth)
+            }
+            .clipShape(shape)
+            .onHover { isHovered = $0 }
+            .animation(reduceMotion ? nil : MoniMotion.press, value: isHovered)
+    }
+}
+
 private struct DiskBrowserView: View {
     private enum BrowserMode: String, CaseIterable {
         case contents
         case largestFiles
+        case analysis
+
+        var titleKey: String {
+            switch self {
+            case .contents: "Contents"
+            case .largestFiles: "Largest Files"
+            case .analysis: "Analysis"
+            }
+        }
     }
 
     struct FileItem: Identifiable, Sendable {
         let url: URL
         let isDirectory: Bool
         let size: UInt64
+        let itemCount: Int?
         let modified: Date?
         var id: String { url.path }
     }
@@ -838,6 +903,27 @@ private struct DiskBrowserView: View {
     private struct LoadResult: Sendable {
         let items: [FileItem]
         let error: String?
+    }
+
+    private struct QuickLocation: Identifiable {
+        let titleKey: String
+        let path: String
+
+        var id: String { path }
+    }
+
+    private struct PathComponent: Identifiable {
+        let title: String
+        let path: String
+
+        var id: String { path }
+    }
+
+    private struct AnalysisEntry: Identifiable {
+        let item: FileItem
+        let size: UInt64
+
+        var id: String { item.id }
     }
 
     @EnvironmentObject private var monitor: SystemMonitor
@@ -849,6 +935,7 @@ private struct DiskBrowserView: View {
     @State private var browserMode = BrowserMode.contents
     @State private var searchText = ""
     @State private var analysisSizes: [String: UInt64] = [:]
+    @State private var knownSizes: [String: UInt64] = [:]
     @State private var largestFiles: [DiskAnalysisFile] = []
     @State private var scannedFileCount = 0
     @State private var scannedBytes: UInt64 = 0
@@ -861,134 +948,135 @@ private struct DiskBrowserView: View {
     @State private var pendingCleanupPlan: CleanupPlan?
     @State private var isCleaning = false
     @State private var cleanupMessage: String?
-    @State private var localSnapshotCount: Int?
+    @State private var isUpHovered = false
+    @State private var hoveredPath: String?
+    @State private var hoveredMode: BrowserMode?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text("VOLUMES")
                     .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                    .tracking(0.7)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .foregroundStyle(DiskBrowserPalette.muted)
+                    .tracking(0.3)
+                    .padding(.leading, 3)
 
                 ForEach(monitor.snapshot.volumes) { volume in
                     Button {
                         selectedPath = volume.mountPath
                     } label: {
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 0) {
                             HStack(alignment: .firstTextBaseline) {
                                 Text(volume.name)
-                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .font(.system(size: 13.5, weight: .bold))
+                                    .foregroundStyle(DiskBrowserPalette.primary)
                                     .lineLimit(1)
                                 Spacer()
                                 Text(percent(volume.usedPercent))
                                     .font(.system(size: 13, weight: .bold))
                                     .foregroundStyle(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
                             }
-                            ProgressView(value: volume.usedPercent, total: 100)
-                                .tint(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
-                            Text("\(bytes(UInt64(volume.usedBytes))) of \(bytes(UInt64(volume.totalBytes)))")
-                                .font(.system(size: 12))
-                                .foregroundStyle(MoniPalette.foregroundTertiary)
+                            GeometryReader { geometry in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(DiskBrowserPalette.track)
+                                    Capsule()
+                                        .fill(volume.usedPercent >= 90 ? MoniPalette.red : MoniPalette.orange)
+                                        .frame(width: geometry.size.width * min(1, max(0, volume.usedPercent / 100)))
+                                }
+                            }
+                            .frame(height: 6)
+                            .padding(.top, 8)
+                            HStack {
+                                Text("\(bytes(UInt64(volume.usedBytes))) / \(bytes(UInt64(volume.totalBytes)))")
+                                Spacer(minLength: 4)
+                                Text(MoniLocalization.format("%@ available", bytes(UInt64(volume.availableBytes))))
+                            }
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(DiskBrowserPalette.tertiary)
+                            .padding(.top, 7)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 11)
-                        .background(isWithin(volume) ? MoniPalette.selection : MoniPalette.insetSecondary)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(isWithin(volume) ? MoniPalette.blue.opacity(0.5) : Color.clear, lineWidth: 1)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 12)
                         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .buttonStyle(MoniPressButtonStyle())
+                    .modifier(DiskBrowserHoverSurface(
+                        background: isWithin(volume) ? DiskBrowserPalette.selectedSurface : DiskBrowserPalette.surface,
+                        hoverBackground: isWithin(volume) ? DiskBrowserPalette.selectedSurface : DiskBrowserPalette.surfaceHover,
+                        border: isWithin(volume) ? DiskBrowserPalette.selectedBorder : DiskBrowserPalette.border,
+                        hoverBorder: isWithin(volume) ? DiskBrowserPalette.selectedBorder : DiskBrowserPalette.controlBorder,
+                        cornerRadius: 12
+                    ))
                 }
-                Spacer()
+
+                Text("QUICK LOCATIONS")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(DiskBrowserPalette.muted)
+                    .tracking(0.3)
+                    .padding(.leading, 3)
+                    .padding(.top, 4)
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 2) {
+                        ForEach(quickLocations, id: \.path) { location in
+                            Button {
+                                selectedPath = location.path
+                            } label: {
+                                HStack(spacing: 9) {
+                                    Image(systemName: "folder")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(MoniPalette.blue)
+                                        .frame(width: 14)
+                                    Text(MoniLocalization.string(location.titleKey))
+                                        .font(.system(size: 12.5))
+                                        .foregroundStyle(DiskBrowserPalette.secondary)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    Text(quickLocationSize(location.path))
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(DiskBrowserPalette.tertiary)
+                                        .monospacedDigit()
+                                }
+                                .padding(.horizontal, 9)
+                                .frame(height: 32)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+                            .modifier(DiskBrowserHoverSurface(
+                                background: selectedPath == location.path ? DiskBrowserPalette.surfaceHover : .clear,
+                                hoverBackground: DiskBrowserPalette.surfaceHover,
+                                border: .clear,
+                                hoverBorder: .clear,
+                                cornerRadius: 8,
+                                lineWidth: 0
+                            ))
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(maxHeight: .infinity)
+                .background(DiskBrowserPalette.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(DiskBrowserPalette.border, lineWidth: 1)
+                }
             }
-            .frame(width: 250)
+            .frame(width: 236)
 
             VStack(spacing: 0) {
                 browserToolbar
-                Divider()
-                columnHeader
-                Divider()
-
-                if pendingLoadPath == selectedPath {
-                    Group {
-                        if loadingPath == selectedPath {
-                            HStack(spacing: 9) {
-                                ProgressView().controlSize(.small)
-                                Text("Reading folder…")
-                                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                            }
-                            .font(.system(size: 12.5))
-                        } else {
-                            Color.clear
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(MoniMotion.itemTransition)
-                } else if let loadError {
-                    ContentUnavailableView(
-                        "Unable to read folder",
-                        systemImage: "folder.badge.questionmark",
-                        description: Text(loadError)
-                    )
-                    .transition(MoniMotion.itemTransition)
-                } else if browserMode == .contents, items.isEmpty {
-                    ContentUnavailableView(
-                        "Empty folder",
-                        systemImage: "folder",
-                        description: Text("Nothing visible in this folder.")
-                    )
-                    .transition(MoniMotion.itemTransition)
-                } else if browserMode == .largestFiles, analyzedPath != selectedPath {
-                    VStack(spacing: 10) {
-                        Image(systemName: "externaldrive.badge.magnifyingglass")
-                            .font(.system(size: 30))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                        Text(MoniLocalization.string("Analyze this folder to find its largest files."))
-                            .font(.system(size: 13))
-                            .foregroundStyle(MoniPalette.foregroundSecondary)
-                        Button(MoniLocalization.string("Analyze")) {
-                            startAnalysis()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if browserMode == .largestFiles, visibleLargestFiles.isEmpty {
-                    ContentUnavailableView(
-                        "No files found",
-                        systemImage: "doc",
-                        description: Text("The completed scan did not find any files in this folder.")
-                    )
-                } else {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        LazyVStack(spacing: 2) {
-                            if browserMode == .contents {
-                                ForEach(visibleItems) { item in
-                                    browserRow(item)
-                                }
-                            } else {
-                                ForEach(visibleLargestFiles) { file in
-                                    largestFileRow(file)
-                                }
-                            }
-                        }
-                        .moniAnimation(value: browserMode == .contents ? visibleItems.map(\.id) : visibleLargestFiles.map(\.id))
-                    }
-                }
+                browserContent
+                browserFooter
             }
-            .padding(6)
-            .background(MoniPalette.insetSecondary)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(DiskBrowserPalette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(MoniPalette.line, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(DiskBrowserPalette.border, lineWidth: 1)
             }
         }
+        .padding(.horizontal, -2)
         .moniAnimation(value: loadingPath)
         .moniAnimation(value: loadError)
         .onChange(of: selectedPath) { _, newPath in
@@ -1000,6 +1088,9 @@ private struct DiskBrowserView: View {
         }
         .onDisappear {
             analysisTask?.cancel()
+        }
+        .task {
+            monitor.loadStorageFoldersIfNeeded()
         }
         .task(id: selectedPath) {
             let requestedPath = selectedPath
@@ -1031,9 +1122,6 @@ private struct DiskBrowserView: View {
             pendingLoadPath = nil
             loadingPath = nil
         }
-        .task {
-            localSnapshotCount = await TimeMachineSnapshotService.localSnapshotCount()
-        }
         .sheet(item: $pendingCleanupPlan) { plan in
             CleanupConfirmationView(
                 plan: plan,
@@ -1052,60 +1140,96 @@ private struct DiskBrowserView: View {
     }
 
     private var browserToolbar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Button {
                 let parent = URL(fileURLWithPath: selectedPath).deletingLastPathComponent().path
                 selectedPath = parent.isEmpty ? "/" : parent
             } label: {
                 Image(systemName: "chevron.up")
-                    .frame(width: 24, height: 24)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(isVolumeRoot ? DiskBrowserPalette.disabled : DiskBrowserPalette.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(isUpHovered && !isVolumeRoot ? DiskBrowserPalette.controlBorder : DiskBrowserPalette.control)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .contentShape(Rectangle())
             }
             .buttonStyle(MoniPressButtonStyle())
             .disabled(isVolumeRoot)
+            .onHover { isUpHovered = $0 }
 
-            VStack(alignment: .leading, spacing: 2) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 3) {
+                    ForEach(pathComponents, id: \.path) { component in
+                        Button {
+                            selectedPath = component.path
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text(component.title)
+                                    .fontWeight(component.path == selectedPath ? .bold : .regular)
+                                if component.path != selectedPath {
+                                    Text("›")
+                                        .foregroundStyle(DiskBrowserPalette.tertiary)
+                                }
+                            }
+                            .foregroundStyle(
+                                component.path == selectedPath || hoveredPath == component.path
+                                    ? DiskBrowserPalette.primary
+                                    : DiskBrowserPalette.tertiary
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .moniPointingHand()
+                        .onHover { hovering in
+                            hoveredPath = hovering ? component.path : nil
+                        }
+                    }
+                }
+
                 Text(selectedPath)
+                    .foregroundStyle(DiskBrowserPalette.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if analyzedPath == selectedPath {
-                    Text(analysisStatus)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                if selectedPath == "/", let localSnapshotCount, localSnapshotCount > 0 {
-                    Text(
-                        MoniLocalization.format(
-                            localSnapshotCount == 1
-                                ? "%@ Time Machine local snapshot · snapshot-only space is not listed"
-                                : "%@ Time Machine local snapshots · snapshot-only space is not listed",
-                            localSnapshotCount.formatted()
-                        )
-                    )
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                    .lineLimit(1)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             TextField(MoniLocalization.string("Filter"), text: $searchText)
                 .textFieldStyle(.plain)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .frame(width: 130)
-                .background(MoniPalette.control)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(.horizontal, 10)
+                .frame(width: 150, height: 28)
+                .background(DiskBrowserPalette.control)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(DiskBrowserPalette.controlBorder, lineWidth: 1)
+                }
 
-            Picker("", selection: $browserMode) {
-                Text(MoniLocalization.string("Contents")).tag(BrowserMode.contents)
-                Text(MoniLocalization.string("Largest Files")).tag(BrowserMode.largestFiles)
+            HStack(spacing: 2) {
+                ForEach(BrowserMode.allCases, id: \.self) { mode in
+                    Button {
+                        browserMode = mode
+                    } label: {
+                        Text(MoniLocalization.string(mode.titleKey))
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(browserMode == mode ? .white : DiskBrowserPalette.tertiary)
+                            .padding(.horizontal, 12)
+                            .frame(height: 26)
+                            .background(
+                                browserMode == mode
+                                    ? MoniPalette.blue
+                                    : (hoveredMode == mode ? DiskBrowserPalette.surfaceHover : Color.clear)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+                    .onHover { hovering in
+                        hoveredMode = hovering ? mode : nil
+                    }
+                }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 170)
+            .padding(2)
+            .background(DiskBrowserPalette.segment)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             if !selectedCleanupPaths.isEmpty {
                 Button {
@@ -1119,161 +1243,517 @@ private struct DiskBrowserView: View {
                 .help(MoniLocalization.string("Preview selected items before moving them to Trash"))
             }
 
-            Button {
-                analyzingPath == nil ? startAnalysis() : cancelAnalysis()
-            } label: {
-                HStack(spacing: 6) {
-                    if analyzingPath != nil {
-                        ProgressView().controlSize(.small)
-                    }
-                    Text(MoniLocalization.string(analyzingPath == nil ? "Analyze" : "Stop"))
-                }
-                .frame(minWidth: 62)
-            }
-            .buttonStyle(.bordered)
         }
         .font(.system(size: 12))
-        .foregroundStyle(MoniPalette.foregroundSecondary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .foregroundStyle(DiskBrowserPalette.tertiary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(DiskBrowserPalette.toolbarLine)
+                .frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var browserContent: some View {
+        switch browserMode {
+        case .contents:
+            columnHeader
+            if pendingLoadPath == selectedPath {
+                loadingView
+            } else if let loadError {
+                ContentUnavailableView(
+                    "Unable to read folder",
+                    systemImage: "folder.badge.questionmark",
+                    description: Text(loadError)
+                )
+                .transition(MoniMotion.itemTransition)
+            } else if items.isEmpty {
+                ContentUnavailableView(
+                    "Empty folder",
+                    systemImage: "folder",
+                    description: Text("Nothing visible in this folder.")
+                )
+                .transition(MoniMotion.itemTransition)
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 2) {
+                        ForEach(visibleItems) { item in
+                            browserRow(item)
+                        }
+                    }
+                    .padding(5)
+                    .moniAnimation(value: visibleItems.map(\.id))
+                }
+            }
+
+        case .largestFiles:
+            columnHeader
+            if analyzedPath != selectedPath {
+                analysisPrompt("Analyze this folder to find its largest files.")
+            } else if visibleLargestFiles.isEmpty {
+                ContentUnavailableView(
+                    "No files found",
+                    systemImage: "doc",
+                    description: Text("The completed scan did not find any files in this folder.")
+                )
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 2) {
+                        ForEach(visibleLargestFiles) { file in
+                            largestFileRow(file)
+                        }
+                    }
+                    .padding(5)
+                    .moniAnimation(value: visibleLargestFiles.map(\.id))
+                }
+            }
+
+        case .analysis:
+            if analyzedPath != selectedPath {
+                analysisPrompt("Analyze this folder to see how its space is distributed.")
+            } else {
+                analysisView
+            }
+        }
+    }
+
+    private var loadingView: some View {
+        Group {
+            if loadingPath == selectedPath {
+                HStack(spacing: 9) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading folder…")
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                }
+                .font(.system(size: 12.5))
+            } else {
+                Color.clear
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .transition(MoniMotion.itemTransition)
+    }
+
+    private func analysisPrompt(_ descriptionKey: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "externaldrive.badge.magnifyingglass")
+                .font(.system(size: 30))
+                .foregroundStyle(MoniPalette.foregroundTertiary)
+            Text(MoniLocalization.string(descriptionKey))
+                .font(.system(size: 13))
+                .foregroundStyle(MoniPalette.foregroundSecondary)
+            Button(MoniLocalization.string("Analyze")) {
+                startAnalysis()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var analysisView: some View {
+        let entries = analysisEntries
+        let total = entries.reduce(UInt64(0)) { clampedSum($0, $1.size) }
+        return ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(MoniLocalization.string("Current directory total"))
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                    Text(bytes(total))
+                        .font(.system(size: 44, weight: .bold))
+                        .tracking(-1.8)
+                        .moniNumericTransition(total)
+                    if analyzingPath != nil {
+                        Text(analysisStatus)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                if !entries.isEmpty {
+                    GeometryReader { geometry in
+                        let chartEntries = Array(entries.prefix(12))
+                        let spacing = CGFloat(max(0, chartEntries.count - 1)) * 1.5
+                        let availableWidth = max(0, geometry.size.width - spacing)
+                        HStack(spacing: 1.5) {
+                            ForEach(Array(chartEntries.enumerated()), id: \.element.item.id) { index, entry in
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .fill(analysisColor(index))
+                                    .frame(width: max(3, availableWidth * CGFloat(entry.size) / CGFloat(max(1, total))))
+                            }
+                        }
+                        .clipShape(Capsule())
+                    }
+                    .frame(height: 14)
+
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
+                        ForEach(Array(entries.prefix(10).enumerated()), id: \.element.item.id) { index, entry in
+                            HStack(spacing: 9) {
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .fill(analysisColor(index))
+                                    .frame(width: 8, height: 8)
+                                Text(entry.item.url.lastPathComponent)
+                                    .font(.system(size: 12.5))
+                                    .lineLimit(1)
+                                Spacer(minLength: 6)
+                                Text(bytes(entry.size))
+                                    .font(.system(size: 12.5, weight: .bold, design: .rounded))
+                                Text(percent(total == 0 ? 0 : Double(entry.size) / Double(total) * 100))
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(MoniPalette.foregroundTertiary)
+                                    .frame(width: 38, alignment: .trailing)
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 38)
+                            .modifier(DiskBrowserHoverSurface(
+                                background: DiskBrowserPalette.segment,
+                                hoverBackground: DiskBrowserPalette.surfaceHover,
+                                border: DiskBrowserPalette.border,
+                                hoverBorder: DiskBrowserPalette.controlBorder,
+                                cornerRadius: 9
+                            ))
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+        }
+    }
+
+    private var browserFooter: some View {
+        HStack {
+            let count = browserMode == .largestFiles ? visibleLargestFiles.count : visibleItems.count
+            Text(MoniLocalization.format(
+                "%@ items · %@ total",
+                count.formatted(),
+                bytes(browserMode == .analysis ? analysisTotal : visibleTotal)
+            ))
+            Spacer()
+            Text(fileSystemSummary)
+        }
+        .font(.system(size: 11.5))
+        .foregroundStyle(DiskBrowserPalette.tertiary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(DiskBrowserPalette.toolbarLine)
+                .frame(height: 1)
+        }
     }
 
     private var columnHeader: some View {
-        HStack(spacing: 8) {
-            Color.clear.frame(width: 22, height: 22)
+        HStack(spacing: 0) {
             if browserMode == .contents {
                 Text("Name").frame(maxWidth: .infinity, alignment: .leading)
-                Text("Size").frame(width: 110, alignment: .trailing)
-                Text("Modified").frame(width: 130, alignment: .trailing)
+                Text("Percentage").frame(width: 150, alignment: .leading)
+                Text("Size").frame(width: 82, alignment: .trailing)
+                Text("Items").frame(width: 64, alignment: .trailing)
+                Text("Modified").frame(width: 132, alignment: .trailing)
             } else {
-                Text("File").frame(width: 190, alignment: .leading)
-                Text("Location").frame(maxWidth: .infinity, alignment: .leading)
+                Text("Largest files").frame(maxWidth: .infinity, alignment: .leading)
                 Text("Size").frame(width: 110, alignment: .trailing)
+                Text("Modified").frame(width: 132, alignment: .trailing)
             }
         }
-        .font(.system(size: 11.5, weight: .semibold))
-        .foregroundStyle(MoniPalette.foregroundTertiary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .font(.system(size: 11.5))
+        .foregroundStyle(DiskBrowserPalette.muted)
+        .padding(.horizontal, 14)
+        .frame(height: 32)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(DiskBrowserPalette.headerLine)
+                .frame(height: 1)
+        }
     }
 
     private func browserRow(_ item: FileItem) -> some View {
-        HStack(spacing: 8) {
-            Button {
-                toggleCleanupSelection(item.url.path)
-            } label: {
-                Image(systemName: selectedCleanupPaths.contains(item.url.path) ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(selectedCleanupPaths.contains(item.url.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
+        Button {
+            if item.isDirectory {
+                selectedPath = item.url.path
+            } else {
+                NSWorkspace.shared.activateFileViewerSelecting([item.url])
             }
-            .buttonStyle(.plain)
-            .help(MoniLocalization.string(selectedCleanupPaths.contains(item.url.path) ? "Remove from cleanup" : "Select for cleanup"))
-
-            Button {
-                if item.isDirectory {
-                    selectedPath = item.url.path
-                } else {
-                    NSWorkspace.shared.activateFileViewerSelecting([item.url])
+        } label: {
+            HStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: item.isDirectory ? "folder" : "doc")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(item.isDirectory ? MoniPalette.blue : DiskBrowserPalette.tertiary)
+                    Text(item.url.lastPathComponent)
+                        .font(.system(size: 13))
+                        .foregroundStyle(DiskBrowserPalette.primary)
+                        .lineLimit(1)
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    HStack(spacing: 9) {
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(item.isDirectory ? MoniPalette.blue : MoniPalette.foregroundTertiary)
-                            .frame(width: 8, height: 8)
-                        Text(item.url.lastPathComponent).lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(itemSize(item))
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
-                        .frame(width: 110, alignment: .trailing)
-                    Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                        .frame(width: 130, alignment: .trailing)
-                }
-                .font(.system(size: 13))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+
+                HStack(spacing: 8) {
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(DiskBrowserPalette.track)
+                            Capsule()
+                                .fill(item.isDirectory ? MoniPalette.blue : DiskBrowserPalette.disabled)
+                                .frame(width: geometry.size.width * itemFraction(item))
+                        }
+                    }
+                    .frame(height: 4)
+                    Text(itemPercentage(item))
+                        .font(.system(size: 11))
+                        .foregroundStyle(DiskBrowserPalette.tertiary)
+                        .frame(width: 36, alignment: .trailing)
+                }
+                .frame(width: 150)
+                Text(itemSize(item))
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(DiskBrowserPalette.secondary)
+                    .frame(width: 82, alignment: .trailing)
+                Text(item.itemCount.map { $0.formatted() } ?? "—")
+                    .font(.system(size: 12))
+                    .foregroundStyle(DiskBrowserPalette.tertiary)
+                    .frame(width: 64, alignment: .trailing)
+                Text(item.modified?.formatted(date: .abbreviated, time: .shortened) ?? "—")
+                    .font(.system(size: 12))
+                    .foregroundStyle(DiskBrowserPalette.tertiary)
+                    .frame(width: 132, alignment: .trailing)
             }
-            .buttonStyle(MoniPressButtonStyle(scale: 0.99))
-            .contextMenu {
-                Button(MoniLocalization.string("Open")) {
-                    NSWorkspace.shared.open(item.url)
-                }
-                Button(MoniLocalization.string("Show in Finder")) {
-                    NSWorkspace.shared.activateFileViewerSelecting([item.url])
-                }
+            .padding(.horizontal, 9)
+            .frame(height: 40)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+        .modifier(DiskBrowserHoverSurface(
+            background: .clear,
+            hoverBackground: DiskBrowserPalette.surfaceHover,
+            border: .clear,
+            hoverBorder: .clear,
+            cornerRadius: 8,
+            lineWidth: 0
+        ))
+        .contextMenu {
+            Button(MoniLocalization.string("Open")) {
+                NSWorkspace.shared.open(item.url)
+            }
+            Button(MoniLocalization.string("Show in Finder")) {
+                NSWorkspace.shared.activateFileViewerSelecting([item.url])
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(selectedCleanupPaths.contains(item.url.path) ? MoniPalette.selection : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .transition(MoniMotion.itemTransition)
     }
 
     private func largestFileRow(_ file: DiskAnalysisFile) -> some View {
         let url = URL(fileURLWithPath: file.path)
-        return HStack(spacing: 8) {
-            Button {
-                toggleCleanupSelection(file.path)
-            } label: {
-                Image(systemName: selectedCleanupPaths.contains(file.path) ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(selectedCleanupPaths.contains(file.path) ? MoniPalette.blue : MoniPalette.foregroundQuaternary)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(MoniLocalization.string(selectedCleanupPaths.contains(file.path) ? "Remove from cleanup" : "Select for cleanup"))
-
-            Button {
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            } label: {
-                HStack(spacing: 9) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(MoniPalette.orange)
-                        .frame(width: 8, height: 8)
-                    Text(url.lastPathComponent).lineLimit(1)
+        return Button {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } label: {
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(url.lastPathComponent)
+                        .font(.system(size: 13))
+                        .foregroundStyle(DiskBrowserPalette.primary)
+                        .lineLimit(1)
+                    Text(url.deletingLastPathComponent().path)
+                        .font(.system(size: 11))
+                        .foregroundStyle(DiskBrowserPalette.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                .frame(width: 190, alignment: .leading)
-                Text(url.deletingLastPathComponent().path)
-                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Text(bytes(file.sizeBytes))
-                    .fontWeight(.semibold)
-                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                    .font(.system(size: 13.5, weight: .bold))
+                    .foregroundStyle(MoniPalette.orange)
                     .frame(width: 110, alignment: .trailing)
+                Text("—")
+                    .font(.system(size: 12))
+                    .foregroundStyle(DiskBrowserPalette.tertiary)
+                    .frame(width: 132, alignment: .trailing)
             }
-            .font(.system(size: 13))
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 9)
+            .frame(height: 46)
             .contentShape(Rectangle())
-            .buttonStyle(MoniPressButtonStyle(scale: 0.99))
-            .contextMenu {
-                Button(MoniLocalization.string("Open")) {
-                    NSWorkspace.shared.open(url)
-                }
-                Button(MoniLocalization.string("Show in Finder")) {
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                }
+        }
+        .buttonStyle(MoniPressButtonStyle(scale: 0.99))
+        .modifier(DiskBrowserHoverSurface(
+            background: .clear,
+            hoverBackground: DiskBrowserPalette.surfaceHover,
+            border: .clear,
+            hoverBorder: .clear,
+            cornerRadius: 8,
+            lineWidth: 0
+        ))
+        .contextMenu {
+            Button(MoniLocalization.string("Open")) {
+                NSWorkspace.shared.open(url)
+            }
+            Button(MoniLocalization.string("Show in Finder")) {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(selectedCleanupPaths.contains(file.path) ? MoniPalette.selection : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .transition(MoniMotion.itemTransition)
+    }
+
+    private var quickLocations: [QuickLocation] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            QuickLocation(titleKey: "Downloads", path: home.appendingPathComponent("Downloads").path),
+            QuickLocation(titleKey: "Documents", path: home.appendingPathComponent("Documents").path),
+            QuickLocation(titleKey: "Desktop", path: home.appendingPathComponent("Desktop").path),
+            QuickLocation(titleKey: "Projects", path: home.appendingPathComponent("Projects").path),
+            QuickLocation(titleKey: "Applications", path: "/Applications"),
+            QuickLocation(titleKey: "Library", path: home.appendingPathComponent("Library").path)
+        ]
+        return candidates.filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private var pathComponents: [PathComponent] {
+        guard selectedPath != "/" else {
+            return [PathComponent(title: "/", path: "/")]
+        }
+        let parts = selectedPath.split(separator: "/").map(String.init)
+        var path = ""
+        var components = [PathComponent(title: "/", path: "/")]
+        for part in parts {
+            path += "/" + part
+            components.append(PathComponent(title: part, path: path))
+        }
+        return components
+    }
+
+    private var analysisEntries: [AnalysisEntry] {
+        visibleItems.compactMap { item in
+            let size = analysisSizes[item.url.path] ?? (item.isDirectory ? nil : item.size)
+            guard let size, size > 0 else { return nil }
+            return AnalysisEntry(item: item, size: size)
+        }
+        .sorted {
+            if $0.size != $1.size { return $0.size > $1.size }
+            return $0.item.url.lastPathComponent.localizedStandardCompare($1.item.url.lastPathComponent) == .orderedAscending
+        }
+    }
+
+    private var analysisTotal: UInt64 {
+        analysisEntries.reduce(UInt64(0)) { clampedSum($0, $1.size) }
+    }
+
+    private func itemFraction(_ item: FileItem) -> CGFloat {
+        guard let size = displayedSize(item), maximumEntrySize > 0 else { return 0 }
+        return CGFloat(min(1, Double(size) / Double(maximumEntrySize)))
+    }
+
+    private func itemPercentage(_ item: FileItem) -> String {
+        guard let size = displayedSize(item), contentTotal > 0 else { return "—" }
+        return percent(Double(size) / Double(contentTotal) * 100)
+    }
+
+    private var maximumEntrySize: UInt64 {
+        visibleItems.reduce(UInt64(0)) { current, item in
+            max(current, displayedSize(item) ?? 0)
+        }
+    }
+
+    private var displayedTotal: UInt64 {
+        visibleItems.reduce(UInt64(0)) { total, item in
+            clampedSum(total, displayedSize(item) ?? 0)
+        }
+    }
+
+    private var contentTotal: UInt64 {
+        if selectedPath == "/", analyzedPath != selectedPath, let volume = selectedVolume {
+            return UInt64(max(0, volume.usedBytes))
+        }
+        return displayedTotal
+    }
+
+    private func displayedSize(_ item: FileItem) -> UInt64? {
+        if let size = analysisSizes[item.url.path] ?? knownSizes[item.url.path] {
+            return size
+        }
+        if !item.isDirectory {
+            return item.size
+        }
+        return cachedStorageSize(item.url.path)
+    }
+
+    private func cachedStorageSize(_ path: String) -> UInt64? {
+        if let exact = monitor.largestFolders.first(where: { $0.path == path }) {
+            return exact.sizeBytes
+        }
+        if path == "/Users" {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            return monitor.largestFolders.first(where: { $0.path == home })?.sizeBytes
+        }
+        return nil
+    }
+
+    private func quickLocationSize(_ path: String) -> String {
+        if let size = knownSizes[path] ?? analysisSizes[path] {
+            return bytes(size)
+        }
+        if analyzedPath == path, analysisTotal > 0 {
+            return bytes(analysisTotal)
+        }
+        if let size = cachedStorageSize(path) {
+            return bytes(size)
+        }
+        return "—"
+    }
+
+    private var visibleTotal: UInt64 {
+        switch browserMode {
+        case .contents, .analysis:
+            return contentTotal
+        case .largestFiles:
+            return visibleLargestFiles.reduce(UInt64(0)) { clampedSum($0, $1.sizeBytes) }
+        }
+    }
+
+    private var fileSystemSummary: String {
+        guard let volume = selectedVolume else { return "—" }
+        return [
+            volume.format,
+            MoniLocalization.format("%@ available", bytes(UInt64(volume.availableBytes)))
+        ]
+        .compactMap { $0 }
+        .joined(separator: " · ")
+    }
+
+    private var selectedVolume: VolumeUsage? {
+        monitor.snapshot.volumes
+            .filter { volume in
+                volume.mountPath == "/"
+                    ? selectedPath.hasPrefix("/")
+                    : selectedPath == volume.mountPath || selectedPath.hasPrefix(volume.mountPath + "/")
+            }
+            .max { $0.mountPath.count < $1.mountPath.count }
+    }
+
+    private func analysisColor(_ index: Int) -> Color {
+        let colors = [
+            MoniPalette.blue,
+            MoniPalette.green,
+            MoniPalette.orange,
+            MoniPalette.purple,
+            MoniPalette.pink,
+            MoniPalette.cyan,
+            MoniPalette.yellow
+        ]
+        return colors[index % colors.count]
+    }
+
+    private func clampedSum(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? UInt64.max : sum
     }
 
     private var visibleItems: [FileItem] {
         let filtered = searchText.isEmpty ? items : items.filter {
             $0.url.lastPathComponent.localizedCaseInsensitiveContains(searchText)
         }
-        guard analyzedPath == selectedPath else { return filtered }
+        guard analyzedPath == selectedPath, analyzingPath == nil else { return filtered }
         return filtered.sorted {
             let lhs = analysisSizes[$0.url.path] ?? $0.size
             let rhs = analysisSizes[$1.url.path] ?? $1.size
@@ -1288,10 +1768,10 @@ private struct DiskBrowserView: View {
     }
 
     private func itemSize(_ item: FileItem) -> String {
-        if analyzedPath == selectedPath, let size = analysisSizes[item.url.path] {
+        if let size = displayedSize(item) {
             return bytes(size)
         }
-        return item.isDirectory ? "—" : bytes(item.size)
+        return "—"
     }
 
     private var analysisSummary: String {
@@ -1325,6 +1805,8 @@ private struct DiskBrowserView: View {
             for await update in DiskAnalyzer.updates(for: requestedPath) {
                 guard !Task.isCancelled, selectedPath == requestedPath else { return }
                 analysisSizes = update.entrySizes
+                knownSizes.merge(update.entrySizes) { _, latest in latest }
+                knownSizes[requestedPath] = update.scannedBytes
                 largestFiles = update.largestFiles
                 scannedFileCount = update.scannedFileCount
                 scannedBytes = update.scannedBytes
@@ -1448,24 +1930,46 @@ private struct DiskBrowserView: View {
     private nonisolated static func loadItems(at path: String) -> LoadResult {
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
         do {
-            let urls = try FileManager.default.contentsOfDirectory(
+            var urls = try FileManager.default.contentsOfDirectory(
                 at: URL(fileURLWithPath: path),
                 includingPropertiesForKeys: Array(keys),
-                options: [.skipsHiddenFiles]
+                options: []
             )
+            urls.removeAll { $0.lastPathComponent.hasPrefix(".") }
+            if path == "/" {
+                let visibleRootEntries = Set([
+                    "Users", "Library", "Applications", "System", "usr",
+                    "private", "opt", "bin", "Volumes", "cores"
+                ])
+                urls.removeAll { !visibleRootEntries.contains($0.lastPathComponent) }
+            }
             var items: [FileItem] = []
             items.reserveCapacity(urls.count)
             for url in urls {
                 guard !Task.isCancelled else { return LoadResult(items: [], error: nil) }
                 guard let values = try? url.resourceValues(forKeys: keys) else { continue }
+                let isDirectory = values.isDirectory ?? false
+                let itemCount = isDirectory
+                    ? (try? FileManager.default.contentsOfDirectory(atPath: url.path).count)
+                    : nil
                 items.append(FileItem(
                     url: url,
-                    isDirectory: values.isDirectory ?? false,
+                    isDirectory: isDirectory,
                     size: UInt64(max(0, values.fileSize ?? 0)),
+                    itemCount: itemCount,
                     modified: values.contentModificationDate
                 ))
             }
+            let rootOrder = [
+                "Users", "Library", "Applications", "System", "usr",
+                "private", "opt", "bin", "Volumes", "cores"
+            ]
             items.sort {
+                if path == "/",
+                   let lhsIndex = rootOrder.firstIndex(of: $0.url.lastPathComponent),
+                   let rhsIndex = rootOrder.firstIndex(of: $1.url.lastPathComponent) {
+                    return lhsIndex < rhsIndex
+                }
                 if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
                 return $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
             }

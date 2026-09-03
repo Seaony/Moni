@@ -5,26 +5,27 @@ struct CleanerScanProgressView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 9) {
                 HStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(MoniLocalization.string(progress.titleKey))
-                            .font(.system(size: 15, weight: .semibold))
-                        Text(MoniLocalization.format(
-                            "Stage %@ of %@",
-                            progress.stepNumber.formatted(),
-                            progress.stepCount.formatted()
-                        ))
+                    Text(MoniLocalization.string(progress.titleKey))
+                        .font(.system(size: 12.5, weight: .semibold))
+                    Text(currentTaskText)
                         .font(.system(size: 11.5))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                    }
+                        .foregroundStyle(MoniPalette.foregroundQuaternary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text(progressLabel)
+                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(MoniPalette.blue)
                 }
 
                 if let fractionCompleted = progress.fractionCompleted {
                     ProgressView(value: fractionCompleted)
-                        .tint(MoniPalette.green)
+                        .tint(MoniPalette.blue)
+                        .controlSize(.small)
                     HStack {
                         Text(MoniLocalization.format(
                             "%@ of %@ checks complete",
@@ -32,50 +33,43 @@ struct CleanerScanProgressView: View {
                             progress.totalTaskCount.formatted()
                         ))
                         Spacer()
-                        Text(fractionCompleted.formatted(.percent.precision(.fractionLength(0))))
+                        Text(elapsedLabel(at: context.date))
                     }
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
-
-                if !progress.currentTasks.isEmpty {
-                    Divider()
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(MoniLocalization.string("Scanning now"))
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                            .textCase(.uppercase)
-                        Text(progress.currentTasks.map(taskTitle).joined(separator: "  ·  "))
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(MoniPalette.foregroundSecondary)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                    }
-                }
-
-                HStack(spacing: 16) {
-                    Label(
-                        MoniLocalization.format(
-                            progress.discoveredItemLabelKey,
-                            progress.discoveredItemCount.formatted()
-                        ),
-                        systemImage: "doc.text.magnifyingglass"
-                    )
-                    Label(elapsedLabel(at: context.date), systemImage: "clock")
-                }
-                .font(.system(size: 11.5))
-                .foregroundStyle(MoniPalette.foregroundTertiary)
             }
-            .padding(18)
-            .frame(maxWidth: 470)
-            .background(MoniPalette.card)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(MoniPalette.panelLine, lineWidth: 1)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(MoniPalette.panelLine)
+                    .frame(height: 1)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var currentTaskText: String {
+        guard !progress.currentTasks.isEmpty else {
+            return MoniLocalization.format(
+                progress.discoveredItemLabelKey,
+                progress.discoveredItemCount.formatted()
+            )
+        }
+        return progress.currentTasks.map(taskTitle).joined(separator: " · ")
+    }
+
+    private var progressLabel: String {
+        guard let fractionCompleted = progress.fractionCompleted else {
+            return MoniLocalization.format(
+                "Stage %@ of %@",
+                progress.stepNumber.formatted(),
+                progress.stepCount.formatted()
+            )
+        }
+        return fractionCompleted.formatted(.percent.precision(.fractionLength(0)))
     }
 
     private func taskTitle(_ task: CleanerScanTaskLabel) -> String {
@@ -86,7 +80,14 @@ struct CleanerScanProgressView: View {
     }
 
     private func elapsedLabel(at date: Date) -> String {
-        let elapsed = duration(date.timeIntervalSince(progress.startedAt))
+        let elapsedInterval = max(0, date.timeIntervalSince(progress.startedAt))
+        let elapsed = duration(elapsedInterval)
+        if let fraction = progress.fractionCompleted,
+           fraction > 0.01,
+           fraction < 1 {
+            let remaining = duration(elapsedInterval / fraction * (1 - fraction))
+            return MoniLocalization.format("Elapsed %@ · about %@ remaining", elapsed, remaining)
+        }
         guard let timeLimit = progress.timeLimit else {
             return MoniLocalization.format("Elapsed %@", elapsed)
         }
