@@ -1230,6 +1230,7 @@ private struct DiskBrowserView: View {
             .padding(2)
             .background(DiskBrowserPalette.segment)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .fixedSize(horizontal: true, vertical: false)
 
             if !selectedCleanupPaths.isEmpty {
                 Button {

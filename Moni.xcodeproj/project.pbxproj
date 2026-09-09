@@ -9,6 +9,9 @@
 /* Begin PBXBuildFile section */
 		A10F30A8303F000100000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A10F30A9303F000100000001 /* Sparkle */; };
 		B100000B303F000100000001 /* MoniWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B1000001303F000100000001 /* MoniWidgets.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		C20000000000000000000001 /* MoniFanHelper in Embed Fan Helper */ = {isa = PBXBuildFile; fileRef = C20000000000000000000002; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		C20000000000000000000003 /* Fan helper plist */ = {isa = PBXBuildFile; fileRef = C20000000000000000000004; };
+		C20000000000000000000005 /* SMCSensorReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000006; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -19,6 +22,7 @@
 			remoteGlobalIDString = B1000003303F000100000001;
 			remoteInfo = MoniWidgets;
 		};
+		C2000000000000000000000D = {isa = PBXContainerItemProxy; containerPortal = 752E78A5303ECE240029D56B; proxyType = 1; remoteGlobalIDString = C2000000000000000000000A; remoteInfo = MoniFanHelper; };
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -33,11 +37,16 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C2000000000000000000000F /* Embed Fan Helper */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = Contents/Library/LaunchServices; dstSubfolderSpec = 1; files = (C20000000000000000000001, ); name = "Embed Fan Helper"; runOnlyForDeploymentPostprocessing = 0; };
+		C20000000000000000000010 /* Embed Fan Daemon */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = Contents/Library/LaunchDaemons; dstSubfolderSpec = 1; files = (C20000000000000000000003, ); name = "Embed Fan Daemon"; runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		752E78AD303ECE240029D56B /* Moni.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Moni.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B1000001303F000100000001 /* MoniWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MoniWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C20000000000000000000002 /* MoniFanHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; path = MoniFanHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		C20000000000000000000004 /* Fan helper plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = MoniFanHelper/com.seaony.Moni.FanHelper.plist; sourceTree = SOURCE_ROOT; };
+		C20000000000000000000006 /* SMCSensorReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moni/Services/SMCSensorReader.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -55,6 +64,7 @@
 			);
 			target = B1000003303F000100000001 /* MoniWidgets */;
 		};
+		C20000000000000000000007 = {isa = PBXFileSystemSynchronizedBuildFileExceptionSet; membershipExceptions = (com.seaony.Moni.FanHelper.plist, ); target = C2000000000000000000000A; };
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -79,6 +89,8 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
+		C20000000000000000000008 /* MoniFanHelper */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (C20000000000000000000007, ); path = MoniFanHelper; sourceTree = "<group>"; };
+		C20000000000000000000009 /* FanControlShared */ = {isa = PBXFileSystemSynchronizedRootGroup; path = FanControlShared; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -104,8 +116,12 @@
 			isa = PBXGroup;
 			children = (
 				752E78AF303ECE240029D56B /* Moni */,
+				C20000000000000000000009 /* FanControlShared */,
 				B1000002303F000100000001 /* MoniWidgets */,
 				B100000F303F000100000001 /* Shared */,
+				C20000000000000000000008 /* MoniFanHelper */,
+				C20000000000000000000004 /* Fan helper plist */,
+				C20000000000000000000006 /* SMCSensorReader.swift */,
 				752E78AE303ECE240029D56B /* Products */,
 			);
 			sourceTree = "<group>";
@@ -114,6 +130,7 @@
 			isa = PBXGroup;
 			children = (
 				752E78AD303ECE240029D56B /* Moni.app */,
+				C20000000000000000000002 /* MoniFanHelper */,
 				B1000001303F000100000001 /* MoniWidgets.appex */,
 			);
 			name = Products;
@@ -130,14 +147,18 @@
 				752E78AA303ECE240029D56B /* Frameworks */,
 				752E78AB303ECE240029D56B /* Resources */,
 				B100000C303F000100000001 /* Embed Foundation Extensions */,
+				C2000000000000000000000F /* Embed Fan Helper */,
+				C20000000000000000000010 /* Embed Fan Daemon */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				B100000E303F000100000001 /* PBXTargetDependency */,
+				C2000000000000000000000E /* Fan helper dependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				752E78AF303ECE240029D56B /* Moni */,
+				C20000000000000000000009 /* FanControlShared */,
 				B100000F303F000100000001 /* Shared */,
 			);
 			name = Moni;
@@ -170,6 +191,18 @@
 			productName = MoniWidgets;
 			productReference = B1000001303F000100000001 /* MoniWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
+		};
+		C2000000000000000000000A /* MoniFanHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C2000000000000000000000B;
+			buildPhases = (C2000000000000000000000C, );
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (C20000000000000000000008, C20000000000000000000009, );
+			name = MoniFanHelper;
+			productName = MoniFanHelper;
+			productReference = C20000000000000000000002;
+			productType = "com.apple.product-type.tool";
 		};
 /* End PBXNativeTarget section */
 
@@ -207,6 +240,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				C2000000000000000000000A /* MoniFanHelper */,
 				752E78AC303ECE240029D56B /* Moni */,
 				B1000003303F000100000001 /* MoniWidgets */,
 			);
@@ -245,6 +279,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C2000000000000000000000C = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C20000000000000000000005, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -253,6 +288,7 @@
 			target = B1000003303F000100000001 /* MoniWidgets */;
 			targetProxy = B100000D303F000100000001 /* PBXContainerItemProxy */;
 		};
+		C2000000000000000000000E = {isa = PBXTargetDependency; target = C2000000000000000000000A; targetProxy = C2000000000000000000000D; };
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -505,6 +541,28 @@
 			};
 			name = Release;
 		};
+		C20000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = {
+			CODE_SIGN_STYLE = Automatic;
+			DEVELOPMENT_TEAM = G34NXJXW94;
+			ENABLE_HARDENED_RUNTIME = YES;
+			GENERATE_INFOPLIST_FILE = YES;
+			CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+			PRODUCT_BUNDLE_IDENTIFIER = com.seaony.Moni.FanHelper;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SKIP_INSTALL = YES;
+			SWIFT_VERSION = 5.0;
+		}; name = Debug; };
+		C20000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {
+			CODE_SIGN_STYLE = Automatic;
+			DEVELOPMENT_TEAM = G34NXJXW94;
+			ENABLE_HARDENED_RUNTIME = YES;
+			GENERATE_INFOPLIST_FILE = YES;
+			CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+			PRODUCT_BUNDLE_IDENTIFIER = com.seaony.Moni.FanHelper;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SKIP_INSTALL = YES;
+			SWIFT_VERSION = 5.0;
+		}; name = Release; };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -535,6 +593,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		C2000000000000000000000B = {isa = XCConfigurationList; buildConfigurations = (C20000000000000000000011, C20000000000000000000012, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */

@@ -73,6 +73,20 @@ struct SummaryView: View {
     }
 
     private var healthBanner: some View {
+        healthSummary
+        .padding(.leading, 20)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MoniPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(MoniPalette.line, lineWidth: 1)
+        }
+    }
+
+    private var healthSummary: some View {
         let health = snapshot.systemHealth
         let color = healthColor(health.level)
         return HStack(spacing: 16) {
@@ -110,29 +124,26 @@ struct SummaryView: View {
 
             Spacer(minLength: 12)
 
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(MoniLocalization.string("Memory Pressure"))
-                    .font(.system(size: 11))
-                    .foregroundStyle(MoniPalette.foregroundTertiary)
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(memoryPressureColor)
-                        .frame(width: 7, height: 7)
-                    Text(memoryPressureTitle)
-                        .font(.system(size: 12, weight: .semibold))
+            HStack(alignment: .center, spacing: 24) {
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(MoniLocalization.string("Memory Pressure"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(memoryPressureColor)
+                            .frame(width: 7, height: 7)
+                        Text(memoryPressureTitle)
+                            .font(.system(size: 12, weight: .semibold))
+                    }
                 }
+
+                FanControlView()
+                    .frame(width: 240)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(MoniPalette.line, lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 
     private func healthColor(_ level: SystemHealthLevel) -> Color {

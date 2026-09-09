@@ -13,6 +13,7 @@ struct MoniApp: App {
     @StateObject private var monitor = SystemMonitor()
     @StateObject private var updates = UpdateController()
     @StateObject private var cacheCleanupScanner = CacheCleanupScanner()
+    @StateObject private var fanControl = FanControlService()
     @AppStorage(PreferenceKey.appLanguage) private var appLanguage = AppLanguage.english.rawValue
 
     var body: some Scene {
@@ -21,6 +22,7 @@ struct MoniApp: App {
                 .environmentObject(monitor)
                 .environmentObject(updates)
                 .environmentObject(cacheCleanupScanner)
+                .environmentObject(fanControl)
                 .background(
                     MenuBarWindowPositioner { isVisible in
                         monitor.setPanelVisible(isVisible)
