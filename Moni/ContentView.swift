@@ -16,7 +16,7 @@ private enum StatusBarAction {
 }
 
 enum MonitorSection: String, CaseIterable, Identifiable {
-    case summary, host, cpu, memory, gpu, network, storage, processes, sensors, docker, applications, cleaner, maintenance, disks, settings
+    case summary, host, cpu, memory, gpu, network, storage, processes, sensors, docker, settings
 
     var id: String { rawValue }
 
@@ -32,10 +32,6 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .processes: "Processes"
         case .sensors: "Power & Sensors"
         case .docker: "Docker"
-        case .applications: "Applications"
-        case .cleaner: "Cleaner"
-        case .maintenance: "Maintenance"
-        case .disks: "Disk Browser"
         case .settings: "Settings"
         }
         return MoniLocalization.string(key)
@@ -53,10 +49,6 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .processes: "list.bullet.rectangle"
         case .sensors: "bolt.batteryblock"
         case .docker: "cube"
-        case .applications: "app.badge"
-        case .cleaner: "sparkles"
-        case .maintenance: "stethoscope"
-        case .disks: "folder"
         case .settings: "gearshape"
         }
     }
@@ -69,11 +61,9 @@ enum MonitorSection: String, CaseIterable, Identifiable {
         case .gpu: MoniPalette.green
         case .network: MoniPalette.cyan
         case .storage: MoniPalette.orange
-        case .processes, .applications: MoniPalette.purple
+        case .processes: MoniPalette.purple
         case .sensors: MoniPalette.yellow
-        case .cleaner: MoniPalette.green
-        case .maintenance: MoniPalette.yellow
-        case .disks, .settings: MoniPalette.foregroundTertiary
+        case .settings: MoniPalette.foregroundTertiary
         }
     }
 }
@@ -116,14 +106,8 @@ struct ContentView: View {
                                     hostContentHeight = height
                                 }
                             )
-                        } else if [.gpu, .network, .storage, .sensors, .docker, .disks].contains(selection) {
+                        } else if [.gpu, .network, .storage, .sensors, .docker].contains(selection) {
                             SecondaryDetailView(section: selection, selection: animatedSelection)
-                        } else if selection == .applications {
-                            ApplicationManagerView(refreshSystem: refreshSystem)
-                        } else if selection == .cleaner {
-                            CleanerView(refreshSystem: refreshSystem)
-                        } else if selection == .maintenance {
-                            MaintenanceView(refreshSystem: refreshSystem)
                         } else if selection == .settings {
                             SettingsView(section: $settingsSection)
                         } else {
@@ -422,5 +406,4 @@ private struct ModulePlaceholder: View {
 #Preview {
     ContentView()
         .environmentObject(SystemMonitor())
-        .environmentObject(CacheCleanupScanner())
 }

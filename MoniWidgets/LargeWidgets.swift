@@ -363,7 +363,7 @@ struct StorageBreakdownLargeWidgetView: View {
             .frame(height: 11)
             .padding(.top, 10)
             if snapshot.storageItems.isEmpty {
-                Text("Open Disk Browser in Moni once to populate folder details.")
+                Text("Open Storage in Moni once to populate folder details.")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(WidgetTheme.secondary)
                     .frame(maxHeight: .infinity)

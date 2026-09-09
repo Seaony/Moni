@@ -7,13 +7,9 @@ enum MoniPalette {
     static let cardHover = adaptive(light: rgb(0xF4F4F7), dark: rgb(0x1D1D21))
     static let inset = adaptive(light: rgb(0xF4F4F7), dark: rgb(0x101012))
     static let insetSecondary = adaptive(light: rgb(0xF7F7F9), dark: rgb(0x141416))
-    static let selection = adaptive(light: rgb(0xE4EFFF), dark: rgb(0x1B2230))
     static let control = adaptive(light: rgb(0xEAEAEF), dark: rgb(0x1C1C1F))
     static let controlHover = adaptive(light: rgb(0xE0E0E6), dark: rgb(0x26262A))
     static let controlSelected = adaptive(light: rgb(0xD6D6DD), dark: rgb(0x3A3A3F))
-    static let secondaryAction = adaptive(light: rgb(0xE0E0E6), dark: rgb(0x242424))
-    static let secondaryActionForeground = adaptive(light: rgb(0x3A3A3F), dark: rgb(0xC9C9CE))
-    static let disabledActionForeground = adaptive(light: rgb(0x8E8E93), dark: rgb(0x636366))
 
     static let foreground = adaptive(light: rgb(0x16161A), dark: rgb(0xFFFFFF))
     static let foregroundSecondary = adaptive(

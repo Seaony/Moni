@@ -12,7 +12,6 @@ import SwiftUI
 struct MoniApp: App {
     @StateObject private var monitor = SystemMonitor()
     @StateObject private var updates = UpdateController()
-    @StateObject private var cacheCleanupScanner = CacheCleanupScanner()
     @StateObject private var fanControl = FanControlService()
     @AppStorage(PreferenceKey.appLanguage) private var appLanguage = AppLanguage.english.rawValue
 
@@ -21,7 +20,6 @@ struct MoniApp: App {
             ContentView()
                 .environmentObject(monitor)
                 .environmentObject(updates)
-                .environmentObject(cacheCleanupScanner)
                 .environmentObject(fanControl)
                 .background(
                     MenuBarWindowPositioner { isVisible in

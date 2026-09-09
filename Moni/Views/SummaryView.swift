@@ -15,6 +15,7 @@ struct SummaryView: View {
     @AppStorage(PreferenceKey.showProcesses) private var showProcesses = true
     @AppStorage(PreferenceKey.showPower) private var showPower = true
     @AppStorage(PreferenceKey.showDocker) private var showDocker = true
+    @AppStorage(PreferenceKey.temperatureAlertThreshold) private var temperatureAlertThreshold = 80.0
     @State private var liveCardSizes: [DashboardCardID: DashboardCardSize] = [:]
     @State private var draggingCard: DashboardCardID?
     @State private var cardDragContext = DashboardCardDragContext()
@@ -29,7 +30,7 @@ struct SummaryView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: gridDensity.spacing) {
-                healthBanner
+                systemBanner
 
                 DashboardGridLayout(rowHeight: gridDensity.rowHeight, spacing: gridDensity.spacing) {
                     ForEach(orderedCards) { card in
@@ -72,8 +73,8 @@ struct SummaryView: View {
         }
     }
 
-    private var healthBanner: some View {
-        healthSummary
+    private var systemBanner: some View {
+        systemSummary
         .padding(.leading, 20)
         .padding(.trailing, 6)
         .padding(.vertical, 6)
@@ -86,37 +87,41 @@ struct SummaryView: View {
         }
     }
 
-    private var healthSummary: some View {
-        let health = snapshot.systemHealth
-        let color = healthColor(health.level)
+    private var systemSummary: some View {
+        let temperature = snapshot.power.cpuTemperatureCelsius
+        let alertThreshold = temperatureAlertThreshold == 0 ? 80 : temperatureAlertThreshold
+        let warningThreshold = alertThreshold - 10
+        let temperatureColor = temperature.map {
+            $0 >= alertThreshold ? MoniPalette.red : ($0 >= warningThreshold ? MoniPalette.yellow : MoniPalette.green)
+        } ?? MoniPalette.foregroundTertiary
         return HStack(spacing: 16) {
             ZStack {
                 Circle()
                     .stroke(MoniPalette.track, lineWidth: 6)
                 Circle()
-                    .trim(from: 0, to: Double(health.score) / 100)
-                    .stroke(color, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .trim(from: 0, to: min(1, max(0, (temperature ?? 0) / 100)))
+                    .stroke(temperatureColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                Text(health.score.formatted())
+                Text(temperature.map { String(format: "%.0f°", $0) } ?? "—")
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                    .moniNumericTransition(health.score)
+                    .moniNumericTransition(temperature)
             }
             .frame(width: 54, height: 54)
+            .moniAnimation(MoniMotion.data, value: temperature)
+            .moniAnimation(MoniMotion.data, value: alertThreshold)
+            .help(temperature.map {
+                String(format: "%.1f°C", $0) + "\n" + MoniLocalization.format(
+                    "Scale: 0–100°C. Yellow from %@°C; red from %@°C.",
+                    String(format: "%.0f", warningThreshold),
+                    String(format: "%.0f", alertThreshold)
+                )
+            } ?? MoniLocalization.string("Waiting for sensors"))
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(MoniLocalization.string("System Health"))
-                        .font(.system(size: 15, weight: .bold))
-                    Text(healthLevelTitle(health.level))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(color)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(color.opacity(0.13))
-                        .clipShape(Capsule())
-                }
-                Text(healthDiagnosis(health.diagnosis))
+                Text(MoniLocalization.string("CPU temperature"))
+                    .font(.system(size: 15, weight: .bold))
+                Text(MoniLocalization.string(temperature == nil ? "Waiting for sensors" : "CPU sensor average · °C"))
                     .font(.system(size: 13))
                     .foregroundStyle(MoniPalette.foregroundSecondary)
                     .lineLimit(1)
@@ -144,53 +149,6 @@ struct SummaryView: View {
             }
         }
         .accessibilityElement(children: .contain)
-    }
-
-    private func healthColor(_ level: SystemHealthLevel) -> Color {
-        switch level {
-        case .excellent: MoniPalette.green
-        case .good: MoniPalette.blue
-        case .fair: MoniPalette.orange
-        case .needsAttention: MoniPalette.red
-        }
-    }
-
-    private func healthLevelTitle(_ level: SystemHealthLevel) -> String {
-        let key = switch level {
-        case .excellent: "Excellent"
-        case .good: "Good"
-        case .fair: "Fair"
-        case .needsAttention: "Needs Attention"
-        }
-        return MoniLocalization.string(key)
-    }
-
-    private func healthDiagnosis(_ diagnosis: SystemHealthDiagnosis) -> String {
-        switch diagnosis {
-        case .allClear:
-            MoniLocalization.string("All monitored systems are operating normally.")
-        case .smartWarning:
-            MoniLocalization.string("Disk health warning. Back up important files now.")
-        case let .highCPU(processName):
-            processName.map { MoniLocalization.format("%@ is using significant CPU.", $0) }
-                ?? MoniLocalization.string("CPU usage is high.")
-        case let .memoryPressure(processName):
-            processName.map { MoniLocalization.format("%@ is contributing most to memory pressure.", $0) }
-                ?? MoniLocalization.string("Memory pressure is high.")
-        case let .lowDiskSpace(availableBytes):
-            MoniLocalization.format(
-                "Startup disk is low on space with %@ available.",
-                bytes(UInt64(max(0, availableBytes)))
-            )
-        case .batteryHealth:
-            MoniLocalization.string("Battery health needs attention.")
-        case .highTemperature:
-            MoniLocalization.string("CPU temperature is elevated.")
-        case .busyDisk:
-            MoniLocalization.string("Disk activity is unusually high.")
-        case .restartRecommended:
-            MoniLocalization.string("A restart is recommended after the current long uptime.")
-        }
     }
 
     private var memoryPressureTitle: String {
