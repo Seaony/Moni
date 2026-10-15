@@ -1,7 +1,7 @@
 "English" = "英文";
 "Chinese" = "中文";
 "Language" = "语言";
-"Changes the language across Moni, the menu bar, notifications, and widgets." = "切换 Moni、菜单栏、通知和小组件的显示语言。";
+"Changes the language across Moni, the menu bar, and notifications." = "切换 Moni、菜单栏和通知的显示语言。";
 
 "Summary" = "概览";
 "Memory Pressure" = "内存压力";
@@ -26,7 +26,6 @@
 "Refresh now" = "立即刷新";
 "Quit" = "退出";
 "Quit Moni" = "退出 Moni";
-"Back to summary" = "返回概览";
 "Check for Updates…" = "检查更新…";
 "Check for updates" = "检查更新";
 "Export diagnostics…" = "导出诊断信息…";
@@ -68,7 +67,6 @@
 "Comfortable" = "舒适";
 "Spacious" = "宽松";
 
-"Detection" = "检测";
 "Enabled" = "已启用";
 "Disabled" = "已停用";
 
@@ -103,19 +101,10 @@
 "Boot volume" = "启动卷";
 "Volumes" = "磁盘卷";
 "Cores" = "核心";
-"Per-core load" = "各核心负载";
 "Breakdown" = "明细";
-"Top CPU consumers" = "CPU 占用最高的进程";
-"Top memory consumers" = "内存占用最高的进程";
-"Top 6 sampled processes" = "采样到的前 6 个进程";
-"All processes ›" = "所有进程 ›";
 "Process" = "进程";
 "Name" = "名称";
 "Threads" = "线程";
-"Relative CPU" = "相对 CPU";
-"Relative memory" = "相对内存";
-"Search processes" = "搜索进程";
-"%@ matches" = "%@ 个结果";
 "%@ cores" = "%@ 核";
 "%@ threads" = "%@ 个线程";
 "%@ active" = "%@ 个活跃";
@@ -162,7 +151,6 @@
 "Sent total" = "发送总量";
 "Interfaces" = "网络接口";
 "Link & totals" = "连接与总量";
-"Active connections" = "活跃连接";
 "No active external connections" = "没有活跃的外部连接";
 "No active interface" = "没有活跃的网络接口";
 "Active" = "活跃";
@@ -185,7 +173,6 @@
 "Read" = "读取";
 "Write" = "写入";
 "IOPS" = "IOPS";
-"Largest folders" = "最大的文件夹";
 "Calculating folder sizes…" = "正在计算文件夹大小…";
 "Folder sizes unavailable" = "无法获取文件夹大小";
 "Folder" = "文件夹";
@@ -195,7 +182,6 @@
 "S.M.A.R.T." = "S.M.A.R.T.";
 "TRIM" = "TRIM";
 "Format" = "格式";
-"Read only" = "只读";
 
 "Battery" = "电池";
 "No Battery" = "无电池";
@@ -225,24 +211,7 @@
 "Draw" = "功耗";
 "Voltage" = "电压";
 
-"Daemon reachable" = "守护进程可访问";
-"Daemon not reachable" = "守护进程不可访问";
-"Not Running" = "未运行";
-"Not Detected" = "未检测到";
-"Connected" = "已连接";
-"No supported installation" = "未找到受支持的安装";
-"CONTAINERS" = "容器";
-"Containers" = "容器";
-"Container" = "容器";
-"Running" = "运行中";
-"Stopped" = "已停止";
-"Not Found" = "未找到";
 "Status" = "状态";
-"State" = "状态";
-"Engine" = "引擎";
-"Socket" = "套接字";
-"Installed" = "已安装";
-"The engine is reachable but reports no containers." = "容器引擎可访问，但没有报告任何容器。";
 
 "%@ %@" = "%@ %@";
 "device" = "台设备";
@@ -262,7 +231,6 @@
 "All systems normal" = "所有系统正常";
 "No active resource alerts" = "没有活跃的资源提醒";
 "Current" = "当前";
-"Data is not live" = "数据不是实时的";
 "No Data" = "暂无数据";
 "Usage" = "用量";
 "Client" = "客户端";
@@ -271,8 +239,6 @@
 "%@ free" = "可用 %@";
 "%@ of %@" = "%@ / %@";
 "%@ of %@ used" = "已用 %@ / %@";
-"%@ / %@ containers running" = "%@ / %@ 个容器正在运行";
-"%@ running · %@ total" = "%@ 个运行中 · 共 %@ 个";
 "%@ CPU" = "%@ CPU";
 "%@ MEM" = "%@ 内存";
 "%@ · %@ cores" = "%@ · %@ 核";
@@ -325,22 +291,7 @@
 "Drag to change card width" = "拖动以调整卡片宽度";
 "Drag to change card height" = "拖动以调整卡片高度";
 
-"CPU · LAST 60s" = "CPU · 最近 60 秒";
-"Power" = "电源";
-"Top Processes" = "高占用进程";
 "Sensors" = "传感器";
-"Disk Activity" = "磁盘活动";
-"Battery History" = "电池历史";
-"System Overview" = "系统概览";
-"GPU & Thermals" = "GPU 与温度";
-"Network Detail" = "网络详情";
-"Activity Monitor" = "活动监视器";
-"Storage Breakdown" = "存储明细";
-"last 12 h" = "最近 12 小时";
-"running" = "运行中";
-"engine available" = "引擎可用";
-"engine unavailable" = "引擎不可用";
-"engine connected" = "引擎已连接";
 "Unified %@" = "统一内存 %@";
 "%@ unified memory" = "%@ 统一内存";
 "%@ total" = "共 %@";
@@ -353,62 +304,12 @@
 "public %@" = "公网 %@";
 "no address" = "无地址";
 "%@h %@m remaining" = "剩余 %@ 小时 %@ 分钟";
-"Local engine connected at %@." = "本地引擎已通过 %@ 连接。";
-"%@ was detected, but the local engine socket at %@ is not accepting connections." = "已检测到 %@，但本地引擎套接字 %@ 不接受连接。";
-"%@ is installed, but no supported local engine socket was found." = "已安装 %@，但未找到受支持的本地引擎套接字。";
-"Docker Desktop, OrbStack, and Docker CLI were not found in the supported locations." = "在受支持的位置中未找到 Docker Desktop、OrbStack 或 Docker CLI。";
-"Open Storage in Moni once to populate folder details." = "在 Moni 中打开一次存储页面，以加载文件夹详情。";
 
-"Shows total CPU load and user/system activity." = "查看处理器总负载、用户态与系统态占比。";
-"Shows memory usage, capacity, and pressure." = "查看内存使用率、容量与占用状态。";
-"Shows battery, temperature, and fan status." = "查看电池、温度与风扇状态。";
-"Shows system disk space and live transfer rates." = "查看系统磁盘空间与实时读写速率。";
-"Shows Wi-Fi signal, channel, and link speed." = "查看当前无线网络的信号、信道与连接速率。";
-"Shows process and thread totals with the busiest processes." = "查看进程与线程总数以及最繁忙的进程。";
-"Shows local Docker engine availability." = "查看本机 Docker 引擎的可用状态。";
-"Shows GPU utilization, power, and allocated memory." = "查看图形处理器利用率、功耗与已分配内存。";
-"Shows uptime and system load." = "查看开机时长和系统负载。";
-"Shows live download and upload rates with network trends." = "查看实时下载、上传速率与网络趋势。";
-"Shows the processes using the most CPU." = "查看 CPU 使用率最高的进程。";
-"Shows CPU, GPU, battery, and other temperature sensors." = "查看处理器、图形处理器、电池等温度传感器。";
-"Shows active, wired, compressed, and free memory." = "查看活跃、联动、压缩与空闲内存的分布。";
-"Shows disk transfer rates, IOPS, and health." = "查看磁盘读写速率、IOPS 与健康状态。";
-"Shows the local container engine and connection status." = "查看本机容器引擎及连接状态。";
-"Shows current CPU, memory, and disk usage alerts." = "查看当前 CPU、内存与磁盘用量告警。";
-"Shows battery charge history, health, and cycle count." = "查看电池电量趋势、健康状态与循环次数。";
-"Shows CPU, memory, network, storage, and busy processes." = "集中查看 CPU、内存、网络、存储与高占用进程。";
-"Shows GPU engine load, trends, power, and temperature." = "查看 GPU 引擎负载、趋势、功耗与温度。";
-"Shows network trends, interfaces, latency, and public address." = "查看网络速率趋势、接口、延迟与公网地址。";
-"Shows top CPU processes and their memory use." = "查看 CPU 占用最高的进程及其内存使用。";
-"Shows system disk usage and the largest folders." = "查看系统磁盘占用与主要目录分布。";
 
 "Available" = "可用";
 "Unavailable" = "不可用";
 "Enabled" = "已启用";
-"Fan Control" = "风扇控制";
-"Automatic" = "自动";
-"Manual" = "手动";
-"Authorize Fan Control" = "授权风扇控制";
-"Approve in System Settings" = "在系统设置中批准";
-"Fan data unavailable" = "暂无风扇数据";
-"Target fan speed" = "风扇目标转速";
-"Manual control unavailable" = "手动控制不可用";
 "Left fan" = "左侧风扇";
 "Right fan" = "右侧风扇";
-"Fan is unavailable." = "无法读取该风扇。";
-"Speed is outside the hardware limits." = "转速超出硬件允许范围。";
-"Fan control is unavailable on this Mac." = "当前 Mac 无法使用风扇控制，或风扇正由其他程序控制。";
-"The system did not accept manual fan control." = "系统未接受风扇控制模式切换。";
-"Fan control returned no data." = "风扇控制服务未返回数据。";
-"Fan control service is unavailable." = "风扇控制服务不可用。";
-"Fan control service timed out." = "风扇控制服务响应超时。";
-"Left" = "左侧";
-"Right" = "右侧";
-"Auto" = "自动";
-"Enable" = "授权";
-"Manual fan control could not be confirmed." = "未能确认手动风扇控制已生效。";
-"System automatic fan control could not be confirmed." = "未能确认系统自动风扇控制已恢复。";
-"The requested fan speed could not be confirmed." = "未能确认目标转速已生效。";
-"Fan control failed and automatic control could not be restored." = "风扇控制失败，且未能恢复系统自动控制。";
 "CPU sensor average · °C" = "CPU 传感器平均值 · °C";
 "Scale: 0–100°C. Yellow from %@°C; red from %@°C." = "量程：0–100°C。%@°C 起显示黄色，%@°C 起显示红色。";

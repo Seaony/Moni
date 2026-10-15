@@ -72,7 +72,6 @@ actor SystemSampler {
     private var cachedVolumes: [VolumeUsage] = []
     private var cachedDriveHealth = DriveHealth()
     private var cachedProcesses: [ProcessUsage] = []
-    private var cachedNetworkConnections: [NetworkConnectionUsage] = []
     private var cachedNetworkMetadata = NetworkMetadata(
         primaryInterfaceName: nil,
         gateway: nil,
@@ -81,39 +80,21 @@ actor SystemSampler {
         wifi: nil
     )
     private var cachedPower = PowerUsage()
-    private var cachedDocker = DockerStatus()
     private var lastProcessSample: Date?
     private var lastPeripheralSample: Date?
     private var lastDriveHealthSample: Date?
-    private var lastConnectionSample: Date?
-    private var lastDockerSample: Date?
 
     private let processInterval: TimeInterval = 2
     private let peripheralInterval: TimeInterval = 5
     private let driveHealthInterval: TimeInterval = 5 * 60
-    private let connectionInterval: TimeInterval = 5
-    private let dockerInterval: TimeInterval = 15
     private let idleProcessInterval: TimeInterval = 30
     private let idlePeripheralInterval: TimeInterval = 60
-    private let idleDockerInterval: TimeInterval = 60
 
-    /// While the panel is hidden nothing on screen reads these at full rate — the
-    /// menu bar needs none of them and the desktop widgets refresh far slower — so
-    /// they run on stretched intervals instead. Per-connection traffic costs a
-    /// `nettop` subprocess and is only ever shown on the open Network page, so it
-    /// pauses outright.
+    // 面板隐藏时放慢采样，菜单栏不需要这么频繁地更新。
     private var isPanelVisible = false
-    private var isNetworkDetailsVisible = false
 
     func setPanelVisible(_ isVisible: Bool) {
         isPanelVisible = isVisible
-    }
-
-    func setNetworkDetailsVisible(_ isVisible: Bool) {
-        if isVisible, !isNetworkDetailsVisible {
-            lastConnectionSample = nil
-        }
-        isNetworkDetailsVisible = isVisible
     }
 
     func sample(forceSlowMetrics: Bool = false) -> SystemSnapshot {
@@ -150,14 +131,6 @@ actor SystemSampler {
             }
             lastDriveHealthSample = now
         }
-        if forceSlowMetrics || shouldRefresh(
-            lastDockerSample,
-            at: now,
-            interval: isPanelVisible ? dockerInterval : idleDockerInterval
-        ) {
-            cachedDocker = sampleDockerStatus()
-            lastDockerSample = now
-        }
 
         return SystemSnapshot(
             date: now,
@@ -171,8 +144,7 @@ actor SystemSampler {
             processes: cachedProcesses,
             power: cachedPower,
             gpuDevices: gpuDevices,
-            gpu: sampleGPU(at: now),
-            docker: cachedDocker
+            gpu: sampleGPU(at: now)
         )
     }
 
@@ -313,13 +285,6 @@ actor SystemSampler {
     }
 
     private func sampleNetwork(at date: Date) -> NetworkUsage {
-        if isPanelVisible,
-           isNetworkDetailsVisible,
-           shouldRefresh(lastConnectionSample, at: date, interval: connectionInterval) {
-            cachedNetworkConnections = sampleNetworkConnections()
-            lastConnectionSample = date
-        }
-
         var pointer: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&pointer) == 0, let first = pointer else { return NetworkUsage() }
         defer { freeifaddrs(pointer) }
@@ -414,8 +379,7 @@ actor SystemSampler {
                 if rhs.name == cachedNetworkMetadata.primaryInterfaceName { return false }
                 if lhs.isActive != rhs.isActive { return lhs.isActive }
                 return lhs.name < rhs.name
-            },
-            connections: cachedNetworkConnections
+            }
         )
     }
 
@@ -591,81 +555,6 @@ actor SystemSampler {
         case 1: "2.4 GHz"
         default: "Unknown band"
         }
-    }
-
-    private func sampleNetworkConnections() -> [NetworkConnectionUsage] {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        process.arguments = ["-L", "1", "-n", "-J", "bytes_in,bytes_out", "-x"]
-        process.environment = [
-            "NSUnbufferedIO": "YES",
-            "LC_ALL": "en_US.UTF-8",
-        ]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        process.standardInput = FileHandle.nullDevice
-
-        do {
-            try process.run()
-        } catch {
-            return []
-        }
-        let timeout = DispatchWorkItem {
-            if process.isRunning { process.terminate() }
-        }
-        DispatchQueue.global(qos: .utility).asyncAfter(
-            deadline: .now() + 2,
-            execute: timeout
-        )
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        timeout.cancel()
-        guard process.terminationStatus == 0 else { return [] }
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
-
-        var currentProcess: (name: String, pid: Int32)?
-        var connections: [NetworkConnectionUsage] = []
-        output.enumerateLines { line, _ in
-            let columns = line.split(separator: ",", omittingEmptySubsequences: false)
-            guard columns.count >= 3 else { return }
-            let label = String(columns[0])
-
-            if label.hasPrefix("tcp") || label.hasPrefix("udp") {
-                guard let currentProcess,
-                      let separator = label.range(of: "<->")
-                else { return }
-                let localAndProtocol = label[..<separator.lowerBound]
-                guard let firstSpace = localAndProtocol.firstIndex(of: " ") else { return }
-                let transport = String(localAndProtocol[..<firstSpace]).uppercased()
-                let local = String(localAndProtocol[localAndProtocol.index(after: firstSpace)...])
-                let remote = String(label[separator.upperBound...])
-                guard !remote.contains("*") else { return }
-                let received = UInt64(columns[1]) ?? 0
-                let sent = UInt64(columns[2]) ?? 0
-                connections.append(NetworkConnectionUsage(
-                    processName: currentProcess.name,
-                    pid: currentProcess.pid,
-                    localEndpoint: local,
-                    remoteEndpoint: remote,
-                    transport: transport,
-                    receivedBytes: received,
-                    sentBytes: sent
-                ))
-                return
-            }
-
-            guard let dot = label.lastIndex(of: "."),
-                  let pid = Int32(label[label.index(after: dot)...])
-            else { return }
-            currentProcess = (String(label[..<dot]), pid)
-        }
-
-        return connections.sorted {
-            ($0.receivedBytes + $0.sentBytes) > ($1.receivedBytes + $1.sentBytes)
-        }
-        .prefix(8)
-        .map { $0 }
     }
 
     private func sampleVolumes() -> [VolumeUsage] {
@@ -1228,103 +1117,6 @@ actor SystemSampler {
                 return lhs.memoryBytes > rhs.memoryBytes
             }
             return lhs.utilizationPercent > rhs.utilizationPercent
-        }
-    }
-
-    private func sampleDockerStatus() -> DockerStatus {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let installations: [(path: String, provider: String)] = [
-            ("/Applications/Docker.app", "Docker Desktop"),
-            ("/Applications/OrbStack.app", "OrbStack"),
-            ("/usr/local/bin/docker", "Docker CLI"),
-            ("/opt/homebrew/bin/docker", "Docker CLI")
-        ]
-        let sockets: [(path: String, provider: String)] = [
-            ("\(home)/.orbstack/run/docker.sock", "OrbStack"),
-            ("\(home)/.docker/run/docker.sock", "Docker Desktop"),
-            ("\(home)/Library/Containers/com.docker.docker/Data/docker-api.sock", "Docker Desktop"),
-            ("/var/run/docker.sock", "Docker Engine")
-        ]
-        let installation = installations.first { FileManager.default.fileExists(atPath: $0.path) }
-        let existingSockets = sockets.filter { FileManager.default.fileExists(atPath: $0.path) }
-        let connectedSocket = existingSockets.first { Self.canConnect(toUnixSocket: $0.path) }
-        let detectedSocket = connectedSocket ?? existingSockets.first
-        let provider = detectedSocket?.provider ?? installation?.provider
-        return DockerStatus(
-            isInstalled: provider != nil,
-            isRunning: connectedSocket != nil,
-            installation: provider,
-            socketPath: detectedSocket?.path,
-            containers: connectedSocket.map { Self.loadDockerContainers(socketPath: $0.path) } ?? []
-        )
-    }
-
-    private nonisolated static func loadDockerContainers(socketPath: String) -> [DockerContainerUsage] {
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        process.arguments = [
-            "--silent",
-            "--max-time", "1",
-            "--unix-socket", socketPath,
-            "http://localhost/v1.40/containers/json?all=1"
-        ]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0,
-                  let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-            else { return [] }
-            return rows.compactMap { row in
-                guard let rawName = (row["Names"] as? [String])?.first,
-                      let state = row["State"] as? String
-                else { return nil }
-                let name = rawName.hasPrefix("/") ? String(rawName.dropFirst()) : rawName
-                return DockerContainerUsage(
-                    name: name,
-                    state: state,
-                    status: row["Status"] as? String ?? state.capitalized
-                )
-            }
-            .sorted { lhs, rhs in
-                if (lhs.state == "running") != (rhs.state == "running") {
-                    return lhs.state == "running"
-                }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
-        } catch {
-            return []
-        }
-    }
-
-    private nonisolated static func canConnect(toUnixSocket path: String) -> Bool {
-        let pathBytes = path.utf8CString
-        var address = sockaddr_un()
-        let pathCapacity = MemoryLayout.size(ofValue: address.sun_path)
-        guard pathBytes.count <= pathCapacity else { return false }
-
-        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { return false }
-        defer { Darwin.close(descriptor) }
-
-        address.sun_family = sa_family_t(AF_UNIX)
-        withUnsafeMutablePointer(to: &address.sun_path) { pointer in
-            pointer.withMemoryRebound(to: CChar.self, capacity: pathCapacity) { destination in
-                pathBytes.withUnsafeBufferPointer { source in
-                    destination.update(from: source.baseAddress!, count: pathBytes.count)
-                }
-            }
-        }
-        let addressLength = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
-        address.sun_len = UInt8(addressLength)
-        return withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(descriptor, $0, addressLength) == 0
-            }
         }
     }
 

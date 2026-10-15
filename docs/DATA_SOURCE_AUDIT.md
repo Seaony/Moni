@@ -2,7 +2,7 @@
 
 审计日期：2026-08-27
 
-本清单覆盖首页、全部详情页、菜单栏和 macOS 小组件当前会展示的数值。重复展示的数据只审计一次；菜单栏和小组件均复用同一份 `SystemSnapshot` / `WidgetSystemSnapshot`，没有另行采样。
+本清单记录系统数据的来源，首页和菜单栏按需展示。重复展示的数据只审计一次；菜单栏复用同一份 `SystemSnapshot`，没有另行采样。
 
 ## 评级
 
@@ -65,7 +65,6 @@
 | Page outs | `vm_statistics64.pageouts` | A | 累计计数。 |
 | Faults | `vm_statistics64.faults` | A | 累计计数。 |
 | 内存历史图 | `Used %` 样本序列 | D | 语义为占用率历史。 |
-| Usage status | Used % 的 80%/90% 阈值 | D | 已将小组件中的错误名称 `Pressure` 改为 `Usage/Status`；真正的 macOS Memory Pressure 不是单纯使用率。 |
 | Top memory 进程 | `proc_taskinfo.pti_resident_size` | B | 是 resident size，不是完整 footprint；界面应保持“Memory”而非“App Memory”措辞。 |
 
 官方依据：[host_statistics64](https://developer.apple.com/documentation/kernel/1502863-host_statistics64)。
@@ -84,9 +83,6 @@
 | Wi‑Fi PHY/频道/频段 | `CWInterface.activePHYMode/wlanChannel` | A | 公开接口；枚举到文字的映射需要随新 macOS 检查。 |
 | Wi‑Fi 传输速率 | `CWInterface.transmitRate` | A | 是当前链路速率，不是互联网吞吐。 |
 | 非 Wi‑Fi 链路速率 | `if_data.ifi_baudrate` | B | 继续使用。 |
-| 活跃连接进程/端点/协议/流量 | `/usr/bin/nettop -L 1` | B | Apple 系统工具，但 CSV 输出没有稳定 SDK 契约；只在网络页打开时每 5 秒运行。 |
-| 公网 IP | `https://api.ipify.org` | 外部服务 | 返回调用时出口 IP；不是 Apple 数据。失败时为空。 |
-| IP lookup 时间 | 对 ipify HTTPS 请求的总耗时 | D | 包含 DNS、TLS、服务端与网络时间；不是 ICMP ping，界面应继续叫 IP lookup。 |
 | 网络历史图 | 下载/上传样本序列 | D | 跟随当前接口合计口径。 |
 
 官方依据：[CoreWLAN](https://developer.apple.com/documentation/corewlan)、[System Configuration](https://developer.apple.com/documentation/systemconfiguration)。
@@ -100,8 +96,6 @@
 | 已用容量与百分比 | 总容量 - 可用容量 | D | 计算正确。 |
 | 读写字节/秒 | `IOBlockStorageDriver/Statistics` 累计值差 | C/D | I/O Registry 键未公开文档化；没有同等低成本公开实时 API。 |
 | 读写 IOPS | 同一 Statistics 的操作次数差 | C/D | 同上。 |
-| 最大目录 | 低优先级执行 `du -sk -x` | B | 只统计同一文件系统，避免跨挂载点；结果缓存 6 小时。权限不可读内容不会被统计。 |
-| `/System` 占用 | `diskutil info -plist /` 的 `CapacityInUse` | B | 系统工具结构化输出；避免递归扫描只读系统卷。 |
 | 盘型号、S.M.A.R.T.、TRIM、温度、总写入量 | NVMe/IOKit bridge | C | Apple 没有提供等价公共 SDK；必须允许不同硬盘或 macOS 版本返回空值。 |
 
 官方依据：[URL resource keys](https://developer.apple.com/documentation/foundation/urlresourcekey)、[volumeAvailableCapacityForImportantUsage](https://developer.apple.com/documentation/foundation/urlresourcekey/volumeavailablecapacityforimportantusagekey)。
@@ -151,53 +145,31 @@
 
 官方依据：[MTLDevice](https://developer.apple.com/documentation/metal/mtldevice)、[currentAllocatedSize](https://developer.apple.com/documentation/metal/mtldevice/currentallocatedsize)、[CGDisplayMode](https://developer.apple.com/documentation/coregraphics/cgdisplaymode)。
 
-## 9. Docker
-
-| 数据 | 当前来源 | 评级 | 核对结论 |
-| --- | --- | --- | --- |
-| 是否安装、提供者 | Docker Desktop、OrbStack、CLI 的已知安装路径 | B | 能覆盖当前支持的本地提供者，但不是 Docker context 的完整实现。 |
-| 是否运行、socket 路径 | 对已知 Unix socket 做只读连接测试 | B | 不启动 daemon，不修改 Docker 状态。 |
-| 容器名、state、status、运行数/总数 | Engine API `GET /v1.40/containers/json?all=1` | 官方产品 API | 已补上官方要求的 API 版本；1.40 是当前 Docker Engine 文档列出的最低支持版本。 |
-
-限制：`DOCKER_HOST`、`DOCKER_CONTEXT` 和任意自定义 context 还不能被当前路径扫描识别。官方最完整方案是 context/SDK API negotiation，但每 15 秒启动 Docker CLI 会增加明显开销；在没有常驻轻量 SDK 的现状下，保留已知本地 socket 是性能更稳妥的取舍。
-
-官方依据：[Docker contexts](https://docs.docker.com/engine/manage-resources/contexts/)、[Engine API](https://docs.docker.com/reference/api/engine/)、[Engine API v1.40](https://docs.docker.com/reference/api/engine/version/v1.40/)。
-
-## 10. 菜单栏、小组件、告警与图表
+## 9. 菜单栏、告警与图表
 
 | 数据 | 当前来源 | 评级 | 核对结论 |
 | --- | --- | --- | --- |
 | 菜单栏 CPU/Memory/Network/Disk/Battery/Temp | 当前 `SystemSnapshot` 与对应历史 | D | 不另起采样器；多选只改变渲染。 |
-| 首页及详情图表 | recent/minute history | D | 1m 使用快速历史，1h/24h 使用分钟历史；tooltip 是同一个样本值。 |
-| 小组件全部系统数值 | 每 15 秒落盘一次的 snapshot | D | 避免每 0.3–0.7 秒写共享容器。 |
-| 小组件 timeline | 最快 5 分钟请求一次 reload | WidgetKit 策略 | 避免耗尽 WidgetKit 刷新预算。 |
-| CPU/Memory/Disk/Temperature 告警 | snapshot 与用户阈值比较 | D | 小组件和通知复用相同阈值。 |
+| 首页及菜单栏图表 | recent/minute history | D | 首页使用最近 1 分钟的快速历史，菜单栏电池图使用最近 12 小时的分钟历史；tooltip 是同一个样本值。 |
+| CPU/Memory/Disk/Temperature 告警 | snapshot 与用户阈值比较 | D | 通知遵循用户设置的阈值。 |
 
-## 11. 采样与性能核对
+## 10. 采样与性能核对
 
 | 工作 | 面板打开 | 面板隐藏 | 结论 |
 | --- | --- | --- | --- |
 | CPU、内存、接口字节、磁盘计数、GPU 快照 | 用户设置的 0.3–5 秒 | 至少 2 秒 | 打开时保证曲线，隐藏时降低常驻开销。 |
 | 进程列表 | 2 秒 | 30 秒 | 名称/路径按 PID 缓存；合理。 |
 | 电池、温度、卷、网络元数据 | 5 秒 | 60 秒 | 私有传感器不跟随 0.3 秒主循环；合理。 |
-| 网络连接 `nettop` | 5 秒且仅网络页可见时 | 暂停 | 正确避免后台子进程。 |
-| Docker | 15 秒 | 60 秒 | curl 超时 1 秒；请求只读。 |
-| 最大目录 | 首次需要时，缓存 6 小时 | 同左 | `taskpolicy -b` + `nice 20`，避免抢占前台。 |
-| 公网 IP/IP lookup | 按需，成功后缓存 10 分钟 | 同左 | 超时 5 秒，不进入主采样循环。 |
-| 小组件快照 | 15 秒落盘 | 15 秒落盘 | timeline reload 最快 5 分钟。 |
 
 没有发现主采样重入：`SystemMonitor.refreshTask` 在上一轮完成前会拒绝新一轮，因此慢采样不会并发堆积。
 
-## 12. 本次已处理与仍需明确授权的项目
+## 11. 本次已处理与仍需明确授权的项目
 
 已处理：
 
 1. 屏幕像素分辨率与刷新率改用 Core Graphics 公开 API。
-2. Docker 容器列表改用带版本的 `/v1.40/containers/json`。
-3. 小组件内存阈值由错误的 `Pressure` 改为 `Usage/Status`。
 
 保留但明确标注限制：
 
 1. GPU 全系统利用率/分配内存、温度、风扇、功耗和 NVMe 健康数据没有语义相同的公开 API，不能为了“公开”而换成错误含义的数据。
 2. 网络总流量是所有非 loopback 接口合计。若要改成“主接口/WAN 口径”，会改变现有数据定义，需要单独确定产品口径。
-3. Docker 自定义 context 尚未覆盖。完整支持需要引入 context 解析或 Docker SDK，属于新增能力，不在本次最小准确性修复中。

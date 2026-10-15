@@ -98,18 +98,6 @@ struct WiFiUsage: Sendable {
     let transmitRateBitsPerSecond: UInt64
 }
 
-struct NetworkConnectionUsage: Identifiable, Sendable {
-    let processName: String
-    let pid: Int32
-    let localEndpoint: String
-    let remoteEndpoint: String
-    let transport: String
-    let receivedBytes: UInt64
-    let sentBytes: UInt64
-
-    var id: String { "\(pid)-\(transport)-\(localEndpoint)-\(remoteEndpoint)" }
-}
-
 struct NetworkProxyUsage: Sendable {
     let type: String
     let host: String
@@ -126,7 +114,6 @@ struct NetworkUsage: Sendable {
     var proxy: NetworkProxyUsage?
     var wifi: WiFiUsage?
     var interfaces: [NetworkInterfaceUsage] = []
-    var connections: [NetworkConnectionUsage] = []
 
     nonisolated init(
         downloadBytesPerSecond: Double = 0,
@@ -137,8 +124,7 @@ struct NetworkUsage: Sendable {
         gateway: String? = nil,
         proxy: NetworkProxyUsage? = nil,
         wifi: WiFiUsage? = nil,
-        interfaces: [NetworkInterfaceUsage] = [],
-        connections: [NetworkConnectionUsage] = []
+        interfaces: [NetworkInterfaceUsage] = []
     ) {
         self.downloadBytesPerSecond = downloadBytesPerSecond
         self.uploadBytesPerSecond = uploadBytesPerSecond
@@ -149,7 +135,6 @@ struct NetworkUsage: Sendable {
         self.proxy = proxy
         self.wifi = wifi
         self.interfaces = interfaces
-        self.connections = connections
     }
 }
 
@@ -166,13 +151,6 @@ struct VolumeUsage: Identifiable, Sendable {
         guard totalBytes > 0 else { return 0 }
         return Double(usedBytes) / Double(totalBytes) * 100
     }
-}
-
-struct StorageFolderUsage: Codable, Identifiable, Sendable {
-    let path: String
-    let sizeBytes: UInt64
-
-    var id: String { path }
 }
 
 struct DiskActivity: Sendable {
@@ -354,66 +332,6 @@ struct GPUUsage: Sendable {
     }
 }
 
-struct DockerContainerUsage: Identifiable, Sendable {
-    let name: String
-    let state: String
-    let status: String
-
-    var id: String { name }
-}
-
-struct DockerStatus: Sendable {
-    var isInstalled = false
-    var isRunning = false
-    var installation: String?
-    var socketPath: String?
-    var containers: [DockerContainerUsage] = []
-
-    nonisolated init(
-        isInstalled: Bool = false,
-        isRunning: Bool = false,
-        installation: String? = nil,
-        socketPath: String? = nil,
-        containers: [DockerContainerUsage] = []
-    ) {
-        self.isInstalled = isInstalled
-        self.isRunning = isRunning
-        self.installation = installation
-        self.socketPath = socketPath
-        self.containers = containers
-    }
-
-    var runningContainerCount: Int {
-        containers.filter { $0.state == "running" }.count
-    }
-
-    var statusTitle: String {
-        if isRunning { return MoniLocalization.string("Running") }
-        if isInstalled { return MoniLocalization.string("Not Running") }
-        return MoniLocalization.string("Not Detected")
-    }
-
-    var statusReason: String {
-        if isRunning, let socketPath {
-            return MoniLocalization.format("Local engine connected at %@.", socketPath)
-        }
-        if isInstalled, let socketPath {
-            return MoniLocalization.format(
-                "%@ was detected, but the local engine socket at %@ is not accepting connections.",
-                installation ?? "Docker",
-                socketPath
-            )
-        }
-        if isInstalled {
-            return MoniLocalization.format(
-                "%@ is installed, but no supported local engine socket was found.",
-                installation ?? "Docker"
-            )
-        }
-        return MoniLocalization.string("Docker Desktop, OrbStack, and Docker CLI were not found in the supported locations.")
-    }
-}
-
 struct HostDetails: Sendable {
     var name = ProcessInfo.processInfo.hostName
     var model = "Mac"
@@ -458,5 +376,4 @@ struct SystemSnapshot: Sendable {
     var power = PowerUsage()
     var gpuDevices: [GPUDeviceInfo] = []
     var gpu = GPUUsage()
-    var docker = DockerStatus()
 }

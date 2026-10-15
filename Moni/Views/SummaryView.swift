@@ -1,9 +1,10 @@
 import SwiftUI
 
 struct SummaryView: View {
+    let onContentSizeChange: (CGSize) -> Void
+
     @EnvironmentObject private var monitor: SystemMonitor
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Binding var selection: MonitorSection
     @AppStorage(PreferenceKey.summaryCardLayout) private var cardLayoutData = Data()
     @AppStorage(PreferenceKey.summaryGridDensity) private var gridDensityValue = SummaryGridDensity.comfortable.rawValue
     @AppStorage(PreferenceKey.showHost) private var showHost = true
@@ -14,7 +15,6 @@ struct SummaryView: View {
     @AppStorage(PreferenceKey.showStorage) private var showStorage = true
     @AppStorage(PreferenceKey.showProcesses) private var showProcesses = true
     @AppStorage(PreferenceKey.showPower) private var showPower = true
-    @AppStorage(PreferenceKey.showDocker) private var showDocker = true
     @AppStorage(PreferenceKey.temperatureAlertThreshold) private var temperatureAlertThreshold = 80.0
     @State private var liveCardSizes: [DashboardCardID: DashboardCardSize] = [:]
     @State private var draggingCard: DashboardCardID?
@@ -28,10 +28,8 @@ struct SummaryView: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        ScrollView([.horizontal, .vertical], showsIndicators: false) {
             VStack(spacing: gridDensity.spacing) {
-                systemBanner
-
                 DashboardGridLayout(rowHeight: gridDensity.rowHeight, spacing: gridDensity.spacing) {
                     ForEach(orderedCards) { card in
                         ResizableDashboardCard(
@@ -50,7 +48,7 @@ struct SummaryView: View {
                         .transition(reduceMotion ? .identity : MoniMotion.itemTransition)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .fixedSize()
                 .coordinateSpace(name: DashboardGridCoordinateSpace.name)
                 .onPreferenceChange(DashboardCardFrameKey.self) { frames in
                     cardDragContext.frames = frames
@@ -70,85 +68,53 @@ struct SummaryView: View {
                     }
                 }
             }
+            .onGeometryChange(for: CGSize.self) { proxy in
+                CGSize(width: ceil(proxy.size.width), height: ceil(proxy.size.height))
+            } action: { onContentSizeChange($0) }
         }
     }
 
-    private var systemBanner: some View {
-        systemSummary
-        .padding(.leading, 20)
-        .padding(.trailing, 6)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MoniPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(MoniPalette.line, lineWidth: 1)
-        }
-    }
-
-    private var systemSummary: some View {
+    private var temperatureCard: some View {
         let temperature = snapshot.power.cpuTemperatureCelsius
         let alertThreshold = temperatureAlertThreshold == 0 ? 80 : temperatureAlertThreshold
         let warningThreshold = alertThreshold - 10
         let temperatureColor = temperature.map {
             $0 >= alertThreshold ? MoniPalette.red : ($0 >= warningThreshold ? MoniPalette.yellow : MoniPalette.green)
         } ?? MoniPalette.foregroundTertiary
-        return HStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .stroke(MoniPalette.track, lineWidth: 6)
-                Circle()
-                    .trim(from: 0, to: min(1, max(0, (temperature ?? 0) / 100)))
-                    .stroke(temperatureColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                Text(temperature.map { String(format: "%.0f°", $0) } ?? "—")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .moniNumericTransition(temperature)
-            }
-            .frame(width: 54, height: 54)
-            .moniAnimation(MoniMotion.data, value: temperature)
-            .moniAnimation(MoniMotion.data, value: alertThreshold)
-            .help(temperature.map {
-                String(format: "%.1f°C", $0) + "\n" + MoniLocalization.format(
-                    "Scale: 0–100°C. Yellow from %@°C; red from %@°C.",
-                    String(format: "%.0f", warningThreshold),
-                    String(format: "%.0f", alertThreshold)
-                )
-            } ?? MoniLocalization.string("Waiting for sensors"))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(MoniLocalization.string("CPU temperature"))
-                    .font(.system(size: 15, weight: .bold))
-                Text(MoniLocalization.string(temperature == nil ? "Waiting for sensors" : "CPU sensor average · °C"))
-                    .font(.system(size: 13))
-                    .foregroundStyle(MoniPalette.foregroundSecondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 12)
-
-            HStack(alignment: .center, spacing: 24) {
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(MoniLocalization.string("Memory Pressure"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(memoryPressureColor)
-                            .frame(width: 7, height: 7)
-                        Text(memoryPressureTitle)
-                            .font(.system(size: 12, weight: .semibold))
-                    }
+        return MetricCard(title: "CPU temperature", symbol: "thermometer.medium", color: temperatureColor) {
+            HStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .stroke(MoniPalette.track, lineWidth: 6)
+                    Circle()
+                        .trim(from: 0, to: min(1, max(0, (temperature ?? 0) / 100)))
+                        .stroke(temperatureColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    Text(temperature.map { String(format: "%.0f°", $0) } ?? "—")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .moniNumericTransition(temperature)
                 }
+                .frame(width: 88, height: 88)
+                .moniAnimation(MoniMotion.data, value: temperature)
+                .moniAnimation(MoniMotion.data, value: alertThreshold)
+                .help(temperature.map {
+                    String(format: "%.1f°C", $0) + "\n" + MoniLocalization.format(
+                        "Scale: 0–100°C. Yellow from %@°C; red from %@°C.",
+                        String(format: "%.0f", warningThreshold),
+                        String(format: "%.0f", alertThreshold)
+                    )
+                } ?? MoniLocalization.string("Waiting for sensors"))
 
-                FanControlView()
-                    .frame(width: 240)
-                    .fixedSize(horizontal: true, vertical: false)
+                Text(MoniLocalization.string(temperature == nil ? "Waiting for sensors" : "CPU sensor average · °C"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxHeight: .infinity)
+
+            MetricRow(label: "Memory Pressure", value: memoryPressureTitle, color: memoryPressureColor)
         }
-        .accessibilityElement(children: .contain)
     }
 
     private var memoryPressureTitle: String {
@@ -181,62 +147,60 @@ struct SummaryView: View {
         case .storage: storageCard
         case .processes: processCard
         case .power: powerCard
-        case .docker: dockerCard
+        case .temperature: temperatureCard
         }
     }
 
     private var hostCard: some View {
-        cardButton(.host) {
-            MetricCard(title: snapshot.host.name, symbol: MonitorSection.host.symbol, color: MoniPalette.cyan) {
-                if cardSize(.host).columns >= 2 {
-                    HStack(alignment: .top, spacing: 32) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("\(hostOperatingSystemLabel) · \(hostChipLabel)")
-                                .font(.system(size: 12))
-                                .foregroundStyle(MoniPalette.foregroundSecondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.75)
-                                .help("Current macOS release installed on this Mac.")
-                            Text(formatUptime(snapshot.host.uptime))
-                                .font(.system(size: 34, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .moniNumericTransition(Int(snapshot.host.uptime))
-                                .help("Time since this Mac last started.")
-                            Text("Uptime")
-                                .foregroundStyle(MoniPalette.foregroundSecondary)
-                                .help("Time since this Mac last started.")
-                        }
-                        VStack(spacing: 9) {
-                            hostHardwareGrid
-                            hostLoadRow
-                            MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple, helpText: "Number of processes currently reported by macOS.")
-                        }
-                        .frame(maxWidth: .infinity)
+        MetricCard(title: snapshot.host.name, symbol: "server.rack", color: MoniPalette.cyan) {
+            if cardSize(.host).columns >= 2 {
+                HStack(alignment: .top, spacing: 32) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(hostOperatingSystemLabel) · \(hostChipLabel)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .help("Current macOS release installed on this Mac.")
+                        Text(formatUptime(snapshot.host.uptime))
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .moniNumericTransition(Int(snapshot.host.uptime))
+                            .help("Time since this Mac last started.")
+                        Text("Uptime")
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
+                            .help("Time since this Mac last started.")
                     }
-                } else {
-                    Text("\(hostOperatingSystemLabel) · \(hostChipLabel)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                        .help("Current macOS release installed on this Mac.")
-                    HStack(alignment: .bottom, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(formatUptime(snapshot.host.uptime))
-                                .font(.system(size: 34, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .moniNumericTransition(Int(snapshot.host.uptime))
-                                .help("Time since this Mac last started.")
-                            Text("Uptime")
-                                .foregroundStyle(MoniPalette.foregroundSecondary)
-                        }
-                        .help("Time since this Mac last started.")
-                        Spacer(minLength: 8)
+                    VStack(spacing: 9) {
                         hostHardwareGrid
+                        hostLoadRow
+                        MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple, helpText: "Number of processes currently reported by macOS.")
                     }
-                    hostLoadRow
-                    MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple, helpText: "Number of processes currently reported by macOS.")
+                    .frame(maxWidth: .infinity)
                 }
+            } else {
+                Text("\(hostOperatingSystemLabel) · \(hostChipLabel)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .help("Current macOS release installed on this Mac.")
+                HStack(alignment: .bottom, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(formatUptime(snapshot.host.uptime))
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .moniNumericTransition(Int(snapshot.host.uptime))
+                            .help("Time since this Mac last started.")
+                        Text("Uptime")
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
+                    }
+                    .help("Time since this Mac last started.")
+                    Spacer(minLength: 8)
+                    hostHardwareGrid
+                }
+                hostLoadRow
+                MetricRow(label: "Processes", value: snapshot.processes.count.formatted(), color: MoniPalette.purple, helpText: "Number of processes currently reported by macOS.")
             }
         }
     }
@@ -323,87 +287,83 @@ struct SummaryView: View {
     }
 
     private var cpuCard: some View {
-        cardButton(.cpu) {
-            MetricCard(
-                title: "CPU",
-                symbol: MonitorSection.cpu.symbol,
-                color: MoniPalette.pink,
-                trailing: "\(snapshot.host.processorCount) cores",
-                trailingHelp: "Number of logical CPU cores available to macOS."
-            ) {
-                HStack(alignment: .bottom, spacing: 12) {
-                    Text(percent(snapshot.cpu.total))
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .moniNumericTransition(snapshot.cpu.total)
-                        .help("Total CPU time currently used across all cores.")
-                    InteractiveSparkline(
-                        series: [
-                            InteractiveSparklineSeries(
-                                name: "CPU",
-                                values: monitor.cpuHistory,
-                                color: MoniPalette.pink,
-                                showsFill: true,
-                                formatValue: percent
-                            )
-                        ],
-                        dates: monitor.recentHistoryDates
-                    )
-                        .frame(height: chartHeight(for: cardSize(.cpu), compact: 66))
-                }
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    compactCardStat("User", percent(snapshot.cpu.user), color: MoniPalette.pink, help: "CPU time used by apps and other user-space processes.")
-                    compactCardStat("System", percent(snapshot.cpu.system), color: MoniPalette.orange, help: "CPU time used by the macOS kernel and system services.")
-                    compactCardStat("Nice", percent(snapshot.cpu.nice), color: MoniPalette.yellow, help: "CPU time used by lower-priority processes.")
-                    compactCardStat("Idle", percent(snapshot.cpu.idle), color: MoniPalette.green, help: "CPU capacity that is currently unused.")
-                }
-                .frame(maxHeight: .infinity, alignment: .bottomLeading)
+        MetricCard(
+            title: "CPU",
+            symbol: "cpu",
+            color: MoniPalette.pink,
+            trailing: "\(snapshot.host.processorCount) cores",
+            trailingHelp: "Number of logical CPU cores available to macOS."
+        ) {
+            HStack(alignment: .bottom, spacing: 12) {
+                Text(percent(snapshot.cpu.total))
+                    .font(.system(size: 36, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .moniNumericTransition(snapshot.cpu.total)
+                    .help("Total CPU time currently used across all cores.")
+                InteractiveSparkline(
+                    series: [
+                        InteractiveSparklineSeries(
+                            name: "CPU",
+                            values: monitor.cpuHistory,
+                            color: MoniPalette.pink,
+                            showsFill: true,
+                            formatValue: percent
+                        )
+                    ],
+                    dates: monitor.recentHistoryDates
+                )
+                    .frame(height: chartHeight(for: cardSize(.cpu), compact: 66))
             }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                compactCardStat("User", percent(snapshot.cpu.user), color: MoniPalette.pink, help: "CPU time used by apps and other user-space processes.")
+                compactCardStat("System", percent(snapshot.cpu.system), color: MoniPalette.orange, help: "CPU time used by the macOS kernel and system services.")
+                compactCardStat("Nice", percent(snapshot.cpu.nice), color: MoniPalette.yellow, help: "CPU time used by lower-priority processes.")
+                compactCardStat("Idle", percent(snapshot.cpu.idle), color: MoniPalette.green, help: "CPU capacity that is currently unused.")
+            }
+            .frame(maxHeight: .infinity, alignment: .bottomLeading)
         }
     }
 
     private var memoryCard: some View {
-        cardButton(.memory) {
-            MetricCard(title: "Memory", symbol: MonitorSection.memory.symbol, color: MoniPalette.blue, trailing: "Live") {
-                HStack(alignment: .bottom, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(percent(snapshot.memory.usedPercent))
-                            .font(.system(size: 36, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .moniNumericTransition(snapshot.memory.usedPercent)
-                            .help("Percentage of physical memory currently in use.")
-                        HStack(spacing: 3) {
-                            Text(bytes(snapshot.memory.usedBytes))
-                                .help("Physical memory currently in use.")
-                            Text("/")
-                            Text(bytes(snapshot.memory.totalBytes))
-                                .help("Total physical memory installed in this Mac.")
-                        }
-                            .font(.system(size: 12))
-                            .foregroundStyle(MoniPalette.foregroundSecondary)
+        MetricCard(title: "Memory", symbol: "memorychip", color: MoniPalette.blue, trailing: "Live") {
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(percent(snapshot.memory.usedPercent))
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .moniNumericTransition(snapshot.memory.usedPercent)
+                        .help("Percentage of physical memory currently in use.")
+                    HStack(spacing: 3) {
+                        Text(bytes(snapshot.memory.usedBytes))
+                            .help("Physical memory currently in use.")
+                        Text("/")
+                        Text(bytes(snapshot.memory.totalBytes))
+                            .help("Total physical memory installed in this Mac.")
                     }
-                    InteractiveSparkline(
-                        series: [
-                            InteractiveSparklineSeries(
-                                name: "Memory",
-                                values: monitor.memoryHistory,
-                                color: MoniPalette.blue,
-                                showsFill: true,
-                                formatValue: percent
-                            )
-                        ],
-                        dates: monitor.recentHistoryDates
-                    )
-                        .frame(height: chartHeight(for: cardSize(.memory), compact: 66))
+                        .font(.system(size: 12))
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
                 }
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    compactCardStat("Used", bytes(snapshot.memory.usedBytes), color: MoniPalette.blue, help: "Physical memory currently occupied by apps, the system, and caches.")
-                    compactCardStat("Free", bytes(snapshot.memory.freeBytes), color: MoniPalette.green, help: "Physical memory that is immediately unused.")
-                    compactCardStat("Cached", bytes(snapshot.memory.cachedBytes), color: MoniPalette.cyan, help: "Memory holding reusable file data that macOS can reclaim when needed.")
-                    compactCardStat("Wired", bytes(snapshot.memory.wiredBytes), color: MoniPalette.orange, help: "Memory reserved by the kernel that cannot be compressed or paged out.")
-                }
-                .frame(maxHeight: .infinity, alignment: .bottomLeading)
+                InteractiveSparkline(
+                    series: [
+                        InteractiveSparklineSeries(
+                            name: "Memory",
+                            values: monitor.memoryHistory,
+                            color: MoniPalette.blue,
+                            showsFill: true,
+                            formatValue: percent
+                        )
+                    ],
+                    dates: monitor.recentHistoryDates
+                )
+                    .frame(height: chartHeight(for: cardSize(.memory), compact: 66))
             }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                compactCardStat("Used", bytes(snapshot.memory.usedBytes), color: MoniPalette.blue, help: "Physical memory currently occupied by apps, the system, and caches.")
+                compactCardStat("Free", bytes(snapshot.memory.freeBytes), color: MoniPalette.green, help: "Physical memory that is immediately unused.")
+                compactCardStat("Cached", bytes(snapshot.memory.cachedBytes), color: MoniPalette.cyan, help: "Memory holding reusable file data that macOS can reclaim when needed.")
+                compactCardStat("Wired", bytes(snapshot.memory.wiredBytes), color: MoniPalette.orange, help: "Memory reserved by the kernel that cannot be compressed or paged out.")
+            }
+            .frame(maxHeight: .infinity, alignment: .bottomLeading)
         }
     }
 
@@ -429,123 +389,119 @@ struct SummaryView: View {
         let size = cardSize(.gpu)
         let isWide = size.columns >= 2
 
-        return cardButton(.gpu) {
-            MetricCard(
-                title: "GPU",
-                symbol: MonitorSection.gpu.symbol,
-                color: MoniPalette.green,
-                trailing: "\(snapshot.gpuDevices.count) device\(snapshot.gpuDevices.count == 1 ? "" : "s")",
-                trailingHelp: "Number of GPU devices detected by macOS."
-            ) {
-                HStack(alignment: .bottom, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Utilization")
-                            .foregroundStyle(MoniPalette.foregroundSecondary)
-                        Text(MoniLocalization.string(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data"))
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
-                            .help("Current overall GPU utilization reported by macOS.")
-                        Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(MoniPalette.foregroundSecondary)
-                            .lineLimit(1)
-                    }
-                    InteractiveSparkline(
-                        series: [
-                            InteractiveSparklineSeries(
-                                name: "GPU",
-                                values: monitor.gpuHistory,
-                                color: MoniPalette.green,
-                                showsFill: true,
-                                formatValue: percent
-                            )
-                        ],
-                        dates: monitor.gpuHistoryDates
-                    )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: chartHeight(for: size, compact: 66))
+        return MetricCard(
+            title: "GPU",
+            symbol: "display",
+            color: MoniPalette.green,
+            trailing: "\(snapshot.gpuDevices.count) device\(snapshot.gpuDevices.count == 1 ? "" : "s")",
+            trailingHelp: "Number of GPU devices detected by macOS."
+        ) {
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Utilization")
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                    Text(MoniLocalization.string(snapshot.gpu.utilizationPercent.map(percent) ?? "No Data"))
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .help("Current overall GPU utilization reported by macOS.")
+                    Text(snapshot.gpuDevices.first?.name ?? snapshot.host.chip)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                        .lineLimit(1)
                 }
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible()), count: isWide ? 3 : 2),
-                    spacing: 8
-                ) {
-                    compactCardStat("Renderer", snapshot.gpu.rendererPercent.map(percent) ?? "—", color: MoniPalette.green, help: "Share of GPU renderer capacity currently in use.")
-                    compactCardStat("Tiler", snapshot.gpu.tilerPercent.map(percent) ?? "—", color: MoniPalette.cyan, help: "Share of GPU tiler capacity currently in use.")
-                    if isWide {
-                        compactCardStat("Allocated", snapshot.gpu.allocatedMemoryBytes.map(bytes) ?? "—", color: MoniPalette.blue, help: "Unified memory currently allocated to GPU workloads.")
-                    }
-                }
-                .frame(maxHeight: .infinity, alignment: .bottomLeading)
+                InteractiveSparkline(
+                    series: [
+                        InteractiveSparklineSeries(
+                            name: "GPU",
+                            values: monitor.gpuHistory,
+                            color: MoniPalette.green,
+                            showsFill: true,
+                            formatValue: percent
+                        )
+                    ],
+                    dates: monitor.gpuHistoryDates
+                )
+                    .frame(maxWidth: .infinity)
+                    .frame(height: chartHeight(for: size, compact: 66))
             }
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible()), count: isWide ? 3 : 2),
+                spacing: 8
+            ) {
+                compactCardStat("Renderer", snapshot.gpu.rendererPercent.map(percent) ?? "—", color: MoniPalette.green, help: "Share of GPU renderer capacity currently in use.")
+                compactCardStat("Tiler", snapshot.gpu.tilerPercent.map(percent) ?? "—", color: MoniPalette.cyan, help: "Share of GPU tiler capacity currently in use.")
+                if isWide {
+                    compactCardStat("Allocated", snapshot.gpu.allocatedMemoryBytes.map(bytes) ?? "—", color: MoniPalette.blue, help: "Unified memory currently allocated to GPU workloads.")
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .bottomLeading)
         }
     }
 
     private var networkCard: some View {
         let size = cardSize(.network)
 
-        return cardButton(.network) {
-            MetricCard(title: "Network", symbol: MonitorSection.network.symbol, color: MoniPalette.cyan, trailing: "Live") {
-                HStack(alignment: .bottom, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Label("Download", systemImage: "arrow.down")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(MoniPalette.cyan)
-                            .help("Current incoming network transfer rate.")
-                        Text(rate(snapshot.network.downloadBytesPerSecond))
-                            .font(.system(size: 23, weight: .bold, design: .rounded))
-                            .moniNumericTransition(snapshot.network.downloadBytesPerSecond)
-                            .help("Current incoming network transfer rate.")
-                        Label("Upload", systemImage: "arrow.up")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(MoniPalette.orange)
-                            .help("Current outgoing network transfer rate.")
-                        Text(rate(snapshot.network.uploadBytesPerSecond))
-                            .font(.system(size: 23, weight: .bold, design: .rounded))
-                            .moniNumericTransition(snapshot.network.uploadBytesPerSecond)
-                            .help("Current outgoing network transfer rate.")
-                    }
-                    InteractiveSparkline(
-                        series: [
-                            InteractiveSparklineSeries(
-                                name: "Download",
-                                values: monitor.downloadHistory,
-                                color: MoniPalette.cyan,
-                                showsFill: true,
-                                formatValue: rate
-                            ),
-                            InteractiveSparklineSeries(
-                                name: "Upload",
-                                values: monitor.uploadHistory,
-                                color: MoniPalette.orange,
-                                formatValue: rate
-                            ),
-                        ],
-                        dates: monitor.recentHistoryDates
-                    )
-                    .frame(maxWidth: .infinity)
-                    .frame(height: chartHeight(for: size, compact: 72))
+        return MetricCard(title: "Network", symbol: "arrow.up.arrow.down", color: MoniPalette.cyan, trailing: "Live") {
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Label("Download", systemImage: "arrow.down")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(MoniPalette.cyan)
+                        .help("Current incoming network transfer rate.")
+                    Text(rate(snapshot.network.downloadBytesPerSecond))
+                        .font(.system(size: 23, weight: .bold, design: .rounded))
+                        .moniNumericTransition(snapshot.network.downloadBytesPerSecond)
+                        .help("Current incoming network transfer rate.")
+                    Label("Upload", systemImage: "arrow.up")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(MoniPalette.orange)
+                        .help("Current outgoing network transfer rate.")
+                    Text(rate(snapshot.network.uploadBytesPerSecond))
+                        .font(.system(size: 23, weight: .bold, design: .rounded))
+                        .moniNumericTransition(snapshot.network.uploadBytesPerSecond)
+                        .help("Current outgoing network transfer rate.")
                 }
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 16) {
-                        networkTotal("Received", bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan, help: "Total data received across network interfaces since the counters started.")
-                        networkTotal("Sent", bytes(snapshot.network.totalSentBytes), color: MoniPalette.orange, help: "Total data sent across network interfaces since the counters started.")
-                    }
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(MoniPalette.green)
-                            .frame(width: 7, height: 7)
-                        Text(primaryNetworkLabel)
-                            .foregroundStyle(MoniPalette.foregroundSecondary)
-                            .lineLimit(1)
-                            .help("Primary network interface and physical Wi-Fi mode.")
-                        Spacer(minLength: 4)
-                        Text("\(snapshot.network.interfaces.filter(\.isActive).count) active")
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-                            .help("Number of network interfaces currently marked active.")
-                    }
-                    .font(.system(size: 11.5))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                InteractiveSparkline(
+                    series: [
+                        InteractiveSparklineSeries(
+                            name: "Download",
+                            values: monitor.downloadHistory,
+                            color: MoniPalette.cyan,
+                            showsFill: true,
+                            formatValue: rate
+                        ),
+                        InteractiveSparklineSeries(
+                            name: "Upload",
+                            values: monitor.uploadHistory,
+                            color: MoniPalette.orange,
+                            formatValue: rate
+                        ),
+                    ],
+                    dates: monitor.recentHistoryDates
+                )
+                .frame(maxWidth: .infinity)
+                .frame(height: chartHeight(for: size, compact: 72))
             }
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 16) {
+                    networkTotal("Received", bytes(snapshot.network.totalReceivedBytes), color: MoniPalette.cyan, help: "Total data received across network interfaces since the counters started.")
+                    networkTotal("Sent", bytes(snapshot.network.totalSentBytes), color: MoniPalette.orange, help: "Total data sent across network interfaces since the counters started.")
+                }
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(MoniPalette.green)
+                        .frame(width: 7, height: 7)
+                    Text(primaryNetworkLabel)
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                        .lineLimit(1)
+                        .help("Primary network interface and physical Wi-Fi mode.")
+                    Spacer(minLength: 4)
+                    Text("\(snapshot.network.interfaces.filter(\.isActive).count) active")
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                        .help("Number of network interfaces currently marked active.")
+                }
+                .font(.system(size: 11.5))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
     }
 
@@ -573,32 +529,30 @@ struct SummaryView: View {
     private var storageCard: some View {
         let size = cardSize(.storage)
 
-        return cardButton(.storage) {
-            MetricCard(
-                title: "Storage",
-                symbol: MonitorSection.storage.symbol,
-                color: MoniPalette.orange,
-                trailing: "\(snapshot.volumes.count) volumes",
-                trailingHelp: "Number of currently mounted storage volumes."
-            ) {
-                if snapshot.volumes.isEmpty {
-                    Text("No mounted volumes")
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
-                } else {
-                    LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible()), count: size.columns),
-                        spacing: 8
-                    ) {
-                        ForEach(snapshot.volumes.prefix(max(2, size.columns * size.rows * 2))) { volume in
-                            compactVolume(volume)
-                        }
+        return MetricCard(
+            title: "Storage",
+            symbol: "internaldrive",
+            color: MoniPalette.orange,
+            trailing: "\(snapshot.volumes.count) volumes",
+            trailingHelp: "Number of currently mounted storage volumes."
+        ) {
+            if snapshot.volumes.isEmpty {
+                Text("No mounted volumes")
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
+            } else {
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible()), count: size.columns),
+                    spacing: 8
+                ) {
+                    ForEach(snapshot.volumes.prefix(max(2, size.columns * size.rows * 2))) { volume in
+                        compactVolume(volume)
                     }
-                    HStack(spacing: 16) {
-                        networkTotal("Read", rate(snapshot.diskActivity.readBytesPerSecond), color: MoniPalette.cyan, help: "Current rate of data being read from storage devices.")
-                        networkTotal("Write", rate(snapshot.diskActivity.writeBytesPerSecond), color: MoniPalette.orange, help: "Current rate of data being written to storage devices.")
-                    }
-                    .frame(maxHeight: .infinity, alignment: .bottomLeading)
                 }
+                HStack(spacing: 16) {
+                    networkTotal("Read", rate(snapshot.diskActivity.readBytesPerSecond), color: MoniPalette.cyan, help: "Current rate of data being read from storage devices.")
+                    networkTotal("Write", rate(snapshot.diskActivity.writeBytesPerSecond), color: MoniPalette.orange, help: "Current rate of data being written to storage devices.")
+                }
+                .frame(maxHeight: .infinity, alignment: .bottomLeading)
             }
         }
     }
@@ -638,25 +592,23 @@ struct SummaryView: View {
         let size = cardSize(.processes)
         let itemsPerColumn = size.rows == 1 ? 3 : size.rows * 4
 
-        return cardButton(.processes) {
-            MetricCard(
-                title: "Processes",
-                symbol: MonitorSection.processes.symbol,
-                color: MoniPalette.purple,
-                trailing: snapshot.processes.count.formatted(),
-                trailingHelp: "Number of processes currently reported by macOS."
+        return MetricCard(
+            title: "Processes",
+            symbol: "list.bullet.rectangle",
+            color: MoniPalette.purple,
+            trailing: snapshot.processes.count.formatted(),
+            trailingHelp: "Number of processes currently reported by macOS."
+        ) {
+            LazyVGrid(
+                columns: Array(
+                    repeating: GridItem(.flexible(), spacing: 18, alignment: .leading),
+                    count: size.columns
+                ),
+                alignment: .leading,
+                spacing: size.rows == 1 ? 0 : 9
             ) {
-                LazyVGrid(
-                    columns: Array(
-                        repeating: GridItem(.flexible(), spacing: 18, alignment: .leading),
-                        count: size.columns
-                    ),
-                    alignment: .leading,
-                    spacing: size.rows == 1 ? 0 : 9
-                ) {
-                    ForEach(snapshot.processes.prefix(size.columns * itemsPerColumn)) { process in
-                        processSummaryRow(process)
-                    }
+                ForEach(snapshot.processes.prefix(size.columns * itemsPerColumn)) { process in
+                    processSummaryRow(process)
                 }
             }
         }
@@ -701,46 +653,44 @@ struct SummaryView: View {
         let size = cardSize(.power)
         let isWide = size.columns >= 2
 
-        return cardButton(.sensors) {
-            MetricCard(title: "Power & Sensors", symbol: MonitorSection.sensors.symbol, color: MoniPalette.yellow, trailing: powerSourceTitle) {
-                HStack(alignment: .bottom, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Battery")
-                            .foregroundStyle(MoniPalette.foregroundSecondary)
-                        Text(MoniLocalization.string(snapshot.power.batteryPercent.map(percent) ?? "No Battery"))
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .moniNumericTransition(snapshot.power.batteryPercent)
-                            .help("Current battery charge level. “No Battery” is shown on desktop Macs.")
-                    }
-                    .layoutPriority(1)
-                    InteractiveSparkline(
-                        series: [
-                            InteractiveSparklineSeries(
-                                name: "CPU die",
-                                values: monitor.cpuTemperatureHistory,
-                                color: MoniPalette.orange,
-                                showsFill: true,
-                                formatValue: { String(format: "%.1f°C", $0) }
-                            )
-                        ],
-                        dates: monitor.cpuTemperatureHistoryDates
-                    )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: chartHeight(for: size, compact: 54))
+        return MetricCard(title: "Power & Sensors", symbol: "bolt.batteryblock", color: MoniPalette.yellow, trailing: powerSourceTitle) {
+            HStack(alignment: .bottom, spacing: 18) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Battery")
+                        .foregroundStyle(MoniPalette.foregroundSecondary)
+                    Text(MoniLocalization.string(snapshot.power.batteryPercent.map(percent) ?? "No Battery"))
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .moniNumericTransition(snapshot.power.batteryPercent)
+                        .help("Current battery charge level. “No Battery” is shown on desktop Macs.")
                 }
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible()), count: isWide ? 4 : 2),
-                    spacing: 10
-                ) {
-                    powerStat("Fan", snapshot.power.fans.first.map { String(format: "%.0f rpm", $0.revolutionsPerMinute) } ?? "—", help: "Rotation speed of the first detected cooling fan.")
-                    powerStat("Cycles", snapshot.power.cycleCount.map(String.init) ?? "—", help: "Number of completed battery charge cycles.")
-                    powerStat("Power draw", snapshot.power.systemPowerWatts.map { String(format: "%.1f W", $0) } ?? "—", help: "Estimated electrical power currently consumed by the system.")
-                    powerStat("Health", snapshot.power.batteryHealth ?? "—", color: batteryHealthColor, help: "Battery condition reported by macOS.")
-                }
-                .frame(maxHeight: .infinity, alignment: .bottomLeading)
+                .layoutPriority(1)
+                InteractiveSparkline(
+                    series: [
+                        InteractiveSparklineSeries(
+                            name: "CPU die",
+                            values: monitor.cpuTemperatureHistory,
+                            color: MoniPalette.orange,
+                            showsFill: true,
+                            formatValue: { String(format: "%.1f°C", $0) }
+                        )
+                    ],
+                    dates: monitor.cpuTemperatureHistoryDates
+                )
+                    .frame(maxWidth: .infinity)
+                    .frame(height: chartHeight(for: size, compact: 54))
             }
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible()), count: isWide ? 4 : 2),
+                spacing: 10
+            ) {
+                powerStat("Fan", snapshot.power.fans.first.map { String(format: "%.0f rpm", $0.revolutionsPerMinute) } ?? "—", help: "Rotation speed of the first detected cooling fan.")
+                powerStat("Cycles", snapshot.power.cycleCount.map(String.init) ?? "—", help: "Number of completed battery charge cycles.")
+                powerStat("Power draw", snapshot.power.systemPowerWatts.map { String(format: "%.1f W", $0) } ?? "—", help: "Estimated electrical power currently consumed by the system.")
+                powerStat("Health", snapshot.power.batteryHealth ?? "—", color: batteryHealthColor, help: "Battery condition reported by macOS.")
+            }
+            .frame(maxHeight: .infinity, alignment: .bottomLeading)
         }
     }
 
@@ -769,78 +719,10 @@ struct SummaryView: View {
         return health == "Normal" ? MoniPalette.green : MoniPalette.red
     }
 
-    private var dockerCard: some View {
-        let docker = snapshot.docker
-        let color: Color = docker.isRunning ? MoniPalette.blue : docker.isInstalled ? MoniPalette.orange : MoniPalette.foregroundSecondary
-
-        return cardButton(.docker) {
-            MetricCard(
-                title: "Docker",
-                symbol: MonitorSection.docker.symbol,
-                color: color,
-                trailing: docker.isRunning
-                    ? "\(docker.runningContainerCount)/\(docker.containers.count) up"
-                    : nil,
-                trailingHelp: "Running Docker containers compared with all detected containers."
-            ) {
-                if cardSize(.docker).columns >= 2 {
-                    HStack(alignment: .top, spacing: 32) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(MoniLocalization.string(docker.statusTitle))
-                                .font(.system(size: 30, weight: .bold, design: .rounded))
-                            Text(MoniLocalization.string(docker.installation ?? "No supported installation"))
-                                .foregroundStyle(MoniPalette.foregroundSecondary)
-                        }
-                        VStack(alignment: .leading, spacing: 10) {
-                            MetricRow(
-                                label: "Engine",
-                                value: docker.isRunning ? "Connected" : "Unavailable",
-                                color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red,
-                                helpText: "Whether Moni can currently communicate with the local Docker engine."
-                            )
-                            Text(MoniLocalization.string(docker.statusReason))
-                                .font(.system(size: 11))
-                                .foregroundStyle(MoniPalette.foregroundTertiary)
-                                .lineLimit(3)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                } else {
-                    Text(MoniLocalization.string(docker.statusTitle))
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text(MoniLocalization.string(docker.installation ?? "No supported installation"))
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
-                    Spacer()
-                    MetricRow(
-                        label: "Engine",
-                        value: docker.isRunning ? "Connected" : "Unavailable",
-                        color: docker.isRunning ? MoniPalette.green : docker.isInstalled ? MoniPalette.orange : MoniPalette.red,
-                        helpText: "Whether Moni can currently communicate with the local Docker engine."
-                    )
-                    Text(MoniLocalization.string(docker.statusReason))
-                        .font(.system(size: 11))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                        .lineLimit(2)
-                }
-            }
-        }
-    }
-
     private var powerSourceTitle: String? {
         if snapshot.power.isCharging { return MoniLocalization.string("Charging") }
         if snapshot.power.isExternalPowerConnected { return MoniLocalization.string("AC Power") }
         return nil
-    }
-
-    private func cardButton<Content: View>(_ target: MonitorSection, @ViewBuilder content: () -> Content) -> some View {
-        Button {
-            selection = target
-        } label: {
-            content()
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(MoniPressButtonStyle(scale: 0.985))
-        .transition(reduceMotion ? .identity : MoniMotion.itemTransition)
     }
 
     private var orderedCards: [DashboardCardID] {
@@ -848,7 +730,7 @@ struct SummaryView: View {
     }
 
     private var visibleCards: Set<DashboardCardID> {
-        var cards: Set<DashboardCardID> = []
+        var cards: Set<DashboardCardID> = [.temperature]
         if showHost { cards.insert(.host) }
         if showCPU { cards.insert(.cpu) }
         if showMemory { cards.insert(.memory) }
@@ -857,7 +739,6 @@ struct SummaryView: View {
         if showStorage { cards.insert(.storage) }
         if showProcesses { cards.insert(.processes) }
         if showPower { cards.insert(.power) }
-        if showDocker { cards.insert(.docker) }
         return cards
     }
 

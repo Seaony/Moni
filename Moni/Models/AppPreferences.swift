@@ -20,8 +20,6 @@ enum PreferenceKey {
     static let repeatAlerts = "repeatAlerts"
     static let summaryCardLayout = "summaryCardLayout"
     static let summaryGridDensity = "summaryGridDensity"
-    static let storageFolderCache = "storageFolderCache"
-    static let storageFolderCacheDate = "storageFolderCacheDate"
 
     static let showHost = "showHost"
     static let showCPU = "showCPU"
@@ -31,7 +29,6 @@ enum PreferenceKey {
     static let showStorage = "showStorage"
     static let showProcesses = "showProcesses"
     static let showPower = "showPower"
-    static let showDocker = "showDocker"
 }
 
 enum SummaryGridDensity: String, CaseIterable, Identifiable {

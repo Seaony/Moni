@@ -12,7 +12,6 @@ import SwiftUI
 struct MoniApp: App {
     @StateObject private var monitor = SystemMonitor()
     @StateObject private var updates = UpdateController()
-    @StateObject private var fanControl = FanControlService()
     @AppStorage(PreferenceKey.appLanguage) private var appLanguage = AppLanguage.english.rawValue
 
     var body: some Scene {
@@ -20,7 +19,6 @@ struct MoniApp: App {
             ContentView()
                 .environmentObject(monitor)
                 .environmentObject(updates)
-                .environmentObject(fanControl)
                 .background(
                     MenuBarWindowPositioner { isVisible in
                         monitor.setPanelVisible(isVisible)
@@ -37,7 +35,6 @@ struct MoniApp: App {
             CommandGroup(after: .newItem) {
                 Button(MoniLocalization.string("Refresh", language: selectedLanguage)) {
                     monitor.refresh(forceSlowMetrics: true)
-                    monitor.loadNetworkExternalDetailsIfNeeded(force: true)
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }

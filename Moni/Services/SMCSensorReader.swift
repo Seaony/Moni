@@ -5,7 +5,6 @@ nonisolated final class SMCSensorReader {
     private enum Command: UInt8 {
         case kernelIndex = 2
         case readBytes = 5
-        case writeBytes = 6
         case readKeyInfo = 9
     }
 
@@ -121,51 +120,6 @@ nonisolated final class SMCSensorReader {
             return Double(float)
         default:
             return nil
-        }
-    }
-
-    func writeValue(_ number: Double, for key: String) throws {
-        guard number.isFinite, let existing = read(key) else {
-            throw WriteError.unavailable(key)
-        }
-        let bytes: [UInt8]
-        switch existing.type {
-        case "ui8 " where existing.bytes.count == 1 && number >= 0 && number <= 255:
-            bytes = [UInt8(number)]
-        case "ui16" where existing.bytes.count == 2 && number >= 0 && number <= 65_535:
-            let value = UInt16(number)
-            bytes = [UInt8(value >> 8), UInt8(value & 0xff)]
-        case "flt " where existing.bytes.count == 4 && abs(number) <= Double(Float.greatestFiniteMagnitude):
-            var value = Float(number)
-            bytes = withUnsafeBytes(of: &value) { Array($0) }
-        case "fpe2" where existing.bytes.count == 2 && number >= 0 && number <= 16_383.75:
-            let value = UInt16((number * 4).rounded())
-            bytes = [UInt8(value >> 8), UInt8(value & 0xff)]
-        default:
-            throw WriteError.unavailable(key)
-        }
-
-        var input = KeyData()
-        var output = KeyData()
-        input.key = fourCharacterCode(key)
-        input.keyInfo.dataSize = UInt32(bytes.count)
-        input.data8 = Command.writeBytes.rawValue
-        withUnsafeMutableBytes(of: &input.bytes) { $0.copyBytes(from: bytes) }
-        let result = call(&input, output: &output)
-        guard result == kIOReturnSuccess, output.result == 0 else {
-            throw WriteError.rejected(key, result, output.result)
-        }
-    }
-
-    private enum WriteError: LocalizedError {
-        case unavailable(String)
-        case rejected(String, kern_return_t, UInt8)
-
-        var errorDescription: String? {
-            switch self {
-            case .unavailable(let key): "Unsupported SMC value: \(key)"
-            case .rejected(let key, let code, let result): "SMC write failed: \(key) (\(code), \(result))"
-            }
         }
     }
 

@@ -2,7 +2,6 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 import UserNotifications
-import WidgetKit
 
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general, menuBar, alerts, modules, about
@@ -34,56 +33,63 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var section: SettingsSection
+    let onContentSizeChange: (CGSize) -> Void
     @AppStorage(PreferenceKey.samplingInterval) private var samplingInterval = 0.7
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(SettingsSection.allCases) { item in
-                    Button {
-                        select(item)
-                    } label: {
-                        Text(item.title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 9)
-                            .foregroundStyle(section == item ? MoniPalette.foreground : MoniPalette.foregroundTertiary)
-                            .background(section == item ? MoniPalette.control : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        ScrollView([.horizontal, .vertical], showsIndicators: false) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(SettingsSection.allCases) { item in
+                        Button {
+                            select(item)
+                        } label: {
+                            Text(item.title)
+                                .font(.system(size: 13, weight: .semibold))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .foregroundStyle(section == item ? MoniPalette.foreground : MoniPalette.foregroundTertiary)
+                                .background(section == item ? MoniPalette.control : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(MoniPressButtonStyle())
                     }
-                    .buttonStyle(MoniPressButtonStyle())
+                    Spacer()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Moni \(appVersion)")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(MoniPalette.foregroundTertiary)
+                        Text("Sampling \(samplingLabel)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(MoniPalette.foregroundSecondary)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(MoniPalette.insetSecondary)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-                Spacer()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Moni \(appVersion)")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
-                    Text("Sampling \(samplingLabel)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(MoniPalette.insetSecondary)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .frame(width: 186)
+                .frame(width: 186)
 
-            Group {
-                switch section {
-                case .general: GeneralSettings()
-                case .menuBar: MenuBarSettings()
-                case .alerts: AlertSettings()
-                case .modules: ModuleSettings()
-                case .about: AboutSettings()
+                Group {
+                    switch section {
+                    case .general: GeneralSettings()
+                    case .menuBar: MenuBarSettings()
+                    case .alerts: AlertSettings()
+                    case .modules: ModuleSettings()
+                    case .about: AboutSettings()
+                    }
                 }
+                .id(section)
+                .transition(reduceMotion ? .identity : MoniMotion.pageTransition)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
-            .id(section)
-            .transition(reduceMotion ? .identity : MoniMotion.pageTransition)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .fixedSize()
+            .onGeometryChange(for: CGSize.self) { proxy in
+                CGSize(width: ceil(proxy.size.width), height: ceil(proxy.size.height))
+            } action: { onContentSizeChange($0) }
         }
     }
 
@@ -193,55 +199,53 @@ private struct AlertSettings: View {
     @State private var notificationError: String?
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 12) {
-                DetailPanel("Thresholds") {
-                    if !notificationAlerts {
-                        Text("Turn on the notification banner below for these limits to alert you.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
+        VStack(spacing: 12) {
+            DetailPanel("Thresholds") {
+                if !notificationAlerts {
+                    Text("Turn on the notification banner below for these limits to alert you.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                }
+                VStack(spacing: 18) {
+                    thresholdRow("CPU load", hint: "sustained over 30s", color: MoniPalette.pink, value: $cpuThreshold)
+                    thresholdRow("Memory used", hint: "physical memory", color: MoniPalette.blue, value: $memoryThreshold)
+                    thresholdRow("CPU temperature", hint: "die sensor", unit: "°C", color: MoniPalette.orange, value: $temperatureThreshold)
+                    thresholdRow("Disk space used", hint: "boot volume", color: MoniPalette.yellow, value: $diskThreshold)
+                }
+            }
+
+            DetailPanel("Delivery") {
+                VStack(spacing: 2) {
+                    SettingsToggleRow(
+                        title: "Notification banner",
+                        hint: "Show a macOS notification",
+                        isOn: notificationAlerts
+                    ) {
+                        updateNotifications(!notificationAlerts)
                     }
-                    VStack(spacing: 18) {
-                        thresholdRow("CPU load", hint: "sustained over 30s", color: MoniPalette.pink, value: $cpuThreshold)
-                        thresholdRow("Memory used", hint: "physical memory", color: MoniPalette.blue, value: $memoryThreshold)
-                        thresholdRow("CPU temperature", hint: "die sensor", unit: "°C", color: MoniPalette.orange, value: $temperatureThreshold)
-                        thresholdRow("Disk space used", hint: "boot volume", color: MoniPalette.yellow, value: $diskThreshold)
+                    SettingsToggleRow(
+                        title: "Play sound",
+                        hint: "Alert tone when a limit is crossed",
+                        isOn: alertSounds,
+                        isEnabled: notificationAlerts
+                    ) {
+                        alertSounds.toggle()
+                    }
+                    SettingsToggleRow(
+                        title: "Repeat every 5 min",
+                        hint: "Keep alerting while over the limit",
+                        isOn: repeatAlerts,
+                        isEnabled: notificationAlerts
+                    ) {
+                        repeatAlerts.toggle()
                     }
                 }
-
-                DetailPanel("Delivery") {
-                    VStack(spacing: 2) {
-                        SettingsToggleRow(
-                            title: "Notification banner",
-                            hint: "Show a macOS notification",
-                            isOn: notificationAlerts
-                        ) {
-                            updateNotifications(!notificationAlerts)
-                        }
-                        SettingsToggleRow(
-                            title: "Play sound",
-                            hint: "Alert tone when a limit is crossed",
-                            isOn: alertSounds,
-                            isEnabled: notificationAlerts
-                        ) {
-                            alertSounds.toggle()
-                        }
-                        SettingsToggleRow(
-                            title: "Repeat every 5 min",
-                            hint: "Keep alerting while over the limit",
-                            isOn: repeatAlerts,
-                            isEnabled: notificationAlerts
-                        ) {
-                            repeatAlerts.toggle()
-                        }
-                    }
-                    if let notificationError {
-                        Text(notificationError)
-                            .font(.system(size: 12))
-                            .foregroundStyle(MoniPalette.red)
-                            .padding(.horizontal, 10)
-                            .transition(MoniMotion.itemTransition)
-                    }
+                if let notificationError {
+                    Text(notificationError)
+                        .font(.system(size: 12))
+                        .foregroundStyle(MoniPalette.red)
+                        .padding(.horizontal, 10)
+                        .transition(MoniMotion.itemTransition)
                 }
             }
         }
@@ -348,160 +352,157 @@ private struct GeneralSettings: View {
     @State private var pendingWindowZoom: Double?
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 12) {
-                DetailPanel("Language") {
-                    HStack(spacing: 6) {
-                        ForEach(AppLanguage.allCases) { language in
-                            SettingsChoiceButton(
-                                title: language.title,
-                                selected: selectedLanguage == language,
-                                systemImage: language == .english ? "character.book.closed" : "character.book.closed.zh",
-                                expand: true
-                            ) {
-                                appLanguage = language.rawValue
-                                MoniLocalization.setLanguage(language)
-                                WidgetCenter.shared.reloadAllTimelines()
-                            }
+        VStack(spacing: 12) {
+            DetailPanel("Language") {
+                HStack(spacing: 6) {
+                    ForEach(AppLanguage.allCases) { language in
+                        SettingsChoiceButton(
+                            title: language.title,
+                            selected: selectedLanguage == language,
+                            systemImage: language == .english ? "character.book.closed" : "character.book.closed.zh",
+                            expand: true
+                        ) {
+                            appLanguage = language.rawValue
+                            MoniLocalization.setLanguage(language)
                         }
                     }
-                    Text("Changes the language across Moni, the menu bar, notifications, and widgets.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
-
-                DetailPanel("Appearance") {
-                    HStack(spacing: 6) {
-                        SettingsChoiceButton(
-                            title: "System",
-                            selected: storedAppearance == .system,
-                            systemImage: "circle.lefthalf.filled",
-                            expand: true
-                        ) {
-                            appearance = AppAppearance.system.rawValue
-                        }
-                        SettingsChoiceButton(
-                            title: "Dark",
-                            selected: storedAppearance == .dark,
-                            systemImage: "moon.fill",
-                            expand: true
-                        ) {
-                            appearance = AppAppearance.dark.rawValue
-                        }
-                        SettingsChoiceButton(
-                            title: "Light",
-                            selected: storedAppearance == .light,
-                            systemImage: "sun.max.fill",
-                            expand: true
-                        ) {
-                            appearance = AppAppearance.light.rawValue
-                        }
-                    }
-                    Text(
-                        storedAppearance == .system
-                            ? MoniLocalization.format(
-                                "System follows the macOS appearance, currently %@.",
-                                MoniLocalization.string(colorScheme == .dark ? "dark" : "light")
-                            )
-                            : MoniLocalization.string("Light mode follows the same palette with inverted surfaces.")
-                    )
+                Text("Changes the language across Moni, the menu bar, and notifications.")
                     .font(.system(size: 12))
                     .foregroundStyle(MoniPalette.foregroundTertiary)
-                }
+            }
 
-                DetailPanel("Sampling interval") {
-                    HStack(spacing: 6) {
-                        ForEach([0.3, 0.7, 1.0, 2.0, 5.0], id: \.self) { interval in
-                            SettingsChoiceButton(
-                                title: interval == 1 ? "1s" : String(format: "%.1gs", interval),
-                                selected: samplingInterval == interval
-                            ) {
-                                samplingInterval = interval
-                            }
-                        }
+            DetailPanel("Appearance") {
+                HStack(spacing: 6) {
+                    SettingsChoiceButton(
+                        title: "System",
+                        selected: storedAppearance == .system,
+                        systemImage: "circle.lefthalf.filled",
+                        expand: true
+                    ) {
+                        appearance = AppAppearance.system.rawValue
                     }
-                    Text("Shorter intervals give smoother graphs and use slightly more CPU.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                    SettingsChoiceButton(
+                        title: "Dark",
+                        selected: storedAppearance == .dark,
+                        systemImage: "moon.fill",
+                        expand: true
+                    ) {
+                        appearance = AppAppearance.dark.rawValue
+                    }
+                    SettingsChoiceButton(
+                        title: "Light",
+                        selected: storedAppearance == .light,
+                        systemImage: "sun.max.fill",
+                        expand: true
+                    ) {
+                        appearance = AppAppearance.light.rawValue
+                    }
                 }
-
-                DetailPanel("Zoom") {
-                    HStack(spacing: 12) {
-                        Text("0.5×")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
-
-                        Slider(
-                            value: Binding(
-                                get: { pendingWindowZoom ?? windowZoom },
-                                set: { pendingWindowZoom = $0 }
-                            ),
-                            in: 0.5...1.5,
-                            step: 0.1,
-                            onEditingChanged: { isEditing in
-                                guard !isEditing, let pendingWindowZoom else { return }
-                                windowZoom = pendingWindowZoom
-                                self.pendingWindowZoom = nil
-                            }
+                Text(
+                    storedAppearance == .system
+                        ? MoniLocalization.format(
+                            "System follows the macOS appearance, currently %@.",
+                            MoniLocalization.string(colorScheme == .dark ? "dark" : "light")
                         )
+                        : MoniLocalization.string("Light mode follows the same palette with inverted surfaces.")
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
 
-                        Text(String(format: "%.1f×", pendingWindowZoom ?? windowZoom))
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .frame(width: 38, alignment: .trailing)
-
-                        Button("Reset") {
-                            pendingWindowZoom = nil
-                            windowZoom = 1.0
+            DetailPanel("Sampling interval") {
+                HStack(spacing: 6) {
+                    ForEach([0.3, 0.7, 1.0, 2.0, 5.0], id: \.self) { interval in
+                        SettingsChoiceButton(
+                            title: interval == 1 ? "1s" : String(format: "%.1gs", interval),
+                            selected: samplingInterval == interval
+                        ) {
+                            samplingInterval = interval
                         }
-                        .buttonStyle(MoniPressButtonStyle())
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle((pendingWindowZoom ?? windowZoom) == 1.0 ? MoniPalette.foregroundTertiary : MoniPalette.blue)
-                        .disabled((pendingWindowZoom ?? windowZoom) == 1.0)
                     }
-                    Text("Scales the entire pop-up window. The default size is 1.0×.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MoniPalette.foregroundTertiary)
                 }
+                Text("Shorter intervals give smoother graphs and use slightly more CPU.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
 
-                DetailPanel("Behavior") {
-                    VStack(spacing: 2) {
-                        SettingsToggleRow(
-                            title: "Launch at login",
-                            hint: "Start Moni when you log in",
-                            isOn: launchAtLogin
-                        ) {
-                            updateLoginItem(!launchAtLogin)
+            DetailPanel("Zoom") {
+                HStack(spacing: 12) {
+                    Text("0.5×")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+
+                    Slider(
+                        value: Binding(
+                            get: { pendingWindowZoom ?? windowZoom },
+                            set: { pendingWindowZoom = $0 }
+                        ),
+                        in: 0.5...1.5,
+                        step: 0.1,
+                        onEditingChanged: { isEditing in
+                            guard !isEditing, let pendingWindowZoom else { return }
+                            windowZoom = pendingWindowZoom
+                            self.pendingWindowZoom = nil
                         }
-                        SettingsToggleRow(
-                            title: "Threshold alerts",
-                            hint: "Notify when a limit below is crossed",
-                            isOn: notificationAlerts
-                        ) {
-                            updateNotifications(!notificationAlerts)
-                        }
-                        SettingsToggleRow(
-                            title: "Show Dock icon",
-                            hint: "Off keeps Moni menu-bar only",
-                            isOn: showDockIcon
-                        ) {
-                            showDockIcon.toggle()
-                            NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
-                        }
-                        SettingsToggleRow(
-                            title: "Compact menu bar",
-                            hint: "Show only the first selected item",
-                            isOn: compactMenuBar
-                        ) {
-                            compactMenuBar.toggle()
-                        }
+                    )
+
+                    Text(String(format: "%.1f×", pendingWindowZoom ?? windowZoom))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .frame(width: 38, alignment: .trailing)
+
+                    Button("Reset") {
+                        pendingWindowZoom = nil
+                        windowZoom = 1.0
                     }
-                    if let loginItemError {
-                        settingsError(loginItemError)
+                    .buttonStyle(MoniPressButtonStyle())
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle((pendingWindowZoom ?? windowZoom) == 1.0 ? MoniPalette.foregroundTertiary : MoniPalette.blue)
+                    .disabled((pendingWindowZoom ?? windowZoom) == 1.0)
+                }
+                Text("Scales the entire pop-up window. The default size is 1.0×.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MoniPalette.foregroundTertiary)
+            }
+
+            DetailPanel("Behavior") {
+                VStack(spacing: 2) {
+                    SettingsToggleRow(
+                        title: "Launch at login",
+                        hint: "Start Moni when you log in",
+                        isOn: launchAtLogin
+                    ) {
+                        updateLoginItem(!launchAtLogin)
                     }
-                    if let notificationError {
-                        settingsError(notificationError)
+                    SettingsToggleRow(
+                        title: "Threshold alerts",
+                        hint: "Notify when a limit below is crossed",
+                        isOn: notificationAlerts
+                    ) {
+                        updateNotifications(!notificationAlerts)
                     }
+                    SettingsToggleRow(
+                        title: "Show Dock icon",
+                        hint: "Off keeps Moni menu-bar only",
+                        isOn: showDockIcon
+                    ) {
+                        showDockIcon.toggle()
+                        NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
+                    }
+                    SettingsToggleRow(
+                        title: "Compact menu bar",
+                        hint: "Show only the first selected item",
+                        isOn: compactMenuBar
+                    ) {
+                        compactMenuBar.toggle()
+                    }
+                }
+                if let loginItemError {
+                    settingsError(loginItemError)
+                }
+                if let notificationError {
+                    settingsError(notificationError)
                 }
             }
         }
@@ -564,87 +565,85 @@ private struct MenuBarSettings: View {
     @AppStorage(PreferenceKey.menuBarDisplayStyle) private var styleValue = MenuBarDisplayStyle.valueOnly.rawValue
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 12) {
-                DetailPanel("Preview") {
-                    HStack(spacing: 14) {
-                        Spacer()
-                        ForEach(previewMetrics) { item in
-                            HStack(spacing: 5) {
-                                if displayStyle != .valueOnly {
-                                    MenuBarMiniGraph(
-                                        values: previewHistory(item),
-                                        color: metricColor(item)
-                                    )
+        VStack(spacing: 12) {
+            DetailPanel("Preview") {
+                HStack(spacing: 14) {
+                    Spacer()
+                    ForEach(previewMetrics) { item in
+                        HStack(spacing: 5) {
+                            if displayStyle != .valueOnly {
+                                MenuBarMiniGraph(
+                                    values: previewHistory(item),
+                                    color: metricColor(item)
+                                )
+                            }
+                            if displayStyle != .graphOnly {
+                                if displayStyle == .valueOnly {
+                                    Text(previewTag(item))
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(metricColor(item))
                                 }
-                                if displayStyle != .graphOnly {
-                                    if displayStyle == .valueOnly {
-                                        Text(previewTag(item))
-                                            .font(.system(size: 11, weight: .bold))
-                                            .foregroundStyle(metricColor(item))
-                                    }
-                                    Text(previewValue(item))
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .monospacedDigit()
-                                }
+                                Text(previewValue(item))
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .monospacedDigit()
                             }
                         }
-                        Text(Date.now.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
-                            .font(.system(size: 12))
-                            .foregroundStyle(MoniPalette.foregroundTertiary)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(MoniPalette.inset)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    Text(Date.now.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
+                        .font(.system(size: 12))
+                        .foregroundStyle(MoniPalette.foregroundTertiary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(MoniPalette.inset)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+
+            DetailPanel("Items in menu bar") {
+                HStack(spacing: 6) {
+                    ForEach(MenuBarMetric.allCases) { item in
+                        Button {
+                            toggle(item)
+                        } label: {
+                            Text(item.title)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(
+                                    selectedMetrics.contains(item)
+                                        ? MoniPalette.blue
+                                        : MoniPalette.foregroundSecondary
+                                )
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(
+                                    selectedMetrics.contains(item)
+                                        ? MoniPalette.blue.opacity(0.2)
+                                        : MoniPalette.control
+                                )
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .stroke(
+                                            selectedMetrics.contains(item)
+                                                ? MoniPalette.blue.opacity(0.45)
+                                                : MoniPalette.line,
+                                            lineWidth: 1
+                                        )
+                                }
+                                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        }
+                        .buttonStyle(MoniPressButtonStyle())
+                    }
                 }
 
-                DetailPanel("Items in menu bar") {
-                    HStack(spacing: 6) {
-                        ForEach(MenuBarMetric.allCases) { item in
-                            Button {
-                                toggle(item)
-                            } label: {
-                                Text(item.title)
-                                    .font(.system(size: 12.5))
-                                    .foregroundStyle(
-                                        selectedMetrics.contains(item)
-                                            ? MoniPalette.blue
-                                            : MoniPalette.foregroundSecondary
-                                    )
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(
-                                        selectedMetrics.contains(item)
-                                            ? MoniPalette.blue.opacity(0.2)
-                                            : MoniPalette.control
-                                    )
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                            .stroke(
-                                                selectedMetrics.contains(item)
-                                                    ? MoniPalette.blue.opacity(0.45)
-                                                    : MoniPalette.line,
-                                                lineWidth: 1
-                                            )
-                                    }
-                                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                            }
-                            .buttonStyle(MoniPressButtonStyle())
-                        }
-                    }
+                Text("DISPLAY STYLE")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MoniPalette.foregroundSecondary)
+                    .tracking(0.7)
+                    .padding(.top, 10)
 
-                    Text("DISPLAY STYLE")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(MoniPalette.foregroundSecondary)
-                        .tracking(0.7)
-                        .padding(.top, 10)
-
-                    HStack(spacing: 6) {
-                        ForEach(MenuBarDisplayStyle.allCases) { style in
-                            SettingsChoiceButton(title: style.title, selected: displayStyle == style) {
-                                styleValue = style.rawValue
-                            }
+                HStack(spacing: 6) {
+                    ForEach(MenuBarDisplayStyle.allCases) { style in
+                        SettingsChoiceButton(title: style.title, selected: displayStyle == style) {
+                            styleValue = style.rawValue
                         }
                     }
                 }
@@ -736,7 +735,6 @@ private struct ModuleSettings: View {
     @AppStorage(PreferenceKey.showStorage) private var showStorage = true
     @AppStorage(PreferenceKey.showProcesses) private var showProcesses = true
     @AppStorage(PreferenceKey.showPower) private var showPower = true
-    @AppStorage(PreferenceKey.showDocker) private var showDocker = true
     @AppStorage(PreferenceKey.summaryGridDensity) private var gridDensityValue = SummaryGridDensity.comfortable.rawValue
 
     private var snapshot: SystemSnapshot { monitor.snapshot }
@@ -746,81 +744,71 @@ private struct ModuleSettings: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 12) {
-                DetailPanel("Summary cards") {
-                    VStack(spacing: 2) {
-                        moduleRow("Host", color: MoniPalette.blue, note: "uptime, load", isOn: $showHost)
-                        moduleRow(
-                            "CPU",
-                            color: MoniPalette.pink,
-                            note: "\(ProcessInfo.processInfo.processorCount) cores",
-                            isOn: $showCPU
-                        )
-                        moduleRow(
-                            "Memory",
-                            color: MoniPalette.blue,
-                            note: memoryCapacity,
-                            isOn: $showMemory
-                        )
-                        moduleRow(
-                            "GPU",
-                            color: MoniPalette.green,
-                            note: count(snapshot.gpuDevices.count, singular: "device"),
-                            isOn: $showGPU
-                        )
-                        moduleRow(
-                            "Network",
-                            color: MoniPalette.cyan,
-                            note: count(snapshot.network.interfaces.count, singular: "interface"),
-                            isOn: $showNetwork
-                        )
-                        moduleRow(
-                            "Storage",
-                            color: MoniPalette.orange,
-                            note: count(snapshot.volumes.count, singular: "volume"),
-                            isOn: $showStorage
-                        )
-                        moduleRow(
-                            "Processes",
-                            color: MoniPalette.purple,
-                            note: snapshot.processes.count.formatted(),
-                            isOn: $showProcesses
-                        )
-                        moduleRow(
-                            "Sensors",
-                            color: MoniPalette.yellow,
-                            note: count(snapshot.power.temperatureSensors.count, singular: "probe"),
-                            isOn: $showPower
-                        )
-                        moduleRow(
-                            "Docker",
-                            color: MoniPalette.blue,
-                            note: snapshot.docker.isInstalled
-                                ? snapshot.docker.statusTitle.lowercased()
-                                : "unavailable",
-                            isOn: $showDocker
-                        )
-                    }
+        VStack(spacing: 12) {
+            DetailPanel("Summary cards") {
+                VStack(spacing: 2) {
+                    moduleRow("Host", color: MoniPalette.blue, note: "uptime, load", isOn: $showHost)
+                    moduleRow(
+                        "CPU",
+                        color: MoniPalette.pink,
+                        note: "\(ProcessInfo.processInfo.processorCount) cores",
+                        isOn: $showCPU
+                    )
+                    moduleRow(
+                        "Memory",
+                        color: MoniPalette.blue,
+                        note: memoryCapacity,
+                        isOn: $showMemory
+                    )
+                    moduleRow(
+                        "GPU",
+                        color: MoniPalette.green,
+                        note: count(snapshot.gpuDevices.count, singular: "device"),
+                        isOn: $showGPU
+                    )
+                    moduleRow(
+                        "Network",
+                        color: MoniPalette.cyan,
+                        note: count(snapshot.network.interfaces.count, singular: "interface"),
+                        isOn: $showNetwork
+                    )
+                    moduleRow(
+                        "Storage",
+                        color: MoniPalette.orange,
+                        note: count(snapshot.volumes.count, singular: "volume"),
+                        isOn: $showStorage
+                    )
+                    moduleRow(
+                        "Processes",
+                        color: MoniPalette.purple,
+                        note: snapshot.processes.count.formatted(),
+                        isOn: $showProcesses
+                    )
+                    moduleRow(
+                        "Sensors",
+                        color: MoniPalette.yellow,
+                        note: count(snapshot.power.temperatureSensors.count, singular: "probe"),
+                        isOn: $showPower
+                    )
                 }
+            }
 
-                DetailPanel("Grid density") {
-                    HStack(spacing: 6) {
-                        ForEach(SummaryGridDensity.allCases) { density in
-                            Button {
-                                gridDensityValue = density.rawValue
-                            } label: {
-                                Text(density.title)
-                                    .font(.system(size: 12.5, weight: .semibold))
-                                    .foregroundStyle(gridDensity == density ? Color.white : MoniPalette.foregroundSecondary)
-                                    .padding(.horizontal, 13)
-                                    .padding(.vertical, 7)
-                                    .background(gridDensity == density ? MoniPalette.blue : MoniPalette.control)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .moniPointingHand()
+            DetailPanel("Grid density") {
+                HStack(spacing: 6) {
+                    ForEach(SummaryGridDensity.allCases) { density in
+                        Button {
+                            gridDensityValue = density.rawValue
+                        } label: {
+                            Text(density.title)
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(gridDensity == density ? Color.white : MoniPalette.foregroundSecondary)
+                                .padding(.horizontal, 13)
+                                .padding(.vertical, 7)
+                                .background(gridDensity == density ? MoniPalette.blue : MoniPalette.control)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
+                        .buttonStyle(.plain)
+                        .moniPointingHand()
                     }
                 }
             }

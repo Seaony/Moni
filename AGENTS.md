@@ -3,7 +3,7 @@
 ## 项目概览
 
 - Moni 是使用 SwiftUI 与 AppKit 开发的 macOS 菜单栏应用，入口位于 `Moni/MoniApp.swift`。
-- 工程文件为 `Moni.xcodeproj`，包含 `Moni` 应用 Target 与 `MoniWidgets` 小组件 Target，主 Scheme 为 `Moni`。
+- 工程文件为 `Moni.xcodeproj`，应用 Target 与主 Scheme 均为 `Moni`。
 - 当前 Swift 版本为 5.0，最低系统版本由工程中的 `MACOSX_DEPLOYMENT_TARGET` 定义。
 - Swift Package 依赖包括 Sparkle。
 - `Moni/Models` 存放数据模型与偏好键，`Moni/Services` 存放采样和系统服务，`Moni/Views` 存放页面，`Moni/Views/Components` 存放共用组件。

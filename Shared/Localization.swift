@@ -21,20 +21,14 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 enum MoniLocalization {
     nonisolated static let preferenceKey = "appLanguage"
 
-    nonisolated static var sharedDefaults: UserDefaults? {
-        UserDefaults(suiteName: MoniWidgetStorage.appGroupIdentifier)
-    }
-
     nonisolated static var currentLanguage: AppLanguage {
         let rawValue = UserDefaults.standard.string(forKey: preferenceKey)
-            ?? sharedDefaults?.string(forKey: preferenceKey)
             ?? AppLanguage.english.rawValue
         return AppLanguage(rawValue: rawValue) ?? .english
     }
 
     nonisolated static func setLanguage(_ language: AppLanguage) {
         UserDefaults.standard.set(language.rawValue, forKey: preferenceKey)
-        sharedDefaults?.set(language.rawValue, forKey: preferenceKey)
     }
 
     nonisolated static func string(_ key: String, language: AppLanguage? = nil) -> String {

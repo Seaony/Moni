@@ -1,7 +1,7 @@
 <div align="center">
   <img src="Moni/Assets.xcassets/AppIcon.appiconset/AppIcon-128@2x.png" width="128" height="128" alt="Moni 图标">
   <h1>Moni</h1>
-  <p>一眼看清 Mac 状态与本地开发环境。</p>
+  <p>一眼看清 Mac 状态。</p>
   <p>
     <a href="https://github.com/Seaony/Moni/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/Seaony/Moni/build.yml?branch=master&amp;style=flat-square&amp;label=build"></a>
     <a href="https://github.com/Seaony/Moni/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Seaony/Moni?display_name=tag&amp;style=flat-square"></a>
@@ -10,15 +10,14 @@
   </p>
 </div>
 
-Moni 是一款使用 SwiftUI 与 AppKit 构建的 macOS 菜单栏监控应用。它把系统状态、进程、网络、存储与 Docker 收进一个紧凑、可定制的弹出窗口，并提供详情页、菜单栏指标与 macOS 小组件。
+Moni 是一款使用 SwiftUI 与 AppKit 构建的 macOS 菜单栏监控应用。它把系统状态、进程、网络与存储收进一个紧凑、可定制的首页，并提供菜单栏指标。
 
 ## 功能亮点
 
 - **完整系统概览**：主机、CPU、内存、GPU、网络、存储、进程、电池、温度、风扇与功耗。
-- **可交互图表**：首页与详情页图表支持悬停定位和数值说明，历史范围会随页面选项变化。
+- **可交互图表**：首页图表支持悬停定位和数值说明。
 - **自由编排首页**：卡片支持拖拽排序和尺寸调整，布局与显示模块会持久保存。
 - **自定义菜单栏**：可组合 CPU、内存、网络、磁盘、电池和温度，并选择数值、图表或图表加数值。
-- **macOS 小组件**：提供小、中、大尺寸的系统概览、资源、网络、存储、进程与 Docker 组件。
 - **贴合系统体验**：支持 System、Dark、Light 三种外观，支持英文与简体中文，并可调整整个弹出窗口的缩放比例。
 - **本地优先采样**：系统数据复用统一快照；昂贵采样按页面可见性降频或暂停。
 
@@ -33,13 +32,12 @@ Moni 是一款使用 SwiftUI 与 AppKit 构建的 macOS 菜单栏监控应用。
 ## 使用方式
 
 1. 从菜单栏打开 Moni，首页会显示已启用的监控卡片。
-2. 使用顶部图标进入各项详情；悬停图表或关键数值可查看解释和精确数据。
-3. 打开 Settings，可调整语言、主题、采样间隔、窗口缩放、菜单栏项目、告警和首页模块。
-4. 在 macOS 小组件图库中搜索 Moni，将需要的组件添加到桌面或通知中心。
+2. 悬停首页图表或关键数值，可查看解释和精确数据。
+3. 在弹窗内按 `⌘,` 打开设置，可调整语言、主题、采样间隔、窗口缩放、菜单栏项目、告警和首页模块；按 `Esc` 回到首页。
 
 ## 数据与隐私
 
-Moni 的系统指标直接在本机采样。部分可选信息需要访问外部服务，例如公网 IP 查询和软件更新；这些请求失败不会阻断基础系统监控。
+Moni 的系统指标直接在本机采样。软件更新需要访问外部服务；请求失败不会阻断基础系统监控。
 
 每项数据的来源、口径、稳定性与采样频率都记录在 [数据源审计清单](docs/DATA_SOURCE_AUDIT.md) 中。
 
@@ -63,8 +61,7 @@ open DerivedData/Build/Products/Debug/Moni.app
 
 ```text
 Moni/          macOS 应用、页面、数据模型与采样服务
-MoniWidgets/   WidgetKit 小组件
-Shared/        应用与小组件共享的数据结构和本地化能力
+Shared/        本地化能力与语言资源
 scripts/       构建验证与发布脚本
 docs/          数据源审计与发布说明
 ```
@@ -81,7 +78,7 @@ scripts/publish-unsigned-release.sh 1.2.3
 
 ## 技术栈
 
-- Swift 5、SwiftUI、AppKit、WidgetKit
+- Swift 5、SwiftUI、AppKit
 - Sparkle 应用内更新
 - Core Graphics、Core WLAN、SystemConfiguration、Metal、IOKit 与 Darwin 系统接口
 - GitHub Actions 构建与发布

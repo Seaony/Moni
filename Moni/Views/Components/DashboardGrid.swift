@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum DashboardCardID: String, CaseIterable, Codable, Hashable, Identifiable {
-    case host, cpu, memory, gpu, network, storage, processes, docker, power
+    case host, cpu, memory, gpu, network, storage, processes, power, temperature
 
     var id: String { rawValue }
 
@@ -162,7 +162,8 @@ struct DashboardGridLayout: Layout {
         subviews: Subviews,
         cache: inout ()
     ) -> CGSize {
-        let width = proposal.width ?? 0
+        let columns = columnCount(for: subviews)
+        let width = proposal.width ?? CGFloat(columns) * 280 + CGFloat(columns - 1) * spacing
         let result = placements(for: subviews)
         let gridHeight = result.rowCount > 0
             ? CGFloat(result.rowCount) * rowHeight + CGFloat(result.rowCount - 1) * spacing
@@ -182,6 +183,7 @@ struct DashboardGridLayout: Layout {
         subviews: Subviews,
         cache: inout ()
     ) {
+        let columns = columnCount(for: subviews)
         let result = placements(for: subviews)
         let columnWidth = max(0, (bounds.width - CGFloat(columns - 1) * spacing) / CGFloat(columns))
 
@@ -205,6 +207,7 @@ struct DashboardGridLayout: Layout {
     }
 
     private func placements(for subviews: Subviews) -> (items: [Placement], rowCount: Int) {
+        let columns = columnCount(for: subviews)
         var occupied: Set<Cell> = []
         var items: [Placement] = []
         var rowCount = 0
@@ -246,6 +249,10 @@ struct DashboardGridLayout: Layout {
         }
 
         return (items, rowCount)
+    }
+
+    private func columnCount(for subviews: Subviews) -> Int {
+        min(columns, max(1, subviews.reduce(0) { $0 + $1[DashboardCardSpanKey.self].columns }))
     }
 }
 
